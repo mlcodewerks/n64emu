@@ -1,4 +1,4 @@
-/* Native regions, guarded side exits and publication. GPL-2.0-or-later. */
+
 static void emit_step_call(void* block,unsigned index,unsigned phase,ari64_step step)
 {
     emit_mov64(STATE,ARG1_REG); emit_movimm64((intptr_t)block,ARG2_REG);
@@ -79,16 +79,19 @@ static ari64_entry compile_block(struct ari64* s, void* block,
      * block's page; compilation only runs with every generated frame unwound,
      * so temporarily making that page writable cannot interrupt native code. */
     if (!code_protect(s->code + page_start, page_end - page_start, 0)) return NULL;
+    code_write_scope publication(s->code+page_start,page_end-page_start);
     unsigned char* exits[MAX_INSTRUCTIONS * 9 + 16];
     struct memory_exit memory_exits[MAX_INSTRUCTIONS];
     unsigned memory_exit_count = 0;
     unsigned exit_count = 0;
-    out = start;
+    arm64_emitter code(reserve,start);
+    emitter_binding binding(code);
+    out=start;
     compile_absolute_calls = 0;
     emit_frame_enter();
     emit_mov64(ARG1_REG,STATE);
     unsigned char* chain_entry=out;
-    a64(0xd50324df); /* BTI jc: both IP0/IP1 and general-register tail links */
+    JIT(hint(38)); /* BTI jc: both IP0/IP1 and general-register tail links */
     regcache.active=0;
     for (unsigned i = 0; i < count;) {
         enum r4300_opcode op = r4300_get_idec(ops[i])->opcode;
@@ -216,17 +219,23 @@ static ari64_entry compile_block(struct ari64* s, void* block,
         emit_mov64(STATE, ARG1_REG);
         emit_helper_call((const void*)link);
         emit_reg_op(0x85,T0,T0,1);
-        unsigned char* miss=emit_jump(4); a64(0xd61f0000 | (T0<<5)); patch_jump(miss,out);
+        unsigned char* miss=emit_jump(4); JIT(br(XReg(T0))); patch_jump(miss,out);
     }
-    emit_frame_leave(); a64(0xd65f03c0);
+    emit_frame_leave(); JIT(ret());
     for (unsigned i = 0; i < exit_count; ++i) {
         patch_jump(exits[i], epilogue);
     }
+    code.ready();
     assert((size_t)(out - start) <= reserve);
     s->used = ((size_t)(out - s->code) + 15) & ~(size_t)15;
     page_end = (s->used + s->page - 1) & ~(s->page - 1);
     if (!code_protect(s->code + page_start, page_end - page_start, 1)) return NULL;
+    publication.published=true;
+#ifdef _WIN32
+    FlushInstructionCache(GetCurrentProcess(),start,(size_t)(out-start));
+#else
     __builtin___clear_cache((char*)start,(char*)out);
+#endif
     ++s->blocks;
     s->bytes += out - start;
     s->calls += compile_absolute_calls;
@@ -237,10 +246,12 @@ static ari64_entry compile_block(struct ari64* s, void* block,
 ari64_entry ari64_compile(struct ari64* s, void* block,
     const uint32_t* ops, unsigned count, ari64_step step)
 {
-    return compile_block(s, block, ops, count, step, 0, NULL);
+    try { return compile_block(s, block, ops, count, step, 0, NULL); }
+    catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak_aarch64 emission failed: %s",error.what()); return NULL; }
 }
 ari64_entry ari64_compile_optimized(struct ari64* s, void* block,
     const uint32_t* ops, unsigned count, ari64_step step, const struct ari64_config* config)
 {
-    return compile_block(s, block, ops, count, step, 1, config);
+    try { return compile_block(s, block, ops, count, step, 1, config); }
+    catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak_aarch64 emission failed: %s",error.what()); return NULL; }
 }

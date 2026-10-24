@@ -34,8 +34,7 @@ extern int retro_savestate_result;
 extern char *retro_dd_path_img, *retro_dd_path_rom;
 extern char *retro_transferpak_rom_path, *retro_transferpak_ram_path;
 extern uint32_t EnableFrameDuping, EnableFullspeed, EnableOverscan, AspectRatio;
-extern uint32_t CountPerOp, CountPerOpDenomPot, CountPerScanlineOverride;
-extern uint32_t ForceDisableExtraMem, IgnoreTLBExceptions;
+extern uint32_t IgnoreTLBExceptions;
 uint32_t get_retro_screen_width(void);
 uint32_t get_retro_screen_height(void);
 #define RETRO_MEMORY_DD (0x100 + 1)

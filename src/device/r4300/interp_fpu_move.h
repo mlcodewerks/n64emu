@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+
 #ifndef PARALLAX_INTERP_FPU_MOVE_H
 #define PARALLAX_INTERP_FPU_MOVE_H
 #include "r4300_core.h"

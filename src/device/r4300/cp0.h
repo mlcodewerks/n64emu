@@ -1,23 +1,4 @@
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - cp0.h                                                   *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2002 Hacktarux                                          *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
 
 #ifndef PARALLAX_DEVICE_R4300_CP0_H
 #define PARALLAX_DEVICE_R4300_CP0_H
@@ -196,10 +177,6 @@ struct cp0
 
     uint32_t last_addr;
     uint32_t count_phase; /* CPU cycles modulo two; serialized since 1.9 */
-    /* Legacy configuration retained for the initialization API. Instruction
-     * timing now uses CPU cycles and the hardware COUNT divider. */
-    unsigned int count_per_op;
-    unsigned int count_per_op_denom_pot;
 
     struct tlb tlb;
 };
@@ -208,7 +185,7 @@ struct cp0
     offsetof(struct r4300_core, cp0) + \
     offsetof(struct cp0, regs))
 
-void init_cp0(struct cp0* cp0, unsigned int count_per_op, unsigned int count_per_op_denom_pot, const struct interrupt_handler* interrupt_handlers);
+void init_cp0(struct cp0* cp0, const struct interrupt_handler* interrupt_handlers);
 void poweron_cp0(struct cp0* cp0);
 void cp0_reset_extended(struct cp0* cp0);
 uint32_t cp0_random(struct cp0* cp0);

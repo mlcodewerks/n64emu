@@ -1,4 +1,4 @@
-/* Shared Ari64 host-emitter interface. GPL-2.0-or-later. */
+
 #ifndef PARALLAX_ARI64_H
 #define PARALLAX_ARI64_H
 #ifndef ARI64_BACKEND_NAME
@@ -10,6 +10,9 @@
 #endif
 #include <stddef.h>
 #include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 struct r4300_core;
 struct ari64;
 typedef void (*ari64_entry)(struct r4300_core*);
@@ -70,4 +73,7 @@ ari64_entry ari64_compile_optimized(struct ari64*, void* block,
     const uint32_t* ops, unsigned count, ari64_step step, const struct ari64_config*);
 void ari64_stats(const struct ari64*, uint64_t* blocks, uint64_t* native);
 void ari64_code_stats(const struct ari64*, uint64_t stats[3]);
+#ifdef __cplusplus
+}
+#endif
 #endif

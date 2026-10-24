@@ -1,7 +1,4 @@
-/* AArch64 Advanced SIMD/FP backend. Included by fpu_native.c.
- * Scalar SIMD instructions avoid exceptions from unused vector lanes. Explicit
- * instructions keep FPCR-dependent operations ordered, even under LTO.
- * AArch32 NEON lacks double precision and retains the portable backend. */
+
 #ifndef PARALLAX_DEVICE_R4300_FPU_NEON_H
 #define PARALLAX_DEVICE_R4300_FPU_NEON_H
 

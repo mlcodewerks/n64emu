@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "file.h"
 #include <stdlib.h>
 #include <string.h>

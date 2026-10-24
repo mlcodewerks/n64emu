@@ -1,37 +1,29 @@
-/* RCP interfaces: AI, MI, PI, RI, SI and VI. RDP/RSP remain separate. */
+
 #include "rcp.h"
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - ai_controller.c                                         *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
-
 #include <string.h>
-
 #include "core/audio.h"
 #include "device/memory.h"
 #include "device/r4300/r4300_core.h"
 #include "device/rcp/rcp.h"
-#include "device/rcp/rcp.h"
+#include "device/rdram.h"
+#include "core/log.h"
+#include "core/types.h"
+#include "device/device.h"
+#include "device/dd_controller.h"
+#include "device/r4300/r4300_core.h"
+#include "device/rcp/rdp/rdp_core.h"
+#include "device/pif.h"
 #include "device/rcp/rcp.h"
 #include "device/rdram.h"
+#include "osal/preproc.h"
+#include "main/main.h"
+#include "core/backend.h"
+#include <core/frontend.h>
+#define PARALLAX_CORE_PROTOTYPES 1
+#include <stdint.h>
+#include <string.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 
 
 #define AI_STATUS_BUSY UINT32_C(0x40000000)
@@ -335,35 +327,6 @@ void ai_end_of_dma_event(void* opaque)
     raise_rcp_interrupt(ai->mi, MI_INTR_AI);
 }
 
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - mi_controller.c                                         *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
-
-#include <string.h>
-
-#include "device/r4300/cp0.h"
-#include "device/r4300/interrupt.h"
-#include "device/r4300/r4300_core.h"
-
 static int update_mi_init_mode(uint32_t* mi_init_mode, uint32_t w)
 {
     int clear_dp = 0;
@@ -468,46 +431,6 @@ void clear_rcp_interrupt(struct mi_controller* mi, uint32_t mi_intr)
     mi->regs[MI_INTR_REG] &= ~mi_intr;
     r4300_check_interrupt(mi->r4300, CP0_CAUSE_IP2, mi->regs[MI_INTR_REG] & mi->regs[MI_INTR_MASK_REG]);
 }
-
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - pi_controller.c                                         *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
-
-#define PARALLAX_CORE_PROTOTYPES 1
-#include <stdint.h>
-#include <string.h>
-
-#include "core/log.h"
-#include "core/types.h"
-#include "device/device.h"
-#include "device/dd_controller.h"
-#include "device/memory.h"
-#include "device/r4300/r4300_core.h"
-#include "device/rcp/rcp.h"
-#include "device/rcp/rdp/rdp_core.h"
-#include "device/rcp/rcp.h"
-
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
 
 int validate_pi_request(struct pi_controller* pi)
 {
@@ -752,32 +675,6 @@ void pi_end_of_dma_event(void* opaque)
     raise_rcp_interrupt(pi->mi, MI_INTR_PI);
 }
 
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - ri_controller.c                                         *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
-
-#include <string.h>
-
-#include "device/memory.h"
-
 void init_ri(struct ri_controller* ri, struct rdram* rdram)
 {
     ri->rdram = rdram;
@@ -812,41 +709,6 @@ void write_ri_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
     else
         masked_write(&ri->regs[reg], value, mask);
 }
-
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - si_controller.c                                         *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
-
-#include <string.h>
-
-#include "core/log.h"
-#include "core/types.h"
-#include "device/memory.h"
-#include "device/pif.h"
-#include "device/r4300/r4300_core.h"
-#include "device/rcp/rcp.h"
-#include "device/rcp/rcp.h"
-#include "device/rdram.h"
-#include "osal/preproc.h"
 
 static int validate_dma(struct si_controller* si, uint32_t reg)
 {
@@ -1012,39 +874,6 @@ void si_end_of_dma_event(void* opaque)
     raise_rcp_interrupt(si->mi, MI_INTR_SI);
 }
 
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - vi_controller.c                                         *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
-
-#include <string.h>
-
-#include "core/types.h"
-#include "device/memory.h"
-#include "device/r4300/r4300_core.h"
-#include "device/rcp/rcp.h"
-#include "main/main.h"
-#include "core/backend.h"
-#include <core/frontend.h>
-
 unsigned int vi_clock_from_tv_standard(core_system_type tv_standard)
 {
     switch(tv_standard)
@@ -1096,20 +925,10 @@ static uint32_t vi_period_denominator(const struct vi_controller* vi)
 
 static unsigned int vi_next_field_ticks(struct vi_controller* vi)
 {
-    uint64_t ticks;
-
-    if (CountPerScanlineOverride)
-    {
-        ticks = (uint64_t)CountPerScanlineOverride * vi_v_total(vi);
-        vi->field_tick_phase = 0;
-    }
-    else
-    {
-        const uint32_t denominator = vi_period_denominator(vi);
-        const uint64_t scaled = vi_period_numerator(vi) + vi->field_tick_phase;
-        ticks = scaled / denominator;
-        vi->field_tick_phase = scaled % denominator;
-    }
+    const uint32_t denominator = vi_period_denominator(vi);
+    const uint64_t scaled = vi_period_numerator(vi) + vi->field_tick_phase;
+    uint64_t ticks = scaled / denominator;
+    vi->field_tick_phase = scaled % denominator;
 
     if (ticks == 0)
         ticks = 1;
@@ -1122,16 +941,10 @@ static unsigned int vi_next_field_ticks(struct vi_controller* vi)
 
 double vi_actual_refresh_rate(const struct vi_controller* vi)
 {
-    uint64_t ticks;
-
     if (vi == NULL || vi->clock == 0)
         return 0.0;
 
-    if (!CountPerScanlineOverride)
-        return 46875000.0 * vi_period_denominator(vi) / vi_period_numerator(vi);
-
-    ticks = (uint64_t)CountPerScanlineOverride * vi_v_total(vi);
-    return ticks != 0 ? 46875000.0 / (double)ticks : 0.0;
+    return 46875000.0 * vi_period_denominator(vi) / vi_period_numerator(vi);
 }
 
 unsigned int vi_legacy_savestate_delay(const struct vi_controller* vi)
@@ -1141,9 +954,6 @@ unsigned int vi_legacy_savestate_delay(const struct vi_controller* vi)
     if (vi == NULL)
         return 0;
 
-    if (CountPerScanlineOverride)
-        ticks = (uint64_t)CountPerScanlineOverride * vi_v_total(vi);
-    else
     {
         const uint32_t denominator = vi_period_denominator(vi);
         ticks = (vi_period_numerator(vi) + denominator / 2u) / denominator;
@@ -1159,8 +969,6 @@ unsigned int vi_legacy_savestate_count_per_scanline(const struct vi_controller* 
     const unsigned int vtotal = vi_v_total(vi);
     uint64_t delay;
 
-    if (CountPerScanlineOverride)
-        return CountPerScanlineOverride;
     if (vtotal == 0)
         return 0;
 

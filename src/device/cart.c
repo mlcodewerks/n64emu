@@ -1,6 +1,4 @@
-/* Consolidated cart device implementation.
- * Component copyright and license notices are retained below.
- */
+
 
 #define __STDC_FORMAT_MACROS
 
@@ -19,29 +17,6 @@
 #include "core/storage.h"
 #include "main/util.h"
 #include <stddef.h>
-
-/* ---- cart/cart.c ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - cart.c                                                  *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2017 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 static void process_cart_command(void* jbd,
     const uint8_t* tx, const uint8_t* tx_buf,
@@ -250,29 +225,6 @@ unsigned int cart_dom3_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr
     return cart_rom_dma_write(&cart->cart_rom, dram, dram_addr, cart_addr, length);
 }
 
-/* ---- cart/af_rtc.c ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - af_rtc.c                                                *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
 static uint8_t byte2bcd(int n)
 {
     n %= 100;
@@ -373,29 +325,6 @@ void af_rtc_write_block(struct af_rtc* rtc,
     }
 }
 
-/* ---- cart/cart_rom.c ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - cart_rom.c                                              *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
 #define CART_ROM_ADDR_MASK UINT32_C(0x03ffffff);
 
 void init_cart_rom(struct cart_rom* cart_rom,
@@ -483,29 +412,6 @@ unsigned int cart_rom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr,
     return (length / 8) + add_random_interrupt_time(cart_rom->r4300);
 }
 
-/* ---- cart/eeprom.c ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - eeprom.c                                                *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
 enum { EEPROM_BLOCK_SIZE = 8 };
 
 void format_eeprom(uint8_t* mem, size_t size)
@@ -554,30 +460,6 @@ void eeprom_write_block(struct eeprom* eeprom,
         core_log(CORE_LOG_WARNING, "Invalid access to eeprom address=%04x", address);
     }
 }
-
-/* ---- cart/flashram.c ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - flashram.c                                              *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *   Copyright (C) 2002 Hacktarux                                          *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 static void flashram_command(struct flashram* flashram, uint32_t command)
 {
@@ -784,29 +666,6 @@ unsigned int flashram_dma_read(void* opaque, const uint8_t* dram, uint32_t dram_
     return /* length / 8 */0x1000;
 }
 
-/* ---- cart/is_viewer.c ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - is_viewer.c                                             *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2021 loganmc10                                          *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
 #define IS_ADDR_MASK UINT32_C(0x00000fff)
 
 void poweron_is_viewer(struct is_viewer* is_viewer)
@@ -863,29 +722,6 @@ void write_is_viewer(void* opaque, uint32_t address, uint32_t value, uint32_t ma
         memcpy(&is_viewer->data[address], &word, sizeof(word));
     }
 }
-
-/* ---- cart/sram.c ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - sram.c                                                  *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 #define SRAM_ADDR_MASK UINT32_C(0x0000ffff)
 

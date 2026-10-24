@@ -1,7 +1,4 @@
-/* Scalar A64 FP emission with shared VR4300 validation and result exceptions.
- * Host FPCR/FPSR is saved/restored around every arithmetic operation; frontend
- * rounding and flush controls and sticky flags cannot leak into guest arithmetic.
- * All values cross helpers through an integer ABI. GPL-2.0-or-later. */
+
 static int native_fpu_instruction(uint32_t instruction)
 {
     unsigned fmt = (instruction >> 21) & 31, fn = instruction & 63;
@@ -86,18 +83,18 @@ static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
 static void emit_fpu_environment_begin(void)
 {
     static const uint32_t rounding[4]={0,3u<<22,1u<<22,2u<<22};
-    a64(0xd53b4409); emit_mem(0x89,1,T0,SP,-1,0,16); /* FPCR */
-    a64(0xd53b442a); emit_mem(0x89,1,T1,SP,-1,0,24); /* FPSR */
+    JIT(mrs(XReg(T0),1,3,4,4,0)); emit_mem(0x89,1,T0,SP,-1,0,16); /* FPCR */
+    JIT(mrs(XReg(T1),1,3,4,4,1)); emit_mem(0x89,1,T1,SP,-1,0,24); /* FPSR */
     emit_mem(0x8b,0,T0,SP,-1,0,48);
     emit_movimm64((intptr_t)rounding,ADDRESS); emit_mem(0x8b,0,T0,ADDRESS,T0,2,0);
-    a64(0xd51b4409); a64(0xd51b443f); /* guest FPCR, clear FPSR */
+    JIT(msr(1,3,4,4,0,XReg(T0))); JIT(msr(1,3,4,4,1,assembler->xzr)); /* guest FPCR, clear FPSR */
 }
 static void emit_fpu_environment_end(void)
 {
-    a64(0xd53b4409|0x20); /* MRS X9,FPSR */
+    JIT(mrs(XReg(T0),1,3,4,4,1)); /* MRS X9,FPSR */
     emit_mov64(T0,ADDRESS);
-    emit_mem(0x8b,1,T0,SP,-1,0,16); a64(0xd51b4409);
-    emit_mem(0x8b,1,T1,SP,-1,0,24); a64(0xd51b442a);
+    emit_mem(0x8b,1,T0,SP,-1,0,16); JIT(msr(1,3,4,4,0,XReg(T0)));
+    emit_mem(0x8b,1,T1,SP,-1,0,24); JIT(msr(1,3,4,4,1,XReg(T1)));
     /* FPSR IXC/UFC/OFC/DZC/IOC -> guest I/U/O/Z/V. */
     emit_mov64(ADDRESS,CACHE1); emit_shift_reg(CACHE1,5,4,1); emit_imm_op(4,CACHE1,1,0);
     const unsigned shifts[4]={2,0,2,4}, masks[4]={2,4,8,16};
@@ -121,8 +118,8 @@ static void emit_fpu_native(uint32_t instruction,unsigned index,const struct ari
         emit_mem_imm(0x81,0,7,SP,-1,0,48,0); unsigned char* unordered=emit_jump(5);
         emit_fpu_environment_begin();
         emit_mem(0x8b,1,T0,SP,-1,0,32); emit_mem(0x8b,1,T1,SP,-1,0,40);
-        a64(fmt==16?0x1e270120:0x9e670120); a64(fmt==16?0x1e270141:0x9e670141);
-        a64(fmt==16?0x1e212000:0x1e612000); /* FCMP */
+        if(fmt==16) JIT(fmov(SReg(0),WReg(T0))); else JIT(fmov(DReg(0),XReg(T0))); if(fmt==16) JIT(fmov(SReg(1),WReg(T1))); else JIT(fmov(DReg(1),XReg(T1)));
+        if(fmt==16) JIT(fcmp(SReg(0),SReg(1))); else JIT(fcmp(DReg(0),DReg(1))); /* FCMP */
         emit_movimm(0,CACHE0); emit_movimm(0,CACHE1);
         if(fn&2) emit_set_condition(CACHE0,4);
         if(fn&4) emit_set_condition(CACHE1,2);
@@ -135,24 +132,29 @@ static void emit_fpu_native(uint32_t instruction,unsigned index,const struct ari
         if(fn!=6) {
             if(fmt==16) emit_mov(CACHE0,CACHE0);
             emit_movimm64(fmt==16?UINT64_C(0x80000000):UINT64_C(0x8000000000000000),T0);
-            if(fn==5) a64(0xaa2003e0|(T0<<16)|T0);
+            if(fn==5) JIT(mvn(XReg(T0),XReg(T0)));
             emit_reg_op(fn==5?0x21:0x31,T0,CACHE0,1);
         }
     } else {
         emit_fpu_environment_begin();
         emit_mem(0x8b,1,T0,SP,-1,0,32); emit_mem(0x8b,1,T1,SP,-1,0,40);
-        a64(fmt==16?0x1e270120:0x9e670120); a64(fmt==16?0x1e270141:0x9e670141);
+        if(fmt==16) JIT(fmov(SReg(0),WReg(T0))); else JIT(fmov(DReg(0),XReg(T0))); if(fmt==16) JIT(fmov(SReg(1),WReg(T1))); else JIT(fmov(DReg(1),XReg(T1)));
         if(integer) {
-            a64(fmt==16?0x1e274000:0x1e674000); /* FRINTX */
-            a64(fmt==16?0x9e380017:0x9e780017); /* FCVTZS X23 */
+            if(fmt==16) JIT(frintx(SReg(0),SReg(0))); else JIT(frintx(DReg(0),DReg(0))); /* FRINTX */
+            if(fmt==16) JIT(fcvtzs(XReg(CACHE0),SReg(0))); else JIT(fcvtzs(XReg(CACHE0),DReg(0))); /* FCVTZS X23 */
         } else if(fn==32 || fn==33) {
-            if(fmt==16 || fmt==17) a64(fmt==16?0x1e22c000:0x1e624000);
-            else a64((fn==32?0x1e220000:0x1e620000)|(fmt==21?0x80000000:0)|(T0<<5));
-            a64(single?0x1e260017:0x9e660017);
+            if(fmt==16 || fmt==17) { if(fmt==16) JIT(fcvt(DReg(0),SReg(0))); else JIT(fcvt(SReg(0),DReg(0))); }
+            else { if(fn==32) { if(fmt==21) JIT(scvtf(SReg(0),XReg(T0))); else JIT(scvtf(SReg(0),WReg(T0))); } else { if(fmt==21) JIT(scvtf(DReg(0),XReg(T0))); else JIT(scvtf(DReg(0),WReg(T0))); } }
+            if(single) JIT(fmov(WReg(CACHE0),SReg(0))); else JIT(fmov(XReg(CACHE0),DReg(0)));
         } else {
-            static const uint32_t operations[5]={0x1e212800,0x1e213800,0x1e210800,0x1e211800,0x1e21c000};
-            a64(operations[fn]|(fmt==17?0x00400000:0));
-            a64(single?0x1e260017:0x9e660017);
+            switch(fn) {
+#define FP(n,op) case n: if(fmt==16) JIT(op(SReg(0),SReg(0),SReg(1))); else JIT(op(DReg(0),DReg(0),DReg(1))); break
+            FP(0,fadd); FP(1,fsub); FP(2,fmul); FP(3,fdiv);
+#undef FP
+            case 4: if(fmt==16) JIT(fsqrt(SReg(0),SReg(0))); else JIT(fsqrt(DReg(0),DReg(0))); break;
+            default: abort();
+            }
+            if(single) JIT(fmov(WReg(CACHE0),SReg(0))); else JIT(fmov(XReg(CACHE0),DReg(0)));
         }
         emit_fpu_environment_end();
         if(integer && ((fn>=12 && fn<=15)||fn==36)) {

@@ -1,0 +1,3 @@
+https://github.com/fujitsu/xbyak_aarch64
+7471f6e59e2d1fd610290c79a841748abc6181ac
+Local portability patch: select existing Win32 allocation/protection paths for MinGW as well as MSVC.

@@ -1,23 +1,3 @@
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
-*   Mupen64plus - dd_controller.c                                         *
-*   Mupen64Plus homepage: https://mupen64plus.org/                        *
-*   Copyright (C) 2015 LuigiBlood                                         *
-*                                                                         *
-*   This program is free software; you can redistribute it and/or modify  *
-*   it under the terms of the GNU General Public License as published by  *
-*   the Free Software Foundation; either version 2 of the License, or     *
-*   (at your option) any later version.                                   *
-*                                                                         *
-*   This program is distributed in the hope that it will be useful,       *
-*   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
-*   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
-*   GNU General Public License for more details.                          *
-*                                                                         *
-*   You should have received a copy of the GNU General Public License     *
-*   along with this program; if not, write to the                         *
-*   Free Software Foundation, Inc.,                                       *
-*   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
-* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 #include "dd_controller.h"
 
@@ -562,14 +542,12 @@ unsigned int dd_dom_dma_read(void* opaque, const uint8_t* dram, uint32_t dram_ad
     }
     else if (cart_addr == MM_DD_MS_RAM) {
         /* MS is not emulated, we silence warnings for now */
-        /* Recommended Count Per Op = 1, this seems to break very easily */
         return (length * 63) / 25;
     }
     else {
         core_log(CORE_LOG_ERROR, "Unknown DD dma read dram=%08x  cart=%08x length=%08x",
             dram_addr, cart_addr, length);
 
-        /* Recommended Count Per Op = 1, this seems to break very easily */
         return (length * 63) / 25;
     }
 
@@ -577,7 +555,6 @@ unsigned int dd_dom_dma_read(void* opaque, const uint8_t* dram, uint32_t dram_ad
         mem[(cart_addr + i) ^ S8] = dram[(dram_addr + i) ^ S8];
     }
 
-    /* Recommended Count Per Op = 1, this seems to break very easily */
     return (length * 63) / 25;
 }
 
@@ -606,11 +583,9 @@ unsigned int dd_dom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr, u
             core_log(CORE_LOG_ERROR, "Unknown DD dma write dram=%08x  cart=%08x length=%08x",
                 dram_addr, cart_addr, length);
 
-            /* Recommended Count Per Op = 1, this seems to break very easily */
             return (length * 63) / 25;
         }
 
-        /* Recommended Count Per Op = 1, this seems to break very easily */
         cycles = (length * 63) / 25;
     }
     else {
@@ -618,7 +593,6 @@ unsigned int dd_dom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr, u
         cart_addr = (cart_addr - MM_DD_ROM);
         mem = (const uint8_t*)dd->rom;
 
-        /* Recommended Count Per Op = 1, this seems to break very easily */
         cycles = (length * 63) / 25;
     }
 

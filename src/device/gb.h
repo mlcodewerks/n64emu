@@ -12,30 +12,6 @@ extern "C" {
 struct clock_backend_interface;
 struct storage_backend_interface;
 struct rumble_backend_interface;
-struct video_capture_backend_interface;
-
-/* ---- m64282fp ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - m64282fp.h                                              *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2017 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 enum
 {
@@ -59,29 +35,6 @@ enum m64282fp_registers
 void process_m64282fp_image(
     uint8_t img[M64282FP_SENSOR_H][M64282FP_SENSOR_W],
     const uint8_t regs[M64282FP_REGS_COUNT]);
-
-/* ---- mbc3_rtc ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - mbc3_rtc.h                                              *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2016 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 enum mbc3_rtc_registers
 {
@@ -119,29 +72,6 @@ uint8_t read_mbc3_rtc_regs(struct mbc3_rtc* rtc, unsigned int reg);
 void write_mbc3_rtc_regs(struct mbc3_rtc* rtc, unsigned int reg, uint8_t value);
 void latch_mbc3_rtc_regs(struct mbc3_rtc* rtc, uint8_t data);
 
-/* ---- gb_cart ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - gb_cart.h                                               *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2015 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
 enum pocket_cam_registers
 {
     /* TODO: use pretty names for registers */
@@ -151,9 +81,6 @@ enum pocket_cam_registers
 struct pocket_cam
 {
     uint8_t regs[POCKET_CAM_REGS_COUNT];
-
-    void* vcap;
-    const struct video_capture_backend_interface* ivcap;
 
     uint8_t* ram;
 };
@@ -188,8 +115,7 @@ void init_gb_cart(struct gb_cart* gb_cart,
         void* rom_opaque, void (*init_rom)(void* user_data, void** rom_storage, const struct storage_backend_interface** irom_storage), void (*release_rom)(void* user_data),
         void* ram_opaque, void (*init_ram)(void* user_data, size_t ram_size, void** ram_storage, const struct storage_backend_interface** iram_storage), void (*release_ram)(void* user_data),
         void* clock, const struct clock_backend_interface* iclock,
-        void* rumble, const struct rumble_backend_interface* irumble,
-        void* vcap, const struct video_capture_backend_interface* ivcap);
+        void* rumble, const struct rumble_backend_interface* irumble);
 
 void poweron_gb_cart(struct gb_cart* gb_cart);
 

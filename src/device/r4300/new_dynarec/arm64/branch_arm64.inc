@@ -1,8 +1,4 @@
-/* Native control flow with an allocated, nontrapping integer delay slot.
- * Conditions and indirect destinations are captured before the slot writes
- * its registers. Likely slots have separate taken/annulled commit paths.
- * Idle, COP1 and unsafe slots keep precise handlers.
- * GPL-2.0-or-later. */
+
 static int native_branch_opcode(enum r4300_opcode op)
 {
     switch (op) {

@@ -1,6 +1,4 @@
-/* Strict host arithmetic backend. Guest register/exception handling remains in
- * the fast-math interpreter; only this translation unit needs FP environment
- * semantics. No host floating-point value crosses the public integer ABI. */
+
 #include "fpu_native.h"
 #include "cp1.h"
 #include <fenv.h>

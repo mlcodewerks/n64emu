@@ -1,6 +1,4 @@
-/* Native scheduler guards and exact half-rate COUNT accounting. Guarded
- * regions cannot trap or observe COUNT; faults/events use precise stubs.
- * GPL-2.0-or-later. */
+
 static void emit_region_guard(const struct ari64_config* config, unsigned start,
     unsigned count, unsigned base, unsigned memory_count, struct memory_exit* failure)
 {

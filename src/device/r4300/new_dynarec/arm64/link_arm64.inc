@@ -1,6 +1,4 @@
-/* Ari64-style native successor links. Code publication/patching never occurs
- * here: cached targets are guarded data and misses use the C linker.
- * GPL-2.0-or-later. */
+
 static void emit_direct_links(void* block, const struct ari64_config* config)
 {
     unsigned char* misses[15]; unsigned miss_count = 0;

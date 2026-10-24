@@ -1,8 +1,4 @@
-/* Ari64-style next-use allocation, dirty writeback and constant propagation.
- * The original allocator's principles are applied to full-width guest values
- * and this core's ABI. Guarded regions have no traps or observable events;
- * their precise paths commit each instruction without allocation shortcuts.
- * GPL-2.0-or-later; see the upstream notice in ari64_x64.c. */
+
 #ifdef _WIN32
 /* Unlike System V, the Microsoft ABI preserves RSI/RDI across precise helper
  * calls. Use the two otherwise idle registers to reduce region spills. */

@@ -1,7 +1,4 @@
-/* Scalar SSE2 emission with shared VR4300 validation and result exceptions.
- * Host MXCSR is saved/restored around every arithmetic operation; frontend
- * rounding, DAZ/FTZ and sticky flags cannot leak into guest arithmetic.
- * All values cross helpers through an integer ABI. GPL-2.0-or-later. */
+
 static int native_fpu_instruction(uint32_t instruction)
 {
     unsigned fmt = (instruction >> 21) & 31, fn = instruction & 63;
@@ -31,22 +28,15 @@ static void emit_fpu_transfer(uint32_t instruction, enum r4300_opcode op)
         if (rt) emit_state_store_raw(gpr_offset(rt),RAX);
     }
 }
-static void emit_mxcsr(unsigned ext, size_t offset)
-{
-    output_byte(0x0f); emit_mem(0xae, 0, ext, RSP, -1, 0, offset);
+static void emit_mxcsr(unsigned ext,size_t offset) {
+    const auto memory=host_mem(32,RSP,-1,0,offset);
+    if(ext==3) JIT(stmxcsr(memory)); else { assert(ext==2); JIT(ldmxcsr(memory)); }
 }
-static void emit_xmm_bits(int integer, unsigned xmm, int load)
-{
-    output_byte(0x66); output_rex(1, xmm >> 3, 0, integer >> 3);
-    output_byte(0x0f); output_byte(load ? 0x6e : 0x7e); output_modrm(3, integer & 7, xmm & 7);
+static void emit_xmm_bits(int integer,unsigned xmm,int load) {
+    if(load) JIT(movq(Xbyak::Xmm(xmm),Xbyak::Reg64(integer)));
+    else JIT(movq(Xbyak::Reg64(integer),Xbyak::Xmm(xmm)));
 }
-static void emit_set_condition(int reg, unsigned condition)
-{
-    if (reg >= 4) output_rex(0,0,0,reg >> 3);
-    output_byte(0x0f); output_byte(0x90 | condition); output_modrm(3,reg & 7,0);
-    if (reg >= 4) output_rex(0,reg >> 3,0,reg >> 3);
-    output_byte(0x0f); output_byte(0xb6); output_modrm(3,reg & 7,reg & 7);
-}
+
 /* The shared prepare has validated inputs and charged fetch/issue hazards.
  * Commit ordinary results here; exceptional outputs, enabled exceptions and
  * event boundaries retain the shared finish without repeating arithmetic. */
@@ -60,7 +50,7 @@ static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
     if (fn < 48 && fn != 6) {
         emit_mov(R9,RAX); emit_imm_op(4,RAX,~UINT32_C(1),0);
         emit_reg_op(0x85,RAX,RAX,0); slow[slow_count++] = emit_jump(5);
-        emit_mem(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31)); output_w32(0x80);
+        emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31),0x80);
         slow[slow_count++] = emit_jump(5);
         if (!integer) {
             emit_mov64(R8,RAX);
@@ -79,7 +69,7 @@ static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
     emit_mem(0x8b,1,RDX,R12,-1,0,offsetof(struct r4300_core,cp0.cycle_count));
     emit_reg_op(0x01,RAX,RDX,1); emit_reg_op(0x85,RDX,RDX,1); slow[slow_count++] = emit_jump(9);
     if (fn >= 48) {
-        emit_mem(0x81,0,4,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31)); output_w32(~UINT32_C(0x800000));
+        emit_mem_imm(0x81,0,4,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31),~UINT32_C(0x800000));
         emit_mov(R8,RAX); emit_shift_reg(RAX,4,23,0);
         emit_mem(0x09,0,RAX,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31));
     } else {
@@ -91,11 +81,11 @@ static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
         emit_mem(0x89,1,R8,R12,-1,0,offsetof(struct r4300_core,cp1.regs) + ((instruction >> 6) & 31) * sizeof(cp1_reg));
     }
     emit_movimm(latency,R13);
-    emit_mem(0xc7,0,0,RSP,-1,0,8); output_w32(0);
+    emit_mem_imm(0xc7,0,0,RSP,-1,0,8,0);
     emit_region_commit_native(config,index,1,0);
     emit_movimm64((intptr_t)&breakloop,R11);
-    emit_mem(0x80,0,7,R11,-1,0,0); output_byte(0); exits[(*exit_count)++] = emit_jump(5);
-    output_byte(0xe9); unsigned char* done = out; output_w32(0);
+    emit_mem_imm(0x80,0,7,R11,-1,0,0,0); exits[(*exit_count)++] = emit_jump(5);
+    unsigned char* done = emit_b();
     for (unsigned n = 0; n < slow_count; ++n) patch_jump(slow[n],out);
     return done;
 }
@@ -112,25 +102,25 @@ static void emit_fpu_native(uint32_t instruction, unsigned index, const struct a
     emit_helper_call((const void*)config->fpu_prepare);
     emit_reg_op(0x85, RAX, RAX, 0); exits[(*exit_count)++] = emit_jump(4);
     if (fn >= 48) {
-        emit_mem(0x81,0,7,RSP,-1,0,48); output_w32(0); unsigned char* unordered = emit_jump(5);
+        emit_mem_imm(0x81,0,7,RSP,-1,0,48,0); unsigned char* unordered = emit_jump(5);
         emit_mxcsr(3,16);
-        emit_mem(0xc7,0,0,RSP,-1,0,20); output_w32(0x1f80); emit_mxcsr(2,20);
+        emit_mem_imm(0xc7,0,0,RSP,-1,0,20,0x1f80); emit_mxcsr(2,20);
         emit_mem(0x8b,1,RAX,RSP,-1,0,32); emit_mem(0x8b,1,RCX,RSP,-1,0,40);
         emit_xmm_bits(RAX,0,1); emit_xmm_bits(RCX,1,1);
         emit_movimm(0,R8); emit_movimm(0,R9);
-        if (fmt == 17) output_byte(0x66);
-        output_byte(0x0f); output_byte(0x2e); output_modrm(3,1,0); /* UCOMISS/SD */
+        if(fmt==17) JIT(ucomisd(Xbyak::Xmm(0),Xbyak::Xmm(1)));
+        else JIT(ucomiss(Xbyak::Xmm(0),Xbyak::Xmm(1))); /* UCOMISS/SD */
         if (fn & 2) emit_set_condition(R8,4);
         if (fn & 4) emit_set_condition(R9,2);
         emit_reg_op(0x09,R9,R8,0); emit_movimm(0,R9); emit_mxcsr(2,16);
-        output_byte(0xe9); unsigned char* done = out; output_w32(0);
+        unsigned char* done = emit_b();
         patch_jump(unordered,out); emit_movimm(fn & 1,R8); emit_movimm(0,R9); patch_jump(done,out);
     } else if (fn >= 5 && fn <= 7) {
         emit_mem(0x8b, 1, R8, RSP, -1, 0, 32); emit_movimm(0, R9);
         if (fn != 6) {
             if (fmt == 16) emit_mov(R8, R8);
             emit_movimm64(fmt == 16 ? UINT64_C(0x80000000) : UINT64_C(0x8000000000000000), RAX);
-            if (fn == 5) { output_rex(1,0,0,0); output_byte(0xf7); output_modrm(3,RAX,2); }
+            if (fn == 5) { JIT(not_(Xbyak::Reg64(RAX))); }
             emit_reg_op(fn == 5 ? 0x21 : 0x31, RAX, R8, 1);
         }
     } else {
@@ -145,19 +135,23 @@ static void emit_fpu_native(uint32_t instruction, unsigned index, const struct a
         emit_mem(0x8b, 1, RCX, RSP, -1, 0, 40);
         emit_xmm_bits(RAX, 0, 1); emit_xmm_bits(RCX, 1, 1);
         if (integer) {
-            output_byte(fmt == 16 ? 0xf3 : 0xf2); output_rex(1,1,0,0);
-            output_byte(0x0f); output_byte(0x2d); output_modrm(3,0,R8 & 7);
+            if(fmt==16) JIT(cvtss2si(Xbyak::Reg64(R8),Xbyak::Xmm(0)));
+            else JIT(cvtsd2si(Xbyak::Reg64(R8),Xbyak::Xmm(0)));
         } else if (fn == 32 || fn == 33) {
             if (fmt == 16 || fmt == 17) {
-                output_byte(fmt == 16 ? 0xf3 : 0xf2); output_byte(0x0f); output_byte(0x5a); output_modrm(3,0,0);
+                if(fmt==16) JIT(cvtss2sd(Xbyak::Xmm(0),Xbyak::Xmm(0))); else JIT(cvtsd2ss(Xbyak::Xmm(0),Xbyak::Xmm(0)));
             } else {
-                output_byte(fn == 32 ? 0xf3 : 0xf2); if (fmt == 21) output_rex(1,0,0,0);
-                output_byte(0x0f); output_byte(0x2a); output_modrm(3,RAX,0);
+                if(fn==32) JIT(cvtsi2ss(Xbyak::Xmm(0),host_reg(RAX,fmt==21)));
+                else JIT(cvtsi2sd(Xbyak::Xmm(0),host_reg(RAX,fmt==21)));
             }
             emit_xmm_bits(R8, 0, 0); if (out_single) emit_mov(R8, R8);
         } else {
-            const unsigned opcodes[] = {0x58,0x5c,0x59,0x5e,0x51};
-            output_byte(fmt == 16 ? 0xf3 : 0xf2); output_byte(0x0f); output_byte(opcodes[fn]); output_modrm(3,fn == 4 ? 0 : 1,0);
+            switch(fn) {
+#define FP(n,ss,sd) case n: if(fmt==16) JIT(ss(Xbyak::Xmm(0),Xbyak::Xmm(n==4?0:1))); else JIT(sd(Xbyak::Xmm(0),Xbyak::Xmm(n==4?0:1))); break
+            FP(0,addss,addsd); FP(1,subss,subsd); FP(2,mulss,mulsd); FP(3,divss,divsd); FP(4,sqrtss,sqrtsd);
+#undef FP
+            default: abort();
+            }
             emit_xmm_bits(R8, 0, 0); if (out_single) emit_mov(R8, R8);
         }
         emit_mxcsr(3, 20); emit_mxcsr(2, 16);
@@ -171,7 +165,7 @@ static void emit_fpu_native(uint32_t instruction, unsigned index, const struct a
         if (integer && ((fn >= 12 && fn <= 15) || fn == 36)) {
             emit_imm_op(7,R8,INT32_MAX,1); unsigned char* too_high = emit_jump(15);
             emit_imm_op(7,R8,(uint32_t)INT32_MIN,1); unsigned char* too_low = emit_jump(12);
-            output_byte(0xe9); unsigned char* word_ok = out; output_w32(0);
+            unsigned char* word_ok = emit_b();
             patch_jump(too_high,out); patch_jump(too_low,out); emit_movimm(32,R9);
             patch_jump(word_ok,out); emit_mov(R8,R8);
         }

@@ -1,24 +1,3 @@
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - emulate_game_controller_via_input_plugin.c              *
- *   Mupen64Plus homepage: http://code.google.com/p/mupen64plus/           *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
 #include "core/input.h"
 #include "core/backend.h"
 
@@ -123,22 +102,6 @@ static unsigned char DataCRC( unsigned char *Data, int iLenght )
     return Remainder;
 }
 
-/******************************************************************
-  Function: ControllerCommand
-  Purpose:  To process the raw data that has just been sent to a
-            specific controller.
-  input:    - Controller Number (0 to 3) and -1 signalling end of
-              processing the pif ram.
-            - Pointer of data to be processed.
-  output:   none
-
-  note:     This function is only needed if the DLL is allowing raw
-            data, or the plugin is set to raw
-
-            the data that is being processed looks like this:
-            initilize controller: 01 03 00 FF FF FF
-            read controller:      01 04 01 FF FF FF FF
-*******************************************************************/
 void core_input_command(int Control, unsigned char *Command)
 {
     unsigned char *Data = &Command[5];
@@ -195,15 +158,6 @@ void core_input_command(int Control, unsigned char *Command)
             break;
         }
 }
-
-/******************************************************************
-  Function: GetKeys
-  Purpose:  To get the current state of the controllers buttons.
-  input:    - Controller Number (0 to 3)
-            - A pointer to a core_buttons structure to be filled with
-            the controller state.
-  output:   none
-*******************************************************************/
 
 // System analog stick range is -0x8000 to 0x8000
 #define ASTICK_MAX 0x8000

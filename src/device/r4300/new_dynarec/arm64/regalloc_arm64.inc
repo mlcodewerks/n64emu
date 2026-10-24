@@ -1,8 +1,4 @@
-/* Ari64-style next-use allocation, dirty writeback and constant propagation.
- * The original allocator's principles are applied to full-width guest values
- * and this core's ABI. Guarded regions have no traps or observable events;
- * their precise paths commit each instruction without allocation shortcuts.
- * GPL-2.0-or-later; see the upstream notice in ari64_arm64.c. */
+
 enum { GUEST_HI=32, GUEST_LO=33, GUEST_REGS=34, CACHE_REGS=7 };
 static const int cache_host[CACHE_REGS]={CACHE0,CACHE1,CACHE2,CACHE3,CACHE4,CACHE5,CACHE6};
 struct regcache_state {

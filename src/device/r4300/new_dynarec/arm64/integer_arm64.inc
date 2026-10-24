@@ -35,14 +35,14 @@ static void emit_native(uint32_t op, enum r4300_opcode decoded)
         emit_movimm64(major >= 12 && major <= 14 ? (uint16_t)op : (uint64_t)(int64_t)(int16_t)op,10);
         switch (major) {
         case 9: case 25: /* ADDIU / DADDIU */
-            a64( (major == 9 ? 0x0b0a0129 : 0x8b0a0129)); word = major == 9; break;
-        case 12: a64( 0x8a0a0129); break;
-        case 13: a64( 0xaa0a0129); break;
-        case 14: a64( 0xca0a0129); break;
+            if(major==9) JIT(add(WReg(9),WReg(9),WReg(10))); else JIT(add(XReg(9),XReg(9),XReg(10))); word = major == 9; break;
+        case 12: JIT(and_(XReg(9),XReg(9),XReg(10))); break;
+        case 13: JIT(orr(XReg(9),XReg(9),XReg(10))); break;
+        case 14: JIT(eor(XReg(9),XReg(9),XReg(10))); break;
         case 15: emit_movimm64((uint64_t)(int64_t)(int32_t)(op << 16),9); break;
         case 10: case 11:
-            a64( 0xeb0a013f); /* CMP X9,X10 */
-            a64( major == 10 ? 0x9a9fa7e9 : 0x9a9f27e9); /* CSET X9,LT/LO */
+            JIT(cmp(XReg(9),XReg(10))); /* CMP X9,X10 */
+            JIT(cset(XReg(9),major==10?LT:LO)); /* CSET X9,LT/LO */
             break;
         }
     } else if (fn == 16 || fn == 18) {
@@ -55,27 +55,30 @@ static void emit_native(uint32_t op, enum r4300_opcode decoded)
         word = fn <= 7;
         if (variable) {
             if (word && kind == 3) { /* shared SRAV uses full 64-bit operand, five-bit shift */
-                a64( 0x92401129); /* AND X9,X9,#31 */
+                JIT(and_(XReg(9),XReg(9),31)); /* AND X9,X9,#31 */
             }
         } else emit_movimm64(sa + (fn >= 60 ? 32 : 0),9);
-        uint32_t base = kind == 0 ? 0x1ac02000 : kind == 2 ? 0x1ac02400 : 0x1ac02800;
-        if (!word || kind == 3) base |= 0x80000000;
-        a64( base | (9 << 16) | (10 << 5) | 9); /* LSLV/LSRV/ASRV X/W9,X/W10,X/W9 */
+        if(!word || kind==3) {
+            if(kind==0) JIT(lsl(XReg(9),XReg(10),XReg(9)));
+            else if(kind==2) JIT(lsr(XReg(9),XReg(10),XReg(9))); else JIT(asr(XReg(9),XReg(10),XReg(9)));
+        } else {
+            if(kind==0) JIT(lsl(WReg(9),WReg(10),WReg(9))); else JIT(lsr(WReg(9),WReg(10),WReg(9)));
+        } /* LSLV/LSRV/ASRV X/W9,X/W10,X/W9 */
     } else {
         switch (fn) {
-        case 33: case 45: a64( fn == 33 ? 0x0b0a0129 : 0x8b0a0129); word = fn == 33; break;
-        case 35: case 47: a64( fn == 35 ? 0x4b0a0129 : 0xcb0a0129); word = fn == 35; break;
-        case 36: a64( 0x8a0a0129); break;
+        case 33: case 45: if(fn==33) JIT(add(WReg(9),WReg(9),WReg(10))); else JIT(add(XReg(9),XReg(9),XReg(10))); word = fn == 33; break;
+        case 35: case 47: if(fn==35) JIT(sub(WReg(9),WReg(9),WReg(10))); else JIT(sub(XReg(9),XReg(9),XReg(10))); word = fn == 35; break;
+        case 36: JIT(and_(XReg(9),XReg(9),XReg(10))); break;
         case 37: case 39:
-            a64( 0xaa0a0129);
-            if (fn == 39) a64( 0xaa2903e9); /* MVN X9,X9 */
+            JIT(orr(XReg(9),XReg(9),XReg(10)));
+            if (fn == 39) JIT(mvn(XReg(9),XReg(9))); /* MVN X9,X9 */
             break;
-        case 38: a64( 0xca0a0129); break;
+        case 38: JIT(eor(XReg(9),XReg(9),XReg(10))); break;
         case 42: case 43:
-            a64( 0xeb0a013f);
-            a64( fn == 42 ? 0x9a9fa7e9 : 0x9a9f27e9); break;
+            JIT(cmp(XReg(9),XReg(10)));
+            JIT(cset(XReg(9),fn==42?LT:LO)); break;
         }
     }
-    if (word) a64( 0x93407d29); /* SXTW X9,W9 */
+    if (word) JIT(sxtw(XReg(9),WReg(9))); /* SXTW X9,W9 */
     if (rd) emit_state_store(offsetof(struct r4300_core, regs) + rd * 8,9);
 }

@@ -1,26 +1,4 @@
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - main.c                                                  *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2012 CasualJames                                        *
- *   Copyright (C) 2008-2009 Richard Goedeken                              *
- *   Copyright (C) 2008 Ebenblues Nmn Okaygo Tillin9                       *
- *   Copyright (C) 2002 Hacktarux                                          *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
 
 /* Device setup and execution for the libretro core. */
 
@@ -40,7 +18,6 @@
 #include "core/joybus.h"
 #include "core/rumble.h"
 #include "core/storage.h"
-#include "core/video_capture.h"
 #include "core/controller.h"
 #include "device/device.h"
 #include "device/disk.h"
@@ -55,7 +32,7 @@
 #include "profile.h"
 #endif
 #include "rom.h"
-#include "cpu_timing_profiles.h"
+#include "md5.h"
 #ifdef __LIBRETRO__
 #include "renderer_options.h"
 #endif
@@ -570,8 +547,6 @@ struct gb_cart_data
     int control_id;
     struct file_storage rom_fstorage;
     struct file_storage ram_fstorage;
-    void* gbcam_backend;
-    const struct video_capture_backend_interface* igbcam_backend;
 };
 
 static struct gb_cart_data l_gb_carts_data[GAME_CONTROLLERS_COUNT];
@@ -676,8 +651,7 @@ void main_change_gb_cart(int control_id)
             data, init_gb_rom, release_gb_rom,
             data, init_gb_ram, release_gb_ram,
             NULL, &g_iclock_ctime_plus_delta,
-            &data->control_id, &g_libretro_rumble_backend,
-            data->gbcam_backend, data->igbcam_backend);
+            &data->control_id, &g_libretro_rumble_backend);
 
     if (gb_cart->read_gb_cart == NULL) {
         gb_cart = NULL;
@@ -713,9 +687,6 @@ struct file_storage eep;
     struct file_storage mpk_storages[GAME_CONTROLLERS_COUNT];
     struct file_storage mpk;
 
-    void* gbcam_backend;
-    const struct video_capture_backend_interface* igbcam_backend;
-
     /* XXX: select type of flashram from db */
     uint32_t flashram_type = MX29L1100_ID;
     
@@ -723,10 +694,7 @@ struct file_storage eep;
 void main_prerun(void)
 {
     size_t i, k;
-    uint32_t count_per_op;
-    uint32_t count_per_op_denom_pot;
     uint32_t emumode;
-    uint32_t disable_extra_mem;
     int32_t si_dma_duration;
     int32_t no_compiled_jump;
     int32_t randomize_interrupt;
@@ -734,9 +702,6 @@ void main_prerun(void)
     emumode = r4300_emumode;
     randomize_interrupt = 0; // We don't want this right now
     no_compiled_jump = 0;
-    count_per_op = CountPerOp;
-    count_per_op_denom_pot = CountPerOpDenomPot;
-    disable_extra_mem = ROM_SETTINGS.disableextramem;
 
     uint16_t eeprom_type = JDT_NONE;
     switch (ROM_SETTINGS.savetype) {
@@ -748,16 +713,7 @@ void main_prerun(void)
             break;
     }
 
-    if (ForceDisableExtraMem == 1)
-        disable_extra_mem = 1;
-
-    if (count_per_op <= 0)
-        count_per_op = ROM_SETTINGS.countperop;
-
-    if (count_per_op_denom_pot > 11)
-        count_per_op_denom_pot = 11;
-
-    si_dma_duration = ROM_SETTINGS.sidmaduration;
+    si_dma_duration = 0; /* Command-dependent SI timing. */
 
     /* do byte-swapping if it hasn't been done yet */
 #if !defined(PARALLAX_BIG_ENDIAN)
@@ -859,9 +815,6 @@ void main_prerun(void)
 
             l_gb_carts_data[i].control_id = (int)i;
 
-            l_gb_carts_data[i].gbcam_backend = gbcam_backend;
-            l_gb_carts_data[i].igbcam_backend = igbcam_backend;
-
             l_paks_idx[i] = 0;
 
             //Don't use the selected pak if it's not available for the game, instead use NONE
@@ -911,8 +864,7 @@ void main_prerun(void)
                             &l_gb_carts_data[i], init_gb_rom, release_gb_rom,
                             &l_gb_carts_data[i], init_gb_ram, release_gb_ram,
                             NULL, &g_iclock_ctime_plus_delta,
-                            &l_gb_carts_data[i].control_id, &g_libretro_rumble_backend,
-                            l_gb_carts_data[i].gbcam_backend, l_gb_carts_data[i].igbcam_backend);
+                            &l_gb_carts_data[i].control_id, &g_libretro_rumble_backend);
 
                     init_transferpak(&g_dev.transferpaks[i], (g_dev.gb_carts[i].read_gb_cart == NULL) ? NULL : &g_dev.gb_carts[i]);
                     l_paks[i][k] = &g_dev.transferpaks[i];
@@ -961,14 +913,12 @@ void main_prerun(void)
     init_device(&g_dev,
                 g_mem_base,
                 r4300_emumode,
-                count_per_op,
-                count_per_op_denom_pot,
                 no_compiled_jump,
                 randomize_interrupt,
                 g_start_address,
                 &g_dev.ai, &g_libretro_audio_backend,
                 si_dma_duration,
-                0x800000,
+                0x800000, /* Expansion Pak is always installed (8 MiB). */
                 joybus_devices, ijoybus_devices,
                 vi_clock_from_tv_standard(ROM_PARAMS.systemtype), vi_expected_refresh_rate_from_tv_standard(ROM_PARAMS.systemtype),
                 NULL, &g_iclock_ctime_plus_delta,
@@ -990,12 +940,6 @@ void main_prerun(void)
     g_EmulatorRunning = 1;
 
 
-#ifdef __LIBRETRO__
-    g_dev.r4300.issue_policy = rom_cpu_issue_policy(ROM_SETTINGS.MD5);
-    if (g_dev.r4300.issue_policy != CPU_ISSUE_DEFAULT)
-        core_log(CORE_LOG_INFO, "CPU issue timing profile: %s",
-            g_dev.r4300.issue_policy == CPU_ISSUE_NATIVE ? "native" : "compatibility");
-#endif
     poweron_device(&g_dev);
     pif_bootrom_hle_execute(&g_dev.r4300);
 
@@ -1021,9 +965,6 @@ void main_stop(void)
     }
 
 #if 0
-    igbcam_backend->close(gbcam_backend);
-    igbcam_backend->release(gbcam_backend);
-
     close_file_storage(&sra);
     close_file_storage(&fla);
     close_file_storage(&eep);

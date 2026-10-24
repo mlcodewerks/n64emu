@@ -1,14 +1,12 @@
-/* Native scheduler guards and exact half-rate COUNT accounting. Guarded
- * regions cannot trap or observe COUNT; faults/events use precise stubs.
- * GPL-2.0-or-later. */
+
 static void emit_region_guard(const struct ari64_config* config, unsigned start,
     unsigned count, unsigned base, unsigned memory_count, struct memory_exit* failure)
 {
     emit_movimm64((intptr_t)&breakloop, R11);
-    emit_mem(0x80, 0, 7, R11, -1, 0, 0); output_byte(0); memory_guard(failure, 5);
-    emit_mem(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, skip_jump)); output_w32(0); memory_guard(failure, 5);
-    emit_mem(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, cache_timing)); output_w32(config->cache_timing); memory_guard(failure, 5);
-    emit_mem(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, compat_issue_clock)); output_w32(config->compat_issue_clock); memory_guard(failure, 5);
+    emit_mem_imm(0x80, 0, 7, R11, -1, 0, 0,0); memory_guard(failure, 5);
+    emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, skip_jump),0); memory_guard(failure, 5);
+    emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, cache_timing),config->cache_timing); memory_guard(failure, 5);
+    emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, compat_issue_clock),config->compat_issue_clock); memory_guard(failure, 5);
     emit_mem(0x8b, 0, RAX, R12, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_STATUS_REG]));
     emit_mov(RAX, RDX); emit_imm_op(4, RDX, CP0_STATUS_EXL | CP0_STATUS_ERL, 0);
     emit_reg_op(0x85, RDX, RDX, 0); unsigned char* kernel = emit_jump(5);
@@ -19,8 +17,7 @@ static void emit_region_guard(const struct ari64_config* config, unsigned start,
         if ((pc & UINT32_C(0xe0000000)) == UINT32_C(0x80000000)) {
             emit_mem(0x8b, 0, RAX, R12, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_CONFIG_REG]));
             emit_imm_op(4, RAX, 7, 0); emit_imm_op(7, RAX, 2, 0);
-            output_byte(0x0f); output_byte(0x95); output_modrm(3, RAX, 0);
-            output_byte(0x0f); output_byte(0xb6); output_modrm(3, RAX, RAX);
+            emit_set_condition(RAX,5);
         } else if ((pc & UINT32_C(0xe0000000)) == UINT32_C(0xa0000000)) emit_movimm(0, RAX);
         else { emit_movimm(pc, R11); emit_mapped_cacheability(); }
         emit_shift_reg(RAX, 4, 1, 0);
@@ -49,16 +46,14 @@ static void emit_region_guard(const struct ari64_config* config, unsigned start,
      * delivers the original instruction/event boundary. */
     unsigned char *uncached = NULL, *done = NULL;
     if (config->cache_timing && cached_bound != uncached_bound) {
-        emit_mem(0xf7, 0, 0, RSP, -1, 0, 4); output_w32(2);
+        emit_mem_imm(0xf7, 0, 0, RSP, -1, 0, 4,2);
         uncached = emit_jump(4);
     }
-    emit_mem(0x81, 1, 7, R12, -1, 0, offsetof(struct r4300_core, cp0.cycle_count));
-    output_w32(-(int32_t)((cached_bound + 1) >> 1)); memory_guard(failure, 13);
+    emit_mem_imm(0x81, 1, 7, R12, -1, 0, offsetof(struct r4300_core, cp0.cycle_count),-(int32_t)((cached_bound + 1) >> 1)); memory_guard(failure, 13);
     if (uncached) {
-        output_byte(0xe9); done = out; output_w32(0);
+        done = emit_b();
         patch_jump(uncached, out);
-        emit_mem(0x81, 1, 7, R12, -1, 0, offsetof(struct r4300_core, cp0.cycle_count));
-        output_w32(-(int32_t)((uncached_bound + 1) >> 1)); memory_guard(failure, 13);
+        emit_mem_imm(0x81, 1, 7, R12, -1, 0, offsetof(struct r4300_core, cp0.cycle_count),-(int32_t)((uncached_bound + 1) >> 1)); memory_guard(failure, 13);
         patch_jump(done, out);
     }
 }

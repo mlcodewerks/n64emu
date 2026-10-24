@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+
 #ifndef PARALLAX_INTERP_PAIR_H
 #define PARALLAX_INTERP_PAIR_H
 

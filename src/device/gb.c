@@ -7,43 +7,9 @@
 #include "core/log.h"
 #include "core/rumble.h"
 #include "core/storage.h"
-#include "core/video_capture.h"
 #include <assert.h>
 #include <string.h>
 #include "core/clock.h"
-
-/* ---- gb/gb_cart.c ---- */
-
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - gb_cart.c                                               *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2015 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
-/* Most of the mappers information comes from
- * "The Cycle-Accurate Game Boy Docs" by AntonioND
- */
-
-#if 0
-void cv_imshow(const char* name, unsigned int width, unsigned int height, int channels, void* data);
-#else
-#define cv_imshow(...)
-#endif
 
 enum gbcart_extra_devices
 {
@@ -619,8 +585,8 @@ static void grab_pocket_cam_image(struct pocket_cam* cam)
 
     uint8_t regs[M64282FP_REGS_COUNT];
     uint8_t tiles[16][16][16];
-    uint8_t bgr[M64282FP_SENSOR_H][M64282FP_SENSOR_W][3];
-    uint8_t img[M64282FP_SENSOR_H][M64282FP_SENSOR_W];
+    /* No host camera input: process a black sensor image. */
+    uint8_t img[M64282FP_SENSOR_H][M64282FP_SENSOR_W] = {{0}};
     unsigned int x, y;
 
     /* setup sensor regs */
@@ -661,29 +627,8 @@ static void grab_pocket_cam_image(struct pocket_cam* cam)
         cam->regs[51], cam->regs[52], cam->regs[53]);
 #endif
 
-    /* grab BGR image */
-    if (cam->ivcap->grab_image(cam->vcap, bgr) != CORE_OK) {
-        memset(cam->ram, UINT8_C(0xff), sizeof(tiles));
-        return;
-    }
-
-    cv_imshow("bgr image", M64282FP_SENSOR_W, M64282FP_SENSOR_H, 3, bgr);
-
-    /* convert to gray using (2R+5G+1B)/8 formula */
-    const uint8_t* bgr_ptr = &bgr[0][0][0];
-    uint8_t* gray_ptr = &img[0][0];
-    for (y = 0; y < M64282FP_SENSOR_H; ++y) {
-        for (x = 0; x < M64282FP_SENSOR_W; ++x) {
-            gray_ptr[0] = (1*bgr_ptr[0] + 5*bgr_ptr[1] + 2*bgr_ptr[2]) / 8;
-            bgr_ptr += 3;
-            gray_ptr += 1;
-        }
-    }
-
     /* apply m64282fp processings */
-    cv_imshow("gray image", M64282FP_SENSOR_W, M64282FP_SENSOR_H, 1, img);
     process_m64282fp_image(img, regs);
-    cv_imshow("m64282fp", M64282FP_SENSOR_W, M64282FP_SENSOR_H, 1, img);
 
     /* convert to dithered GB tile format */
     memset(tiles, 0, sizeof(tiles));
@@ -699,18 +644,13 @@ static void grab_pocket_cam_image(struct pocket_cam* cam)
         }
     }
 
-    cv_imshow("dithered", M64282FP_SENSOR_W, M64282FP_SENSOR_H, 1, img);
-
     /* copy to ram */
     memcpy(cam->ram, tiles, sizeof(tiles));
 }
 
-static void init_pocket_cam(struct pocket_cam* cam, uint8_t* ram, void* vcap, const struct video_capture_backend_interface* ivcap)
+static void init_pocket_cam(struct pocket_cam* cam, uint8_t* ram)
 {
     cam->ram = ram;
-
-    cam->vcap = vcap;
-    cam->ivcap = ivcap;
 }
 
 static void poweron_pocket_cam(struct pocket_cam* cam)
@@ -961,8 +901,7 @@ void init_gb_cart(struct gb_cart* gb_cart,
         void* rom_opaque, void (*init_rom)(void* user_data, void** rom_storage, const struct storage_backend_interface** irom_storage), void (*release_rom)(void* user_data),
         void* ram_opaque, void (*init_ram)(void* user_data, size_t ram_size, void** ram_storage, const struct storage_backend_interface** iram_storage), void (*release_ram)(void* user_data),
         void* clock, const struct clock_backend_interface* iclock,
-        void* rumble, const struct rumble_backend_interface* irumble,
-        void* vcap, const struct video_capture_backend_interface* ivcap)
+        void* rumble, const struct rumble_backend_interface* irumble)
 {
     const struct parsed_cart_type* type;
     void* rom_storage = NULL;
@@ -1053,7 +992,7 @@ void init_gb_cart(struct gb_cart* gb_cart,
     }
 
     if (type->extra_devices & GED_CAMERA) {
-        init_pocket_cam(&cam, iram_storage->data(ram_storage), vcap, ivcap);
+        init_pocket_cam(&cam, iram_storage->data(ram_storage));
     }
 
     /* update gb_cart */

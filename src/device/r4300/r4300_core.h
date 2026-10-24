@@ -1,23 +1,4 @@
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - r4300_core.h                                            *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2014 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
 
 #ifndef PARALLAX_DEVICE_R4300_R4300_CORE_H
 #define PARALLAX_DEVICE_R4300_R4300_CORE_H
@@ -134,8 +115,7 @@ struct r4300_core
     uint32_t icache_tags[512];
     uint32_t dcache_tags[512];
     unsigned int cache_timing; /* 0: off, 1: write-back contents, 2: tags/latency only */
-    unsigned int issue_policy; /* ROM configuration, retained across resets and states. */
-    /* Compatibility issue envelope; timed CPU modes use native issue unless a ROM profile overrides it. */
+    /* Compatibility issue envelope, enabled on every power-on. */
     unsigned int compat_issue_clock;
     /* Instruction-boundary approximation of the VR4300 pipeline hazards.
      * The interpreter commits architecturally one instruction at a time, so
@@ -179,7 +159,7 @@ static osal_force_inline void r4300_itlb_reset(struct r4300_core* r)
     offsetof(struct r4300_core, regs)
 
 
-void init_r4300(struct r4300_core* r4300, struct memory* mem, struct mi_controller* mi, struct rdram* rdram, const struct interrupt_handler* interrupt_handlers, unsigned int emumode, unsigned int count_per_op, unsigned int count_per_op_denom_pot, int no_compiled_jump, int randomize_interrupt, uint32_t start_address);
+void init_r4300(struct r4300_core* r4300, struct memory* mem, struct mi_controller* mi, struct rdram* rdram, const struct interrupt_handler* interrupt_handlers, unsigned int emumode, int no_compiled_jump, int randomize_interrupt, uint32_t start_address);
 void poweron_r4300(struct r4300_core* r4300);
 
 

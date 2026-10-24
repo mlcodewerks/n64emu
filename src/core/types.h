@@ -1,25 +1,3 @@
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus-core - m64p_types.h                                       *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2012 CasualJames                                        *
- *   Copyright (C) 2009 Richard Goedeken                                   *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-
 #ifndef PARALLAX_TYPES_H
 #define PARALLAX_TYPES_H
 #include <stdint.h>
@@ -78,18 +56,12 @@ typedef struct
 
 typedef struct
 {
-   char goodname[256];
    char MD5[33];
    unsigned char savetype;
-   unsigned char status;  /* Rom status on a scale from 0-5. */
-   unsigned char players; /* Local players 0-4, 2/3/4 way Netplay indicated by 5/6/7. */
    unsigned char rumble;  /* 0 - No, 1 - Yes boolean for rumble support. */
    unsigned char transferpak; /* 0 - No, 1 - Yes boolean for transfer pak support. */
    unsigned char mempak; /* 0 - No, 1 - Yes boolean for memory pak support. */
    unsigned char biopak; /* 0 - No, 1 - Yes boolean for bio pak support. */
-   unsigned char disableextramem; /* 0 - No, 1 - Yes boolean for disabling 4MB expansion RAM pack */
-   unsigned int countperop; /* Number of CPU cycles per instruction. */
-   unsigned int sidmaduration; /* Default SI DMA duration */
 } core_rom_settings;
 
 enum core_accessory { ACCESSORY_NONE = 1, ACCESSORY_MEMPAK = 2,

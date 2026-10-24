@@ -1,5 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later
- * Retained HLE commands while the DP is frozen, including savestate storage. */
+
 #include "rdp_core.h"
 #include <stdlib.h>
 #include <string.h>

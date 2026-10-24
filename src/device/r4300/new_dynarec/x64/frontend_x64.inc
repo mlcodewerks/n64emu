@@ -1,4 +1,4 @@
-/* Core-specific x64 frontend for the Ari64 emitter. GPL-2.0-or-later. */
+
 #ifndef ARI64_X64_ARENA_BYTES
 #define ARI64_X64_ARENA_BYTES (8 << TARGET_SIZE_2)
 #endif
@@ -27,9 +27,11 @@ static int code_protect(void* ptr, size_t size, int executable)
 #endif
 }
 
+#include "../code_write_scope.h"
+
 struct ari64* ari64_create(void)
 {
-    struct ari64* s = calloc(1, sizeof(*s));
+    struct ari64* s = (struct ari64*)calloc(1, sizeof(*s));
     if (!s) return NULL;
 #ifdef _WIN32
     SYSTEM_INFO info;
@@ -45,16 +47,16 @@ struct ari64* ari64_create(void)
         uintptr_t end = (uintptr_t)region.BaseAddress + region.RegionSize;
         uintptr_t aligned = (cursor + info.dwAllocationGranularity - 1) & ~((uintptr_t)info.dwAllocationGranularity - 1);
         if (region.State == MEM_FREE && aligned < end && end - aligned >= CODE_BYTES && limit - cursor >= CODE_BYTES) {
-            s->code = VirtualAlloc((void*)aligned, CODE_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            s->code = (unsigned char*)VirtualAlloc((void*)aligned, CODE_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
             if (s->code) break;
         }
         if (end <= cursor) break;
         cursor = end;
     }
-    if (!s->code) s->code = VirtualAlloc(NULL, CODE_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!s->code) s->code = (unsigned char*)VirtualAlloc(NULL, CODE_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
     s->page_size = (size_t)sysconf(_SC_PAGESIZE);
-    s->code = mmap(NULL, CODE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    s->code = (unsigned char*)mmap(NULL, CODE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (s->code == MAP_FAILED) s->code = NULL;
 #endif
     if (!s->code) { free(s); return NULL; }
@@ -112,48 +114,18 @@ static void emit_state_store_raw(size_t offset, int reg)
 }
 static size_t gpr_offset(unsigned reg) { return offsetof(struct r4300_core, regs) + reg * 8; }
 #include "regalloc_x64.inc"
-static void emit_binary(unsigned opcode, int wide)
+static void emit_binary(unsigned opcode,int wide) { emit_reg_op(opcode,RCX,RAX,wide); }
+static void emit_immediate(unsigned ext,uint32_t imm,int wide) { emit_imm_op(ext,RAX,imm,wide); }
+static void emit_shift(unsigned kind,unsigned amount,int variable,int wide)
 {
-    if (wide) output_rex(1, 0, 0, 0);
-    output_byte(opcode);
-    output_modrm(3, RAX, RCX);
+    if(variable) {
+        if(wide==2) JIT(and_(Xbyak::Reg32(RCX),31));
+        if(kind==4) JIT(shl(host_reg(RAX,wide),assembler->cl));
+        else if(kind==5) JIT(shr(host_reg(RAX,wide),assembler->cl));
+        else JIT(sar(host_reg(RAX,wide),assembler->cl));
+    } else emit_shift_reg(RAX,kind,amount,wide);
 }
-static void emit_immediate(unsigned ext, uint32_t imm, int wide)
-{
-    if (wide) output_rex(1, 0, 0, 0);
-    output_byte(0x81);
-    output_modrm(3, RAX, ext);
-    output_w32(imm);
-}
-static void emit_shift(unsigned ext, unsigned amount, int variable, int wide)
-{
-    if (variable) {
-        /* Word SRAV uses the full 64-bit input in this core, but masks the
-         * shift amount to five bits before truncating/sign-extending. */
-        if (wide == 2) {
-            output_byte(0x83); output_modrm(3, RCX, 4); output_byte(31);
-        }
-        if (wide) output_rex(1, 0, 0, 0);
-        output_byte(0xd3); output_modrm(3, RAX, ext);
-    } else if (amount) {
-        if (wide) {
-            if (ext == 4) emit_shlimm64(RAX, amount, RAX);
-            else if (ext == 5) emit_shrimm64(RAX, amount, RAX);
-            else {
-                output_rex(1, 0, 0, 0);
-                output_byte(0xc1); output_modrm(3, RAX, 7); output_byte(amount);
-            }
-        } else {
-            if (ext == 4) emit_shlimm(RAX, amount, RAX);
-            else if (ext == 5) emit_shrimm(RAX, amount, RAX);
-            else emit_sarimm(RAX, amount, RAX);
-        }
-    }
-}
-static void emit_sign_extend_word(void)
-{
-    output_rex(1, 0, 0, 0); output_byte(0x63); output_modrm(3, RAX, RAX);
-}
+static void emit_sign_extend_word() { JIT(movsxd(Xbyak::Reg64(RAX),Xbyak::Reg32(RAX))); }
 
 static int native_opcode(enum r4300_opcode op)
 {
@@ -215,8 +187,7 @@ static void emit_native(uint32_t instruction, enum r4300_opcode op)
         emit_state_load(gpr_offset(rs), RAX);
         emit_movimm64((int64_t)(int16_t)instruction, RCX);
         emit_binary(0x39, 1);
-        output_byte(0x0f); output_byte(op == R4300_OP_SLTI ? 0x9c : 0x92); output_modrm(3, RAX, 0);
-        output_byte(0x0f); output_byte(0xb6); output_modrm(3, RAX, RAX);
+        emit_set_condition(RAX,op==R4300_OP_SLTI?12:2);
         break;
     case R4300_OP_MFHI: case R4300_OP_MFLO:
         emit_state_load(op == R4300_OP_MFHI ? offsetof(struct r4300_core, hi) : offsetof(struct r4300_core, lo), RAX);
@@ -251,13 +222,12 @@ static void emit_native(uint32_t instruction, enum r4300_opcode op)
         case R4300_OP_AND: emit_binary(0x21, 1); break;
         case R4300_OP_OR: case R4300_OP_NOR:
             emit_binary(0x09, 1);
-            if (op == R4300_OP_NOR) { output_rex(1, 0, 0, 0); output_byte(0xf7); output_modrm(3, RAX, 2); }
+            if (op == R4300_OP_NOR) { JIT(not_(Xbyak::Reg64(RAX))); }
             break;
         case R4300_OP_XOR: emit_binary(0x31, 1); break;
         case R4300_OP_SLT: case R4300_OP_SLTU:
             emit_binary(0x39, 1);
-            output_byte(0x0f); output_byte(op == R4300_OP_SLT ? 0x9c : 0x92); output_modrm(3, RAX, 0);
-            output_byte(0x0f); output_byte(0xb6); output_modrm(3, RAX, RAX);
+            emit_set_condition(RAX,op==R4300_OP_SLT?12:2);
             break;
         default: abort();
         }
@@ -269,15 +239,9 @@ static void emit_native(uint32_t instruction, enum r4300_opcode op)
 static uint64_t compile_relative_calls, compile_absolute_calls;
 static void emit_helper_call(const void* function)
 {
-    int64_t displacement = (int64_t)(uintptr_t)function - (int64_t)(uintptr_t)(out + 5);
-    if (displacement >= INT32_MIN && displacement <= INT32_MAX) {
-        output_byte(0xe8); output_w32((uint32_t)(int32_t)displacement);
-        ++compile_relative_calls;
-    } else {
-        emit_movimm64((intptr_t)function, R11);
-        output_rex(0, 0, 0, 1); output_byte(0xff); output_modrm(3, R11 & 7, 2);
-        ++compile_absolute_calls;
-    }
+    const int64_t displacement=(int64_t)(uintptr_t)function-(int64_t)(uintptr_t)(out+5);
+    if(displacement>=INT32_MIN && displacement<=INT32_MAX) { JIT(call(function)); ++compile_relative_calls; }
+    else { emit_movimm64((intptr_t)function,R11); JIT(call(Xbyak::Reg64(R11))); ++compile_absolute_calls; }
 }
 static void emit_step_call(void* block, unsigned index, unsigned phase, ari64_step step)
 {
@@ -287,18 +251,8 @@ static void emit_step_call(void* block, unsigned index, unsigned phase, ari64_st
     emit_movimm(phase, ARG4_REG);
     emit_helper_call((const void*)step);
 }
-static unsigned char* emit_jump(unsigned condition)
-{
-    output_byte(0x0f); output_byte(0x80 | condition);
-    unsigned char* displacement = out;
-    output_w32(0);
-    return displacement;
-}
-static void patch_jump(unsigned char* displacement, unsigned char* target)
-{
-    int32_t relative = (int32_t)(target - (displacement + 4));
-    memcpy(displacement, &relative, 4);
-}
+
+
 #include "memory_x64.inc"
 #include "muldiv_x64.inc"
 #include "branch_x64.inc"
@@ -319,7 +273,7 @@ int ari64_has_native(const uint32_t* ops, unsigned count, uint32_t delay_op, uns
 static unsigned char* emit_step(void* block, unsigned index, unsigned phase, ari64_step step)
 {
     emit_step_call(block, index, phase, step);
-    output_byte(0x85); output_modrm(3, RAX, RAX);
+    emit_reg_op(0x85,RAX,RAX,0);
     return emit_jump(4);
 }
 
@@ -331,18 +285,18 @@ static void emit_transfer_commit(void* block, unsigned index,
     const struct ari64_config* config, ari64_step step,
     unsigned char** exits, unsigned* exit_count)
 {
-    emit_mem(0x83, 1, 7, R12, -1, 0, offsetof(struct r4300_core, cp0.cycle_count)); output_byte(0);
+    emit_mem_imm(0x83, 1, 7, R12, -1, 0, offsetof(struct r4300_core, cp0.cycle_count),0);
     unsigned char* event = emit_jump(13); /* signed >= 0 */
     emit_state_imm(offsetof(struct r4300_core, interp_PC.addr), config->virtual_pc + (index + 1) * 4, 0);
     emit_state_imm(gpr_offset(0), 0, 1);
     if (config->commits) {
         emit_movimm64((intptr_t)config->commits, R11);
-        emit_mem(0x83, 1, 0, R11, -1, 0, 0); output_byte(1);
+        emit_mem_imm(0x83, 1, 0, R11, -1, 0, 0,1);
     }
     emit_movimm64((intptr_t)&breakloop, R11);
-    emit_mem(0x80, 0, 7, R11, -1, 0, 0); output_byte(0);
+    emit_mem_imm(0x80, 0, 7, R11, -1, 0, 0,0);
     exits[(*exit_count)++] = emit_jump(5);
-    output_byte(0xe9); unsigned char* done = out; output_w32(0);
+    unsigned char* done = emit_b();
     patch_jump(event, out);
     exits[(*exit_count)++] = emit_step(block, index, 1, step);
     patch_jump(done, out);
@@ -352,7 +306,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
     const uint32_t* ops, unsigned count, ari64_step step, int optimized, const struct ari64_config* config)
 {
     ari64_link link = config ? config->link : NULL;
-    if (!count || count > MAX_INSTRUCTIONS) return NULL;
+    if (!s || !ops || !step || !count || count > MAX_INSTRUCTIONS) return NULL;
     uint32_t extended_ops[MAX_INSTRUCTIONS];
     unsigned branch_index = MAX_INSTRUCTIONS;
     if (optimized && config && config->has_delay && !config->idle_end && count < MAX_INSTRUCTIONS &&
@@ -377,23 +331,26 @@ static ari64_entry compile_block(struct ari64* s, void* block,
      * block's page; compilation only runs with every generated frame unwound,
      * so temporarily making that page writable cannot interrupt native code. */
     if (!code_protect(s->code + page_start, page_end - page_start, 0)) return NULL;
+    code_write_scope publication(s->code+page_start,page_end-page_start);
     unsigned char* exits[MAX_INSTRUCTIONS * 9 + 16];
     struct memory_exit memory_exits[MAX_INSTRUCTIONS];
     unsigned memory_exit_count = 0;
     unsigned exit_count = 0;
-    out = start;
+    x64_emitter code(reserve,start);
+    emitter_binding binding(code);
+    out=start;
     compile_relative_calls = compile_absolute_calls = 0;
     /* ENDBR64 is a NOP on CPUs without CET. */
-    output_byte(0xf3); output_byte(0x0f); output_byte(0x1e); output_byte(0xfa);
-    output_byte(0x41); output_byte(0x54); /* push R12; 16-byte call alignment */
+    JIT(endbr64());
+    JIT(push(Xbyak::Reg64(R12))); /* push R12; 16-byte call alignment */
     if (optimized) {
-        output_byte(0x53); output_byte(0x55); /* RBX/RBP register cache */
+        JIT(push(Xbyak::Reg64(RBX))); JIT(push(Xbyak::Reg64(RBP))); /* RBX/RBP register cache */
 #ifdef _WIN32
-        output_byte(0x56); output_byte(0x57); /* RSI/RDI register cache */
+        JIT(push(Xbyak::Reg64(RSI))); JIT(push(Xbyak::Reg64(RDI))); /* RSI/RDI register cache */
 #endif
-        output_byte(0x41); output_byte(0x55); /* R13 pending clocks */
-        output_byte(0x41); output_byte(0x56); /* R14 memory pointer */
-        output_byte(0x41); output_byte(0x57); /* R15 register cache */
+        JIT(push(Xbyak::Reg64(R13))); /* R13 pending clocks */
+        JIT(push(Xbyak::Reg64(R14))); /* R14 memory pointer */
+        JIT(push(Xbyak::Reg64(R15))); /* R15 register cache */
     }
     emit_mov64(ARG1_REG, R12);
 #ifdef _WIN32
@@ -402,7 +359,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
     if (optimized) emit_addimm64(RSP, -56, RSP);
 #endif
     unsigned char* chain_entry = out;
-    output_byte(0xf3); output_byte(0x0f); output_byte(0x1e); output_byte(0xfa);
+    JIT(endbr64());
     for (unsigned i = 0; i < count;) {
         enum r4300_opcode op = r4300_get_idec(ops[i])->opcode;
         if (native_opcode(op) || i == branch_index || (optimized && config && native_ram_opcode(op))) {
@@ -428,7 +385,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                 struct memory_exit prepare = {0};
                 emit_region_guard(config, i, end - i, base, memory_count, &prepare);
                 regcache_begin(ops, i, end);
-                emit_mem(0xc7, 0, 0, RSP, -1, 0, 8); output_w32(0);
+                emit_mem_imm(0xc7, 0, 0, RSP, -1, 0, 8,0);
                 if (memory_region || likely_region) regcache.allow_dead_store = 0;
                 emit_movimm(0, R13);
                 int pipeline_live = 1;
@@ -467,7 +424,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                 regcache_flush();
                 emit_region_commit_native(config, i, end - i, branch_region);
                 if (annul) {
-                    output_byte(0xe9); unsigned char* taken = out; output_w32(0);
+                    unsigned char* taken = emit_b();
                     patch_jump(annul, out);
                     regcache = annul_registers; regcache_flush();
                     emit_pipeline_clear();
@@ -475,7 +432,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                     patch_jump(taken, out);
                 }
                 /* Unconditional jump over the precise event/mode slow path. */
-                output_byte(0xe9); unsigned char* done = out; output_w32(0);
+                unsigned char* done = emit_b();
                 for (unsigned g = 0; g < prepare.guard_count; ++g) patch_jump(prepare.guards[g], out);
                 exits[exit_count++] = emit_step(block, i, ((end - i) << 8) | 5, step);
                 patch_jump(done, out);
@@ -496,7 +453,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
         } else { exits[exit_count++] = emit_step(block, i, 2, step); ++i; }
     }
     if (memory_exit_count) {
-        output_byte(0xe9); exits[exit_count++] = out; output_w32(0);
+        exits[exit_count++] = emit_b();
         for (unsigned n = 0; n < memory_exit_count; ++n) {
             struct memory_exit* exit = &memory_exits[n];
             for (unsigned g = 0; g < exit->guard_count; ++g) patch_jump(exit->guards[g], out);
@@ -512,14 +469,14 @@ static ari64_entry compile_block(struct ari64* s, void* block,
             struct memory_exit prepare = {0};
             emit_region_guard(config, exit->index + 1, exit->end - exit->index - 1, base, memory_count, &prepare);
             for (unsigned g = 0; g < prepare.guard_count; ++g) exits[exit_count++] = prepare.guards[g];
-            emit_mem(0xc7, 0, 0, RSP, -1, 0, 8); output_w32(exit->index + 1 - exit->start);
+            emit_mem_imm(0xc7, 0, 0, RSP, -1, 0, 8,exit->index + 1 - exit->start);
             emit_movimm(0, R13);
             /* Helpers may clobber volatile host registers and the loaded
              * guest destination. Restore the post-instruction allocation. */
             for (unsigned h = 0; h < CACHE_REGS; ++h)
                 if (exit->resume_registers.map[h] >= 0)
                     emit_state_load_raw(guest_offset(exit->resume_registers.map[h]), cache_host[h]);
-            output_byte(0xe9); unsigned char* resume = out; output_w32(0);
+            unsigned char* resume = emit_b();
             patch_jump(resume, exit->resume);
         }
     }
@@ -529,8 +486,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
         emit_mov64(R12, ARG1_REG);
         emit_helper_call((const void*)link);
         emit_reg_op(0x85,RAX,RAX,1);
-        output_byte(0x74); output_byte(2);
-        output_byte(0xff); output_modrm(3,RAX,4);
+        unsigned char* no_link=emit_jump(4); JIT(jmp(Xbyak::Reg64(RAX))); patch_jump(no_link,out);
     }
 #ifdef _WIN32
     emit_addimm64(RSP, optimized ? 88 : 32, RSP);
@@ -538,24 +494,26 @@ static ari64_entry compile_block(struct ari64* s, void* block,
     if (optimized) emit_addimm64(RSP, 56, RSP);
 #endif
     if (optimized) {
-        output_byte(0x41); output_byte(0x5f);
-        output_byte(0x41); output_byte(0x5e);
-        output_byte(0x41); output_byte(0x5d);
+        JIT(pop(Xbyak::Reg64(R15)));
+        JIT(pop(Xbyak::Reg64(R14)));
+        JIT(pop(Xbyak::Reg64(R13)));
 #ifdef _WIN32
-        output_byte(0x5f); output_byte(0x5e);
+        JIT(pop(Xbyak::Reg64(RDI))); JIT(pop(Xbyak::Reg64(RSI)));
 #endif
-        output_byte(0x5d); output_byte(0x5b);
+        JIT(pop(Xbyak::Reg64(RBP))); JIT(pop(Xbyak::Reg64(RBX)));
     }
-    output_byte(0x41); output_byte(0x5c);
+    JIT(pop(Xbyak::Reg64(R12)));
 
-    output_byte(0xc3);
+    JIT(ret());
     for (unsigned i = 0; i < exit_count; ++i) {
         patch_jump(exits[i], epilogue);
     }
+    code.ready();
     assert((size_t)(out - start) <= reserve);
     s->used = ((size_t)(out - s->code) + 15) & ~(size_t)15;
     page_end = (s->used + s->page_size - 1) & ~(s->page_size - 1);
     if (!code_protect(s->code + page_start, page_end - page_start, 1)) return NULL;
+    publication.published=true;
 #ifdef _WIN32
     FlushInstructionCache(GetCurrentProcess(), start, (size_t)(out - start));
 #else
@@ -572,10 +530,12 @@ static ari64_entry compile_block(struct ari64* s, void* block,
 ari64_entry ari64_compile(struct ari64* s, void* block,
     const uint32_t* ops, unsigned count, ari64_step step)
 {
-    return compile_block(s, block, ops, count, step, 0, NULL);
+    try { return compile_block(s, block, ops, count, step, 0, NULL); }
+    catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak emission failed: %s",error.what()); return NULL; }
 }
 ari64_entry ari64_compile_optimized(struct ari64* s, void* block,
     const uint32_t* ops, unsigned count, ari64_step step, const struct ari64_config* config)
 {
-    return compile_block(s, block, ops, count, step, 1, config);
+    try { return compile_block(s, block, ops, count, step, 1, config); }
+    catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak emission failed: %s",error.what()); return NULL; }
 }

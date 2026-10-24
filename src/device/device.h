@@ -1,23 +1,4 @@
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - device.h                                                *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2016 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
 
 #ifndef PARALLAX_DEVICE_DEVICE_H
 #define PARALLAX_DEVICE_DEVICE_H
@@ -115,8 +96,6 @@ void init_device(struct device* dev,
     void* base,
     /* r4300 */
     unsigned int emumode,
-    unsigned int count_per_op,
-    unsigned int count_per_op_denom_pot,
     int no_compiled_jump,
     int randomize_interrupt,
     uint32_t start_address,

@@ -1,6 +1,5 @@
 /* Operate in allocated host registers rather than copying every operand
- * through T0/T1. Preserve source aliases and full-width word semantics.
- * GPL-2.0-or-later. */
+ * through T0/T1. Preserve source aliases and full-width word semantics.*/
 static int allocated_source(unsigned guest, int temporary)
 {
     if (regcache.known & (UINT64_C(1) << guest)) {
@@ -19,7 +18,7 @@ static int allocated_destination(unsigned guest)
 }
 static void emit_word_extend(int reg)
 {
-    a64(0x93407c00 | (reg<<5) | reg);
+    JIT(sxtw(XReg(reg),WReg(reg)));
 }
 static int regcache_direct(uint32_t instruction)
 {
@@ -60,7 +59,7 @@ static int regcache_direct(uint32_t instruction)
         uint32_t imm = op == R4300_OP_ADDIU || op == R4300_OP_DADDIU ? (uint32_t)(int32_t)(int16_t)instruction : (uint16_t)instruction;
         if (imm || op == R4300_OP_ANDI) emit_imm_op(extension,dest,imm,!word && op != R4300_OP_ANDI);
     } else emit_reg_op(opcode,right,dest,!word);
-    if (op == R4300_OP_NOR) { a64(0xaa2003e0 | (dest<<16) | dest); }
+    if (op == R4300_OP_NOR) { JIT(mvn(XReg(dest),XReg(dest))); }
     if (word) emit_word_extend(dest);
     return 1;
 }

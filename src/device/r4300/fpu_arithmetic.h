@@ -1,5 +1,4 @@
-/* Included by pure_interp.c. VR4300 arithmetic semantics, following Ares's
- * interpreter-fpu.cpp. Host FP state is isolated from the emulator frontend. */
+
 #include <math.h>
 #include "fpu_native.h"
 #include "interp_fpu_move.h"

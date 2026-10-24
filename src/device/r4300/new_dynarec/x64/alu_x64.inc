@@ -1,6 +1,4 @@
-/* Operate in allocated host registers rather than copying every operand
- * through RAX/RCX. Preserve source aliases and full-width word semantics.
- * GPL-2.0-or-later. */
+
 static int allocated_source(unsigned guest, int temporary)
 {
     if (regcache.known & (UINT64_C(1) << guest)) {
@@ -19,7 +17,7 @@ static int allocated_destination(unsigned guest)
 }
 static void emit_word_extend(int reg)
 {
-    output_rex(1,reg >> 3,0,reg >> 3); output_byte(0x63); output_modrm(3,reg & 7,reg & 7);
+    JIT(movsxd(Xbyak::Reg64(reg),Xbyak::Reg32(reg)));
 }
 static int regcache_direct(uint32_t instruction)
 {
@@ -60,7 +58,7 @@ static int regcache_direct(uint32_t instruction)
         uint32_t imm = op == R4300_OP_ADDIU || op == R4300_OP_DADDIU ? (uint32_t)(int32_t)(int16_t)instruction : (uint16_t)instruction;
         if (imm || op == R4300_OP_ANDI) emit_imm_op(extension,dest,imm,!word && op != R4300_OP_ANDI);
     } else emit_reg_op(opcode,right,dest,!word);
-    if (op == R4300_OP_NOR) { output_rex(1,0,0,dest >> 3); output_byte(0xf7); output_modrm(3,dest & 7,2); }
+    if (op == R4300_OP_NOR) { JIT(not_(Xbyak::Reg64(dest))); }
     if (word) emit_word_extend(dest);
     return 1;
 }

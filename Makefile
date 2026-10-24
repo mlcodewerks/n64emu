@@ -671,9 +671,9 @@ endif
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 ifneq ($(ARI64_DIR),)
-$(ARI64_SOURCE:.c=.o): CFLAGS += -O3
-$(ARI64_DIR)/ari64_x64.o: $(wildcard $(ARI64_DIR)/x64/*.inc) $(ARI64_DIR)/x64/assem_x64.h
-$(ARI64_DIR)/ari64_arm64.o: $(wildcard $(ARI64_DIR)/arm64/*.inc) $(ARI64_DIR)/arm64/assem_arm64.h $(ARI64_DIR)/ari64.h
+$(ARI64_SOURCE:.cpp=.o): CXXFLAGS += -O3
+$(ARI64_DIR)/ari64_x64.o: $(wildcard $(ARI64_DIR)/x64/*.inc) $(ARI64_DIR)/x64/assem_x64.h $(ARI64_DIR)/x64/xbyak_emit.h $(ARI64_DIR)/ari64.h $(ARI64_DIR)/code_write_scope.h
+$(ARI64_DIR)/ari64_arm64.o: $(wildcard $(ARI64_DIR)/arm64/*.inc) $(ARI64_DIR)/arm64/xbyak_emit.h $(ARI64_DIR)/ari64.h $(ARI64_DIR)/code_write_scope.h
 ifeq ($(ARI64_PROFILE),1)
 $(CORE_DIR)/src/device/r4300/cached_interp.o: CFLAGS += -DARI64_PROFILE
 endif

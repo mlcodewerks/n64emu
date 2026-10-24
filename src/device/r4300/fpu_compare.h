@@ -1,4 +1,4 @@
-/* Included by pure_interp.c. Ares/VR4300 compare predicates and legacy NaNs. */
+
 static PARALLAX_FORCE_INLINE int fpu_compare_prepare(struct r4300_core* r4300, uint32_t op, uint64_t inputs[3])
 {
     const unsigned int fmt = RS_OF(op);

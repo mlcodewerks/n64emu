@@ -126,10 +126,6 @@ uint32_t EnableFrameDuping = 1;
 uint32_t EnableOverscan = 0;
 uint32_t AspectRatio = 1;
 uint32_t EnableFullspeed = 0;
-uint32_t CountPerOp = 0;
-uint32_t CountPerOpDenomPot = 0;
-uint32_t CountPerScanlineOverride = 0;
-uint32_t ForceDisableExtraMem = 0;
 uint32_t IgnoreTLBExceptions = 0;
 
 extern struct device g_dev;
@@ -617,7 +613,6 @@ void update_variables(bool startup)
 
         EnableFrameDuping = 1;
         EnableFullspeed = 0;
-        CountPerScanlineOverride = 0;
 #if defined(PARALLAX_HEADLESS_BENCH_PURE)
         r4300_emumode = EMUMODE_PURE_INTERPRETER;
 #elif defined(PARALLAX_HEADLESS_BENCHMARK) && !defined(M64P_BENCH_RUNTIME_CPU)
@@ -630,9 +625,7 @@ void update_variables(bool startup)
 #endif
         retro_screen_aspect = 4.0 / 3.0;
         AspectRatio = 1; // Aspect::a43
-        CountPerOp = 1;  // Force CountPerOp == 1
         EnableOverscan = 0;
-        ForceDisableExtraMem = 0;
         IgnoreTLBExceptions = 1;
         update_controllers();
     }

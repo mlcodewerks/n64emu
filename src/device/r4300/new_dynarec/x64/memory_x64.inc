@@ -1,38 +1,9 @@
-/* Native RAM paths and precise side exits. GPL-2.0-or-later. */
-static void emit_reg_op(unsigned opcode, int source, int dest, int wide)
-{
-    if (wide || source >= 8 || dest >= 8) output_rex(wide, source >> 3, 0, dest >> 3);
-    output_byte(opcode); output_modrm(3, dest & 7, source & 7);
-}
-static void emit_imm_op(unsigned ext, int reg, uint32_t imm, int wide)
-{
-    if (wide || reg >= 8) output_rex(wide, 0, 0, reg >> 3);
-    int short_imm = (int32_t)imm >= -128 && (int32_t)imm <= 127;
-    output_byte(short_imm ? 0x83 : 0x81); output_modrm(3, reg & 7, ext);
-    if (short_imm) output_byte(imm); else output_w32(imm);
-}
-static void emit_mem(unsigned opcode, int wide, int reg, int base, int index, unsigned scale, size_t offset)
-{
-    if (wide || reg >= 8 || base >= 8 || index >= 8)
-        output_rex(wide, reg >> 3, index < 0 ? 0 : index >> 3, base >> 3);
-    output_byte(opcode);
-    int sib = index >= 0 || (base & 7) == 4;
-    int short_offset = (int32_t)offset >= -128 && (int32_t)offset <= 127;
-    int mod = !offset && (base & 7) != 5 ? 0 : short_offset ? 1 : 2;
-    output_modrm(mod, sib ? 4 : base & 7, reg & 7);
-    if (sib) output_byte((scale << 6) | ((index < 0 ? 4 : index & 7) << 3) | (base & 7));
-    if (mod == 1) output_byte(offset); else if (mod == 2) output_w32((uint32_t)offset);
-}
-static void emit_state_imm(size_t offset, uint32_t imm, int wide)
-{
-    emit_mem(0xc7, wide, 0, R12, -1, 0, offset); output_w32(imm);
-}
-static void emit_shift_reg(int reg, unsigned ext, unsigned amount, int wide)
-{
-    if (!amount) return;
-    if (wide || reg >= 8) output_rex(wide, 0, 0, reg >> 3);
-    output_byte(0xc1); output_modrm(3, reg & 7, ext); output_byte(amount);
-}
+
+
+
+
+
+
 static int native_ram_opcode(enum r4300_opcode op)
 {
     switch (op) {
@@ -62,21 +33,21 @@ static void emit_itlb_native(uint32_t pc)
     emit_imm_op(4, RAX, UINT32_C(0xfffff000), 0);
     unsigned char* hits[2], *slot_misses[3];
     for (unsigned slot = 0; slot < 2; ++slot) {
-        emit_mem(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_valid)); output_w32(1u << slot);
+        emit_mem_imm(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_valid),1u << slot);
         slot_misses[0] = emit_jump(4);
         emit_mem(0x39, 0, RAX, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_map) + slot * 4);
         slot_misses[1] = emit_jump(5);
-        emit_mem(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_vpn) + slot * 4); output_w32(vpn);
+        emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_vpn) + slot * 4,vpn);
         slot_misses[2] = emit_jump(5);
         emit_state_imm(offsetof(struct r4300_core, pipeline_itlb_lru), slot ^ 1, 0);
-        output_byte(0xe9); hits[slot] = out; output_w32(0);
+        hits[slot] = emit_b();
         for (unsigned n = 0; n < 3; ++n) patch_jump(slot_misses[n], out);
     }
-    emit_mem(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_valid)); output_w32(1);
+    emit_mem_imm(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_valid),1);
     unsigned char* empty_zero = emit_jump(4);
-    emit_mem(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_valid)); output_w32(2);
+    emit_mem_imm(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_valid),2);
     unsigned char* empty_one = emit_jump(4);
-    emit_mem(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_lru)); output_w32(1);
+    emit_mem_imm(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_lru),1);
     unsigned char* lru_zero = emit_jump(4);
     unsigned char* fills[2];
     for (int slot = 1; slot >= 0; --slot) {
@@ -84,9 +55,9 @@ static void emit_itlb_native(uint32_t pc)
         else { patch_jump(empty_zero, out); patch_jump(lru_zero, out); }
         emit_mem(0x89, 0, RAX, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_map) + slot * 4);
         emit_state_imm(offsetof(struct r4300_core, pipeline_itlb_vpn) + slot * 4, vpn, 0);
-        emit_mem(0x81, 0, 1, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_valid)); output_w32(1u << slot);
+        emit_mem_imm(0x81, 0, 1, R12, -1, 0, offsetof(struct r4300_core, pipeline_itlb_valid),1u << slot);
         emit_state_imm(offsetof(struct r4300_core, pipeline_itlb_lru), slot ^ 1, 0);
-        output_byte(0xe9); fills[slot] = out; output_w32(0);
+        fills[slot] = emit_b();
     }
     patch_jump(fills[0], out); patch_jump(fills[1], out);
     emit_addimm(R13, 3, R13);
@@ -102,18 +73,18 @@ static void emit_fetch_native(const struct ari64_config* config, unsigned index,
     if (!config->cache_timing) return;
     uint32_t pc = config->virtual_pc + index * 4;
     if ((pc & UINT32_C(0xc0000000)) != UINT32_C(0x80000000) && index == start) emit_itlb_native(pc);
-    emit_mem(0xf7, 0, 0, RSP, -1, 0, 4); output_w32(2);
+    emit_mem_imm(0xf7, 0, 0, RSP, -1, 0, 4,2);
     unsigned char* uncached = emit_jump(4);
     if (check_line) {
         size_t tag = offsetof(struct r4300_core, icache_tags) + ((pc >> 5) & 511) * 4;
         uint32_t key = (config->physical_page << 12) | 1;
-        emit_mem(0x81, 0, 7, R12, -1, 0, tag); output_w32(key);
+        emit_mem_imm(0x81, 0, 7, R12, -1, 0, tag,key);
         unsigned char* hit = emit_jump(4);
         emit_state_imm(tag, key, 0);
         emit_addimm(R13, 48, R13);
         patch_jump(hit, out);
     }
-    output_byte(0xe9); unsigned char* done = out; output_w32(0);
+    unsigned char* done = emit_b();
     patch_jump(uncached, out);
     emit_addimm(R13, 40, R13);
     patch_jump(done, out);
@@ -138,7 +109,7 @@ static void emit_ldi_native(uint32_t instruction, int fp, uint32_t previous, int
             unsigned consumer = (instruction >> 16) & 31;
             if (load == consumer) emit_addimm(R13, 1, R13);
             else if ((load & ~1u) == (consumer & ~1u)) {
-                emit_mem(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_STATUS_REG])); output_w32(CP0_STATUS_FR);
+                emit_mem_imm(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
                 unsigned char* fr = emit_jump(5);
                 emit_addimm(R13, 1, R13); patch_jump(fr, out);
             }
@@ -153,7 +124,7 @@ static void emit_ldi_native(uint32_t instruction, int fp, uint32_t previous, int
     if (fp) {
         emit_movimm64(UINT64_C(1) << (32 + rt), RDX);
         if (rt & 1) {
-            emit_mem(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_STATUS_REG])); output_w32(CP0_STATUS_FR);
+            emit_mem_imm(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
             unsigned char* fr = emit_jump(5);
             emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)), RDX); patch_jump(fr, out);
         }
@@ -179,36 +150,36 @@ static void emit_mapped_cacheability(void)
     emit_mem(0x8b, 0, RCX, R12, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_ENTRYHI_REG]));
     emit_imm_op(4, RCX, 255, 0); emit_movimm(32, RDX);
     unsigned char* loop = out;
-    emit_mem(0x80, 0, 7, RAX, -1, 0, offsetof(struct tlb_entry, g)); output_byte(0);
+    emit_mem_imm(0x80, 0, 7, RAX, -1, 0, offsetof(struct tlb_entry, g),0);
     unsigned char* global = emit_jump(5);
     emit_mem(0x38, 0, RCX, RAX, -1, 0, offsetof(struct tlb_entry, asid));
     unsigned char* other_asid = emit_jump(5);
     patch_jump(global, out);
-    emit_mem(0x80, 0, 7, RAX, -1, 0, offsetof(struct tlb_entry, v_even)); output_byte(0);
+    emit_mem_imm(0x80, 0, 7, RAX, -1, 0, offsetof(struct tlb_entry, v_even),0);
     unsigned char* invalid_even = emit_jump(4);
     emit_mem(0x3b, 0, R11, RAX, -1, 0, offsetof(struct tlb_entry, start_even));
     unsigned char* before_even = emit_jump(2);
     emit_mem(0x3b, 0, R11, RAX, -1, 0, offsetof(struct tlb_entry, end_even));
     unsigned char* after_even = emit_jump(7);
-    emit_mem(0x80, 0, 7, RAX, -1, 0, offsetof(struct tlb_entry, c_even)); output_byte(2);
+    emit_mem_imm(0x80, 0, 7, RAX, -1, 0, offsetof(struct tlb_entry, c_even),2);
     unsigned char* even_uncached = emit_jump(4);
-    output_byte(0xe9); unsigned char* even_cached = out; output_w32(0);
+    unsigned char* even_cached = emit_b();
     patch_jump(invalid_even, out); patch_jump(before_even, out); patch_jump(after_even, out);
-    emit_mem(0x80, 0, 7, RAX, -1, 0, offsetof(struct tlb_entry, v_odd)); output_byte(0);
+    emit_mem_imm(0x80, 0, 7, RAX, -1, 0, offsetof(struct tlb_entry, v_odd),0);
     unsigned char* invalid_odd = emit_jump(4);
     emit_mem(0x3b, 0, R11, RAX, -1, 0, offsetof(struct tlb_entry, start_odd));
     unsigned char* before_odd = emit_jump(2);
     emit_mem(0x3b, 0, R11, RAX, -1, 0, offsetof(struct tlb_entry, end_odd));
     unsigned char* after_odd = emit_jump(7);
-    emit_mem(0x80, 0, 7, RAX, -1, 0, offsetof(struct tlb_entry, c_odd)); output_byte(2);
+    emit_mem_imm(0x80, 0, 7, RAX, -1, 0, offsetof(struct tlb_entry, c_odd),2);
     unsigned char* odd_uncached = emit_jump(4);
-    output_byte(0xe9); unsigned char* odd_cached = out; output_w32(0);
+    unsigned char* odd_cached = emit_b();
     patch_jump(other_asid, out); patch_jump(invalid_odd, out); patch_jump(before_odd, out); patch_jump(after_odd, out);
     emit_addimm64(RAX, sizeof(struct tlb_entry), RAX); emit_addimm(RDX, -1, RDX);
     unsigned char* again = emit_jump(5); patch_jump(again, loop);
     patch_jump(even_uncached, out); patch_jump(odd_uncached, out);
     emit_movimm(0, RAX);
-    output_byte(0xe9); unsigned char* done = out; output_w32(0);
+    unsigned char* done = emit_b();
     patch_jump(even_cached, out); patch_jump(odd_cached, out); emit_movimm(1, RAX);
     patch_jump(done, out);
     emit_mem(0x8b, 0, RDX, RSP, -1, 0, 0);
@@ -228,7 +199,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
     emit_addimm(R11, (int16_t)instruction, R11);
     exit->registers = regcache;
     if (fp) {
-        emit_mem(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG])); output_w32(CP0_STATUS_CU1);
+        emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_CU1);
         memory_guard(exit,4);
     }
     if (size > 1) {
@@ -254,8 +225,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_mem(0x8b, 1, RAX, R12, -1, 0, offsetof(struct r4300_core, cached_code_pages));
         /* BT treats the memory operand as a bit string, indexing the complete
          * physical-page bitmap. A tracked page must use shared invalidation. */
-        output_rex(1, 0, 0, 0); output_byte(0x0f);
-        output_byte(0xa3); output_modrm(2, RAX, RCX); output_w32(0);
+        JIT(bt(host_mem(64,RAX,-1,0,0),Xbyak::Reg64(RCX)));
         memory_guard(exit, 2);
     }
     emit_mem(0x8b, 1, R14, R12, -1, 0, offsetof(struct r4300_core, mem));
@@ -282,7 +252,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_mem(0x8b, 0, RAX, R12, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_CONFIG_REG]));
         emit_imm_op(4, RAX, 7, 0); emit_imm_op(7, RAX, 2, 0);
         unsigned char* config_uncached = emit_jump(4);
-        output_byte(0xe9); unsigned char* direct_cached = out; output_w32(0);
+        unsigned char* direct_cached = emit_b();
         patch_jump(mapped, out);
         emit_mapped_cacheability(); emit_reg_op(0x85, RAX, RAX, 0);
         unsigned char* mapped_uncached = emit_jump(4);
@@ -300,21 +270,21 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_reg_op(0x39, key_reg, RAX, 0);
         memory_guard(exit, 5);
         if (write) {
-            emit_mem(0x81, 0, 1, R12, RCX, 2, offsetof(struct r4300_core, dcache_tags)); output_w32(2);
+            emit_mem_imm(0x81, 0, 1, R12, RCX, 2, offsetof(struct r4300_core, dcache_tags),2);
         }
         if (config->cache_timing != 2) {
             emit_mov(R11, R14); emit_imm_op(4, R14, UINT32_C(0x1ffc), 0);
             emit_mem(0x8d, 1, R14, R12, R14, 0, offsetof(struct r4300_core, dcache_words));
         }
         emit_movimm(1, RCX); emit_movimm(1, RDX);
-        output_byte(0xe9); unsigned char* data_ready = out; output_w32(0);
+        unsigned char* data_ready = emit_b();
         patch_jump(uncached, out); patch_jump(config_uncached, out); patch_jump(mapped_uncached, out);
         emit_movimm(0, RCX);
         if (!write) {
             emit_imm_op(7, RDX, UINT32_C(0x00800000), 0);
             unsigned char* larger = emit_jump(3);
             emit_movimm(31, RDX);
-            output_byte(0xe9); unsigned char* bus_ready = out; output_w32(0);
+            unsigned char* bus_ready = emit_b();
             patch_jump(larger, out); emit_movimm(38, RDX); patch_jump(bus_ready, out);
         } else emit_movimm(38, RDX);
         patch_jump(data_ready, out);
@@ -323,7 +293,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         if (!r4300_issue_reservation(config->compat_issue_clock)) {
             emit_ldi_native(instruction, fp, previous, known);
             emit_reg_op(0x85, RCX, RCX, 0); unsigned char* no_cache = emit_jump(4);
-            emit_mem(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, pipeline_cached_store)); output_w32(0);
+            emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, pipeline_cached_store),0);
             unsigned char* no_store = emit_jump(4);
             emit_addimm(R13, 1, R13);
             patch_jump(no_store, out); patch_jump(no_cache, out);
@@ -333,13 +303,13 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
          * history, so the reserved issue clock absorbs either single stall. */
         if (index == exit->start) {
         emit_reg_op(0x85, RCX, RCX, 0); unsigned char* no_cache = emit_jump(4);
-        emit_mem(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, pipeline_cached_store)); output_w32(0);
+        emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, pipeline_cached_store),0);
         unsigned char* no_store = emit_jump(4);
         unsigned char* fpr_history = NULL;
         if (fp) {
             emit_movimm64(UINT64_C(1) << (32 + rt),RDX);
             if (rt & 1) {
-                emit_mem(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG])); output_w32(CP0_STATUS_FR);
+                emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
                 unsigned char* fr = emit_jump(5); emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)),RDX); patch_jump(fr,out);
             }
             emit_mem(0x8b,1,RAX,R12,-1,0,offsetof(struct r4300_core,pipeline_load_mask));
@@ -367,7 +337,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
     }
     emit_movimm64(config->cache_timing && !write && (rt || fp) ? UINT64_C(1) << (rt + (fp ? 32 : 0)) : 0, RAX);
     if (fp && config->cache_timing && !write && (rt & 1)) {
-        emit_mem(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG])); output_w32(CP0_STATUS_FR);
+        emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
         unsigned char* fr = emit_jump(5); emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)),RAX); patch_jump(fr,out);
     }
     emit_mem(0x89, 1, RAX, R12, -1, 0, offsetof(struct r4300_core, pipeline_load_mask));
@@ -388,15 +358,13 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
             emit_mem(0x89, 0, RCX, R14, -1, 0, 0);
             emit_mem(0x89, 0, RAX, R14, -1, 0, 4);
         } else {
-            if (size == 2) output_byte(0x66);
-            emit_mem(size == 1 ? 0x88 : 0x89, 0, RAX, R14, size < 4 ? RDX : -1, 0, 0);
+            JIT(mov(host_mem(size*8,R14,size<4?RDX:-1,0,0),Xbyak::Reg(RAX,Xbyak::Operand::REG,size*8)));
         }
     } else {
         if (size < 4) {
             int sign = op == R4300_OP_LB || op == R4300_OP_LH;
-            output_rex(sign, 0, 0, 1); output_byte(0x0f);
-            output_byte((sign ? 0xbe : 0xb6) + (size == 2));
-            output_modrm(2, 4, RAX); output_byte((RDX << 3) | (R14 & 7)); output_w32(0);
+            if(sign) JIT(movsx(Xbyak::Reg64(RAX),host_mem(size*8,R14,RDX,0,0)));
+            else JIT(movzx(Xbyak::Reg32(RAX),host_mem(size*8,R14,RDX,0,0)));
         } else if (size == 4) emit_mem(op == R4300_OP_LW ? 0x63 : 0x8b, op == R4300_OP_LW, RAX, R14, -1, 0, 0);
         else {
             emit_mem(0x8b, 0, RAX, R14, -1, 0, 0); emit_shift_reg(RAX, 4, 32, 1);
