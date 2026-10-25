@@ -11,17 +11,15 @@ endif()
 
 add_library(parallel-rsp STATIC
 		rsp/vfunctions.cpp
-		rsp_jit.cpp rsp_jit.hpp
+		rsp_jit.cpp rsp_jit.hpp jit_emitter.hpp
 		jit_allocator.cpp jit_allocator.hpp
 		rsp_disasm.cpp rsp_disasm.hpp
 		rsp/ls.cpp rsp/pipeline.h
 		rsp/reciprocal.cpp rsp/reciprocal.h
-		rsp_1.1.h
 		rsp/cp0.cpp rsp/cp2.cpp
 		arch/simd/rsp/rsp_core.cpp
 		arch/simd/rsp/clamp.h
 		arch/simd/rsp/rsp_common.h
-		arch/simd/rsp/SSE2NEON.h
 		arch/simd/rsp/rsp_impl.h
 		arch/simd/rsp/vcr.h
 		arch/simd/rsp/vabs.h
@@ -64,26 +62,17 @@ target_include_directories(parallel-rsp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(parallel-rsp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/arch/simd/rsp)
 target_compile_options(parallel-rsp PRIVATE ${PARALLEL_RSP_CXX_FLAGS})
 
-option(PARALLEL_RSP_BAKED_LIGHTNING "Use built-in Lightning." ON)
-
-target_compile_definitions(parallel-rsp PUBLIC PARALLEL_RSP_LIGHTNING)
-if (PARALLEL_RSP_BAKED_LIGHTNING)
-	add_library(lightning STATIC
-			lightning/lib/jit_disasm.c
-			lightning/lib/jit_memory.c
-			lightning/lib/jit_names.c
-			lightning/lib/jit_note.c
-			lightning/lib/jit_print.c
-			lightning/lib/jit_size.c
-			lightning/lib/lightning.c)
-	target_include_directories(lightning PUBLIC
-			${CMAKE_CURRENT_SOURCE_DIR}/lightning/include)
-	if (WIN32)
-		target_sources(lightning PRIVATE win32/mman/sys/mman.c)
-		target_include_directories(lightning PRIVATE win32/mman)
-	endif()
+get_filename_component(PARALLAX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
+target_include_directories(parallel-rsp PUBLIC ${PARALLAX_ROOT}/deps)
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+	target_include_directories(parallel-rsp PUBLIC ${PARALLAX_ROOT}/deps/xbyak_aarch64
+		${PARALLAX_ROOT}/deps/xbyak_aarch64/xbyak_aarch64)
+	target_sources(parallel-rsp PRIVATE ${PARALLAX_ROOT}/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp)
+elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+	target_include_directories(parallel-rsp PUBLIC ${PARALLAX_ROOT}/deps/xbyak)
+else()
+	message(FATAL_ERROR "The RSP Xbyak JIT requires x64 or AArch64.")
 endif()
-target_link_libraries(parallel-rsp PUBLIC lightning)
 target_compile_definitions(parallel-rsp PUBLIC DEBUG_JIT)
 
 if (NOT WIN32)
@@ -98,7 +87,9 @@ if (PARALLEL_RSP_DEBUG_JIT AND NOT WIN32)
 	set_target_properties(rsp-runner PROPERTIES LINK_FLAGS "-rdynamic")
 endif()
 
-option(PARALLEL_RSP_TESTS "Enable unit tests for Lightning CPU." ON)
+option(PARALLEL_RSP_TESTS "Enable unit tests for the RSP block JIT." ON)
+option(PARALLEL_RSP_BUILD_TEST_IMAGES "Assemble RSP test binaries with the MIPS GNU toolchain." ON)
+set(PARALLEL_RSP_TEST_IMAGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/debug-toolchain" CACHE PATH "Directory containing assembled RSP test images")
 
 add_executable(rsp-vu-fuzzer rsp_vu_fuzzer.cpp)
 target_link_libraries(rsp-vu-fuzzer PRIVATE parallel-rsp)
@@ -106,6 +97,9 @@ target_compile_options(rsp-vu-fuzzer PRIVATE ${PARALLEL_RSP_CXX_FLAGS})
 
 if (PARALLEL_RSP_TESTS)
 	enable_testing()
+	add_executable(rsp-jit-tests jit_tests.cpp)
+	target_link_libraries(rsp-jit-tests PRIVATE parallel-rsp)
+	add_test(NAME rsp-jit-checks COMMAND $<TARGET_FILE:rsp-jit-tests>)
 
 	if (ANDROID)
 		add_test(NAME rsp-vu-fuzz
@@ -116,28 +110,36 @@ if (PARALLEL_RSP_TESTS)
 	endif()
 	add_custom_target(rsp-tests ALL)
 
-	add_custom_target(rsp-test-crt
-			COMMAND ${CMAKE_MAKE_PROGRAM} crt-obj -j1
+	if (PARALLEL_RSP_BUILD_TEST_IMAGES)
+		find_program(PARALLEL_RSP_TEST_MAKE NAMES gmake make mingw32-make)
+		if (NOT PARALLEL_RSP_TEST_MAKE)
+			message(FATAL_ERROR "Assembling RSP tests requires GNU make, or PARALLEL_RSP_BUILD_TEST_IMAGES=OFF with prebuilt test images.")
+		endif()
+		add_custom_target(rsp-test-crt
+			COMMAND ${PARALLEL_RSP_TEST_MAKE} crt-obj -j1
 			WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/debug-toolchain)
+	endif()
 
 	function(rsp_add_test NAME)
-		add_custom_target(rsp-test-binary-${NAME}
-				COMMAND ${CMAKE_MAKE_PROGRAM} RSP_TEST=${NAME} -j1
+		if (PARALLEL_RSP_BUILD_TEST_IMAGES)
+			add_custom_target(rsp-test-binary-${NAME}
+				COMMAND ${PARALLEL_RSP_TEST_MAKE} RSP_TEST=${NAME} -j1
 				WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/debug-toolchain
 				DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/debug-toolchain/${NAME}.s)
-		add_dependencies(rsp-test-binary-${NAME} rsp-test-crt)
-		add_dependencies(rsp-tests rsp-test-binary-${NAME})
+			add_dependencies(rsp-test-binary-${NAME} rsp-test-crt)
+			add_dependencies(rsp-tests rsp-test-binary-${NAME})
+		endif()
 
 		if (ANDROID)
 			add_test(NAME rsp-test-${NAME}
 					COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/android_test_runner.sh
 					${CMAKE_CURRENT_BINARY_DIR}/rsp-runner
-					${CMAKE_CURRENT_SOURCE_DIR}/debug-toolchain ${NAME})
+					${PARALLEL_RSP_TEST_IMAGE_DIR} ${NAME})
 		else()
 			add_test(NAME rsp-test-${NAME}
 					COMMAND $<TARGET_FILE:rsp-runner>
-					${CMAKE_CURRENT_SOURCE_DIR}/debug-toolchain/${NAME}.global.bin
-					${CMAKE_CURRENT_SOURCE_DIR}/debug-toolchain/${NAME}.bin)
+					${PARALLEL_RSP_TEST_IMAGE_DIR}/${NAME}.global.bin
+					${PARALLEL_RSP_TEST_IMAGE_DIR}/${NAME}.bin)
 		endif()
 	endfunction()
 

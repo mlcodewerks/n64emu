@@ -12,16 +12,13 @@
 #include "state.hpp"
 #include "jit_allocator.hpp"
 
-extern "C"
-{
-#include <lightning.h>
-}
+#include "jit_emitter.hpp"
 
 namespace RSP
 {
 namespace JIT
 {
-using Func = jit_pointer_t;
+using Func = CodePointer;
 
 class RegisterCache
 {
@@ -30,27 +27,27 @@ public:
 
 	// Ensures a mips register is present in a JIT register, lock it,
 	// and ensure register extend state is correct for opcodes which care.
-	unsigned load_mips_register_noext(jit_state_t *_jit, unsigned mips_reg);
-	unsigned load_mips_register_sext(jit_state_t *_jit, unsigned mips_reg);
-	unsigned load_mips_register_zext(jit_state_t *_jit, unsigned mips_reg);
+	unsigned load_mips_register_noext(Emitter *_jit, unsigned mips_reg);
+	unsigned load_mips_register_sext(Emitter *_jit, unsigned mips_reg);
+	unsigned load_mips_register_zext(Emitter *_jit, unsigned mips_reg);
 
 	// Prepare to modify the register and lock it.
-	unsigned modify_mips_register(jit_state_t *_jit, unsigned mips_reg);
+	unsigned modify_mips_register(Emitter *_jit, unsigned mips_reg);
 
-	// modify_mips_register + jit_movi helper.
-	unsigned immediate_mips_register(jit_state_t *_jit, unsigned mips_reg, jit_word_t value);
+	// modify_mips_register + immediate move helper.
+	unsigned immediate_mips_register(Emitter *_jit, unsigned mips_reg, HostWord value);
 
 	// Once we no longer require the register to be in register file, free it.
 	void unlock_mips_register(unsigned mips_reg);
 
 	// Before leaving a JIT block, or before branching, we must flush out all live registers.
-	void flush_register_window(jit_state_t *_jit);
+	void flush_register_window(Emitter *_jit);
 
 	// Similar, but we only need to invalidate caller save registers (JIT_R).
-	void flush_caller_save_registers(jit_state_t *_jit);
+	void flush_caller_save_registers(Emitter *_jit);
 
 	// Flush a single MIPS register.
-	void flush_mips_register(jit_state_t *_jit, unsigned mips_reg);
+	void flush_mips_register(Emitter *_jit, unsigned mips_reg);
 
 	void reset();
 
@@ -75,7 +72,7 @@ private:
 	CacheEntry *find_free_register();
 	CacheEntry *find_oldest_unlocked_register();
 	CacheEntry &find_register(unsigned mips_reg);
-	void writeback_register(jit_state_t *_jit, CacheEntry &entry);
+	void writeback_register(Emitter *_jit, CacheEntry &entry);
 
 	static unsigned jit_register_to_index(unsigned jit_reg);
 	unsigned entry_to_jit_register(const CacheEntry &entry);
@@ -165,43 +162,43 @@ private:
 		bool conditional;
 		bool handles_delay_slot;
 	};
-	void jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr, InstructionInfo &info, const InstructionInfo &last_info,
+	void jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr, InstructionInfo &info, const InstructionInfo &last_info,
 	                     bool first_instruction, bool next_instruction_is_target);
-	void jit_exit(jit_state_t *_jit, uint32_t pc, const InstructionInfo &last_info, ReturnMode mode, bool first_instruction);
-	void jit_exit_dynamic(jit_state_t *_jit, uint32_t pc, const InstructionInfo &last_info, bool first_instruction);
-	void jit_end_of_block(jit_state_t *_jit, uint32_t pc, const InstructionInfo &last_info);
+	void jit_exit(Emitter *_jit, uint32_t pc, const InstructionInfo &last_info, ReturnMode mode, bool first_instruction);
+	void jit_exit_dynamic(Emitter *_jit, uint32_t pc, const InstructionInfo &last_info, bool first_instruction);
+	void jit_end_of_block(Emitter *_jit, uint32_t pc, const InstructionInfo &last_info);
 
-	void jit_branch_stall(jit_state_t *_jit, bool conditional, bool latent = false, bool illegal = false);
-	void jit_handle_delay_slot(jit_state_t *_jit, const InstructionInfo &last_info, uint32_t base_pc, uint32_t end_pc);
-	void jit_handle_impossible_delay_slot(jit_state_t *_jit, const InstructionInfo &info, const InstructionInfo &last_info,
+	void jit_branch_stall(Emitter *_jit, bool conditional, bool latent = false, bool illegal = false);
+	void jit_handle_delay_slot(Emitter *_jit, const InstructionInfo &last_info, uint32_t base_pc, uint32_t end_pc);
+	void jit_handle_impossible_delay_slot(Emitter *_jit, const InstructionInfo &info, const InstructionInfo &last_info,
 	                                      uint32_t base_pc, uint32_t end_pc);
-	void jit_handle_latent_delay_slot(jit_state_t *_jit, const InstructionInfo &last_info);
+	void jit_handle_latent_delay_slot(Emitter *_jit, const InstructionInfo &last_info);
 	void jit_mark_block_entries(uint32_t pc, uint32_t end, bool *block_entries);
-	void jit_emit_load_operation(jit_state_t *_jit, uint32_t pc, uint32_t instr,
-	                             void (*jit_emitter)(jit_state_t *_jit, unsigned, unsigned, unsigned), const char *asmop,
-	                             jit_pointer_t rsp_unaligned_op,
+	void jit_emit_load_operation(Emitter *_jit, uint32_t pc, uint32_t instr,
+	                             void (*jit_emitter)(Emitter *_jit, unsigned, unsigned, unsigned), const char *asmop,
+	                             CodePointer rsp_unaligned_op,
 	                             uint32_t endian_flip,
 	                             const InstructionInfo &last_info);
-	void jit_emit_store_operation(jit_state_t *_jit, uint32_t pc, uint32_t instr,
-	                              void (*jit_emitter)(jit_state_t *_jit, unsigned, unsigned, unsigned), const char *asmop,
-	                              jit_pointer_t rsp_unaligned_op,
+	void jit_emit_store_operation(Emitter *_jit, uint32_t pc, uint32_t instr,
+	                              void (*jit_emitter)(Emitter *_jit, unsigned, unsigned, unsigned), const char *asmop,
+	                              CodePointer rsp_unaligned_op,
 	                              uint32_t endian_flip,
 	                              const InstructionInfo &last_info);
 
-	static void jit_begin_call(jit_state_t *_jit);
-	static void jit_end_call(jit_state_t *_jit, jit_pointer_t ptr);
-	void jit_save_illegal_cond_branch_taken(jit_state_t *_jit);
-	static void jit_restore_illegal_cond_branch_taken(jit_state_t *_jit, unsigned reg);
-	static void jit_clear_illegal_cond_branch_taken(jit_state_t *_jit, unsigned tmp_reg);
-	void jit_save_indirect_register(jit_state_t *_jit, unsigned mips_register);
-	static void jit_load_indirect_register(jit_state_t *_jit, unsigned jit_reg);
-	static void jit_save_illegal_indirect_register(jit_state_t *_jit);
-	static void jit_load_illegal_indirect_register(jit_state_t *_jit, unsigned jit_reg);
+	static void jit_begin_call(Emitter *_jit);
+	static void jit_end_call(Emitter *_jit, CodePointer ptr);
+	void jit_save_illegal_cond_branch_taken(Emitter *_jit);
+	static void jit_restore_illegal_cond_branch_taken(Emitter *_jit, unsigned reg);
+	static void jit_clear_illegal_cond_branch_taken(Emitter *_jit, unsigned tmp_reg);
+	void jit_save_indirect_register(Emitter *_jit, unsigned mips_register);
+	static void jit_load_indirect_register(Emitter *_jit, unsigned jit_reg);
+	static void jit_save_illegal_indirect_register(Emitter *_jit);
+	static void jit_load_illegal_indirect_register(Emitter *_jit, unsigned jit_reg);
 
 	std::string mips_disasm;
 	struct Link
 	{
-		jit_node_t *node;
+		CodeLabel *node;
 		unsigned local_index;
 	};
 	std::vector<Link> local_branches;

@@ -55,6 +55,12 @@ static bool commit_execute(void *ptr, size_t size)
 
 bool Allocator::commit_code(void *code, size_t size)
 {
+#ifdef _WIN32
+	if (!FlushInstructionCache(GetCurrentProcess(), code, size))
+		return false;
+#elif defined(__GNUC__) || defined(__clang__)
+	__builtin___clear_cache(static_cast<char *>(code), static_cast<char *>(code) + size);
+#endif
 	return commit_execute(code, size);
 }
 
@@ -101,6 +107,8 @@ Allocator::Block Allocator::reserve_block(size_t size)
 #else
 	block.code = static_cast<uint8_t *>(mmap(nullptr, size, PROT_NONE, MAP_ANONYMOUS | MAP_PRIVATE,
 	                                         -1, 0));
+	if (block.code == MAP_FAILED)
+		block.code = nullptr;
 	block.size = size;
 	return block;
 #endif

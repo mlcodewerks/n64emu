@@ -7,7 +7,7 @@ CP0: Near copy-pasta from CEN64
 CP2: Near copy-pasta from CEN64
 LS pipe: Near copy-pasta from CXD4
 Mupen64plus glue code: Reused most of CXD4.
-Lightning jitter interface: Written from scratch
+RSP block compiler: Written from scratch; host emission uses vendored Xbyak and Xbyak_aarch64.
 
 The plugin's focus is to support dynamic recompilation for performance,
 instead of being pure interpreters as CEN64 and CXD4's implementations are.

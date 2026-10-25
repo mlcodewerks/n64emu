@@ -1,4 +1,6 @@
+#ifdef RSP_JIT_CODE_DUMP
 #include "core/file.h"
+#endif
 #include "rsp_jit.hpp"
 #include "rsp/timing.hpp"
 #include "rsp_disasm.hpp"
@@ -11,7 +13,7 @@ using namespace std;
 //#define TRACE_ENTER
 //#define TRACE_DISASM
 
-// We're only guaranteed 3 V registers (x86).
+// These callee-saved registers remain fixed across every block and helper call.
 #define JIT_REGISTER_STATE JIT_V0
 #define JIT_REGISTER_DMEM JIT_V1
 #define JIT_REGISTER_INDIRECT_PC JIT_V2
@@ -21,12 +23,6 @@ using namespace std;
 
 #define JIT_FRAME_SIZE 256
 
-#if __WORDSIZE == 32
-#undef jit_ldxr_ui
-#define jit_ldxr_ui jit_ldxr_i
-#undef jit_ldxi_ui
-#define jit_ldxi_ui jit_ldxi_i
-#endif
 
 namespace RSP
 {
@@ -34,13 +30,11 @@ namespace JIT
 {
 CPU::CPU()
 {
-	init_jit("RSP");
 	init_jit_thunks();
 }
 
 CPU::~CPU()
 {
-	finish_jit();
 }
 
 void CPU::invalidate_imem()
@@ -246,15 +240,15 @@ extern "C"
 		return static_cast<CPU *>(cpu)->get_jit_block(pc);
 	}
 
-	static jit_word_t rsp_unaligned_lh(const uint8_t *dram, jit_word_t addr)
+	static HostWord rsp_unaligned_lh(const uint8_t *dram, HostWord addr)
 	{
 		auto off0 = BYTE_ENDIAN_FIXUP(addr, 0);
 		auto off1 = BYTE_ENDIAN_FIXUP(addr, 1);
-		return jit_word_t(int16_t((dram[off0] << 8) |
+		return HostWord(int16_t((dram[off0] << 8) |
 		                          (dram[off1] << 0)));
 	}
 
-	static jit_word_t rsp_unaligned_lw(const uint8_t *dram, jit_word_t addr)
+	static HostWord rsp_unaligned_lw(const uint8_t *dram, HostWord addr)
 	{
 		auto off0 = BYTE_ENDIAN_FIXUP(addr, 0);
 		auto off1 = BYTE_ENDIAN_FIXUP(addr, 1);
@@ -262,21 +256,21 @@ extern "C"
 		auto off3 = BYTE_ENDIAN_FIXUP(addr, 3);
 
 		// To sign extend, or not to sign extend, hm ...
-		return jit_word_t((int32_t(dram[off0]) << 24) |
+		return HostWord((int32_t(dram[off0]) << 24) |
 		                  (int32_t(dram[off1]) << 16) |
 		                  (int32_t(dram[off2]) << 8) |
 		                  (int32_t(dram[off3]) << 0));
 	}
 
-	static jit_uword_t rsp_unaligned_lhu(const uint8_t *dram, jit_word_t addr)
+	static HostUWord rsp_unaligned_lhu(const uint8_t *dram, HostWord addr)
 	{
 		auto off0 = BYTE_ENDIAN_FIXUP(addr, 0);
 		auto off1 = BYTE_ENDIAN_FIXUP(addr, 1);
-		return jit_word_t(uint16_t((dram[off0] << 8) |
+		return HostWord(uint16_t((dram[off0] << 8) |
 		                          (dram[off1] << 0)));
 	}
 
-	static void rsp_unaligned_sh(uint8_t *dram, jit_word_t addr, jit_word_t data)
+	static void rsp_unaligned_sh(uint8_t *dram, HostWord addr, HostWord data)
 	{
 		auto off0 = BYTE_ENDIAN_FIXUP(addr, 0);
 		auto off1 = BYTE_ENDIAN_FIXUP(addr, 1);
@@ -284,7 +278,7 @@ extern "C"
 		dram[off1] = (data >> 0) & 0xff;
 	}
 
-	static void rsp_unaligned_sw(uint8_t *dram, jit_word_t addr, jit_word_t data)
+	static void rsp_unaligned_sw(uint8_t *dram, HostWord addr, HostWord data)
 	{
 		auto off0 = BYTE_ENDIAN_FIXUP(addr, 0);
 		auto off1 = BYTE_ENDIAN_FIXUP(addr, 1);
@@ -298,7 +292,7 @@ extern "C"
 	}
 
 #ifdef TRACE
-	static void rsp_report_pc(const CPUState *state, jit_uword_t pc, jit_uword_t instr)
+	static void rsp_report_pc(const CPUState *state, HostUWord pc, HostUWord instr)
 	{
 		auto disasm = disassemble(pc, instr);
 		disasm += " (" + std::to_string(hash_registers(state)) + ") (" + std::to_string(hash_dmem(state)) + ")";
@@ -307,146 +301,128 @@ extern "C"
 #endif
 
 #ifdef TRACE_ENTER
-	static void rsp_report_enter(jit_uword_t pc)
+	static void rsp_report_enter(HostUWord pc)
 	{
 		printf("  ... Enter 0x%03x ...  ", unsigned(pc & 0xffcu));
 	}
 #endif
 }
 
-void CPU::jit_save_indirect_register(jit_state_t *_jit, unsigned mips_register)
+void CPU::jit_save_indirect_register(Emitter *_jit, unsigned mips_register)
 {
 	unsigned jit_reg = regs.load_mips_register_noext(_jit, mips_register);
-	jit_movr(JIT_REGISTER_INDIRECT_PC, jit_reg);
+	_jit->movr(JIT_REGISTER_INDIRECT_PC, jit_reg);
 	regs.unlock_mips_register(mips_register);
 }
 
-void CPU::jit_save_illegal_indirect_register(jit_state_t *_jit)
+void CPU::jit_save_illegal_indirect_register(Emitter *_jit)
 {
-	jit_stxi(-JIT_FRAME_SIZE + 3 * sizeof(jit_word_t), JIT_FP, JIT_REGISTER_INDIRECT_PC);
+	_jit->stxi(-JIT_FRAME_SIZE + 3 * sizeof(HostWord), JIT_FP, JIT_REGISTER_INDIRECT_PC);
 }
 
-void CPU::jit_load_indirect_register(jit_state_t *_jit, unsigned jit_reg)
+void CPU::jit_load_indirect_register(Emitter *_jit, unsigned jit_reg)
 {
-	jit_movr(jit_reg, JIT_REGISTER_INDIRECT_PC);
+	_jit->movr(jit_reg, JIT_REGISTER_INDIRECT_PC);
 }
 
-void CPU::jit_load_illegal_indirect_register(jit_state_t *_jit, unsigned jit_reg)
+void CPU::jit_load_illegal_indirect_register(Emitter *_jit, unsigned jit_reg)
 {
-	jit_ldxi(jit_reg, JIT_FP, -JIT_FRAME_SIZE + 3 * sizeof(jit_word_t));
+	_jit->ldxi(jit_reg, JIT_FP, -JIT_FRAME_SIZE + 3 * sizeof(HostWord));
 }
 
-void CPU::jit_begin_call(jit_state_t *_jit)
+void CPU::jit_begin_call(Emitter *_jit)
 {
-	// Workarounds weird Lightning behavior around register usage.
-	// It has been observed that EBX (V0) is clobbered on x86 Linux when
-	// calling out to C code.
-	jit_live(JIT_REGISTER_STATE);
-	jit_live(JIT_REGISTER_DMEM);
-	jit_live(JIT_REGISTER_INDIRECT_PC);
-
-	jit_prepare();
+	_jit->prepare();
 }
 
-void CPU::jit_end_call(jit_state_t *_jit, jit_pointer_t ptr)
+void CPU::jit_end_call(Emitter *_jit, CodePointer ptr)
 {
-	jit_finishi(ptr);
-
-	// Workarounds weird Lightning behavior around register usage.
-	// It has been observed that EBX (V0) is clobbered on x86 Linux when
-	// calling out to C code.
-	jit_live(JIT_REGISTER_STATE);
-	jit_live(JIT_REGISTER_DMEM);
-	jit_live(JIT_REGISTER_INDIRECT_PC);
+	_jit->finishi(ptr);
 }
 
-void CPU::jit_save_illegal_cond_branch_taken(jit_state_t *_jit)
+void CPU::jit_save_illegal_cond_branch_taken(Emitter *_jit)
 {
 	unsigned cond_reg = regs.load_mips_register_noext(_jit, RegisterCache::COND_BRANCH_TAKEN);
-	jit_stxi(-JIT_FRAME_SIZE + sizeof(jit_word_t), JIT_FP, cond_reg);
+	_jit->stxi(-JIT_FRAME_SIZE + sizeof(HostWord), JIT_FP, cond_reg);
 	regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
 }
 
-void CPU::jit_restore_illegal_cond_branch_taken(jit_state_t *_jit, unsigned reg)
+void CPU::jit_restore_illegal_cond_branch_taken(Emitter *_jit, unsigned reg)
 {
-	jit_ldxi(reg, JIT_FP, -JIT_FRAME_SIZE + sizeof(jit_word_t));
+	_jit->ldxi(reg, JIT_FP, -JIT_FRAME_SIZE + sizeof(HostWord));
 }
 
-void CPU::jit_clear_illegal_cond_branch_taken(jit_state_t *_jit, unsigned tmp_reg)
+void CPU::jit_clear_illegal_cond_branch_taken(Emitter *_jit, unsigned tmp_reg)
 {
-	jit_movi(tmp_reg, 0);
-	jit_stxi(-JIT_FRAME_SIZE + sizeof(jit_word_t), JIT_FP, tmp_reg);
+	_jit->movi(tmp_reg, 0);
+	_jit->stxi(-JIT_FRAME_SIZE + sizeof(HostWord), JIT_FP, tmp_reg);
 }
 
 void CPU::init_jit_thunks()
 {
-	jit_state_t *_jit = jit_new_state();
+	Emitter emitter;
+	Emitter *_jit = &emitter;
 
-	jit_prolog();
 
 	// Saves registers from C++ code.
-	jit_frame(JIT_FRAME_SIZE);
-	auto *state = jit_arg();
+	_jit->frame(JIT_FRAME_SIZE);
+	
 
 	// These registers remain fixed and all called thunks will poke into these registers as necessary.
-	jit_getarg(JIT_REGISTER_STATE, state);
-	jit_ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, pc));
-	jit_ldxi(JIT_REGISTER_DMEM, JIT_REGISTER_STATE, offsetof(CPUState, dmem));
+	_jit->getarg(JIT_REGISTER_STATE);
+	_jit->ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, pc));
+	_jit->ldxi(JIT_REGISTER_DMEM, JIT_REGISTER_STATE, offsetof(CPUState, dmem));
 
 	// When thunks need non-local goto, they jump here.
-	auto *entry_label = jit_indirect();
+	auto *entry_label = _jit->indirect();
 
 #ifdef TRACE_ENTER
 	{
 		// Save PC.
-		jit_stxi_i(offsetof(CPUState, pc), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
-		jit_prepare();
-		jit_pushargr(JIT_REGISTER_NEXT_PC);
-		jit_finishi(reinterpret_cast<jit_pointer_t>(rsp_report_enter));
-		jit_ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, pc));
+		_jit->stxi_i(offsetof(CPUState, pc), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
+		_jit->prepare();
+		_jit->pushargr(JIT_REGISTER_NEXT_PC);
+		_jit->finishi(reinterpret_cast<CodePointer>(rsp_report_enter));
+		_jit->ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, pc));
 	}
 #endif
 
-	jit_prepare();
-	jit_pushargr(JIT_REGISTER_STATE);
-	jit_pushargr(JIT_REGISTER_NEXT_PC);
-	jit_finishi(reinterpret_cast<jit_pointer_t>(rsp_enter));
-	jit_retval(JIT_REGISTER_NEXT_PC);
+	_jit->prepare();
+	_jit->pushargr(JIT_REGISTER_STATE);
+	_jit->pushargr(JIT_REGISTER_NEXT_PC);
+	_jit->finishi(reinterpret_cast<CodePointer>(rsp_enter));
+	_jit->retval(JIT_REGISTER_NEXT_PC);
 
 	// Jump to thunk.
 
 	// Clear out branch delay slots.
 	jit_clear_illegal_cond_branch_taken(_jit, JIT_REGISTER_MODE);
-	jit_stxi_i(offsetof(CPUState, sr) + RegisterCache::COND_BRANCH_TAKEN * 4, JIT_REGISTER_STATE, JIT_REGISTER_MODE);
+	_jit->stxi_i(offsetof(CPUState, sr) + RegisterCache::COND_BRANCH_TAKEN * 4, JIT_REGISTER_STATE, JIT_REGISTER_MODE);
 
-	jit_jmpr(JIT_REGISTER_NEXT_PC);
+	_jit->jmpr(JIT_REGISTER_NEXT_PC);
 
 	// When we want to return, JIT thunks will jump here.
-	auto *return_label = jit_indirect();
+	auto *return_label = _jit->indirect();
 
 	// Save PC.
-	jit_stxi_i(offsetof(CPUState, pc), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
+	_jit->stxi_i(offsetof(CPUState, pc), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
 
 	// Return status. This register is considered common for all thunks.
-	jit_retr(JIT_REGISTER_MODE);
+	_jit->retr(JIT_REGISTER_MODE);
 
-	jit_realize();
-	jit_word_t code_size;
-	jit_get_code(&code_size);
+	HostWord code_size;
+	_jit->get_code(&code_size);
 	void *thunk_code = allocator.allocate_code(code_size);
 	if (!thunk_code)
 		abort();
-	jit_set_code(thunk_code, code_size);
+	_jit->set_code(thunk_code, code_size);
 
-	thunks.enter_frame = reinterpret_cast<int (*)(void *)>(jit_emit());
-	thunks.enter_thunk = jit_address(entry_label);
-	thunks.return_thunk = jit_address(return_label);
+	thunks.enter_frame = reinterpret_cast<int (*)(void *)>(_jit->emit());
+	thunks.enter_thunk = _jit->address(entry_label);
+	thunks.return_thunk = _jit->address(return_label);
 
 	//printf(" === DISASM ===\n");
-	//jit_disassemble();
-	jit_clear_state();
 	//printf(" === END DISASM ===\n");
-	jit_destroy_state();
 
 	if (!Allocator::commit_code(thunk_code, code_size))
 		abort();
@@ -475,27 +451,16 @@ Func CPU::get_jit_block(uint32_t pc)
 	return block;
 }
 
-#if defined(_WIN32) && defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
-__attribute__((noinline))
-#endif
 int CPU::enter(uint32_t pc)
 {
 	// Top level enter.
 	state.pc = pc;
 	static_assert(offsetof(CPU, state) == 0, "CPU state must lie on first byte.");
 	int ret = thunks.enter_frame(this);
-#if defined(_WIN32) && defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
-	// Lightning's double-register saves preserve only the low 64 bits of
-	// XMM6..15. Win64 callers own all 128 bits. Let the host compiler save
-	// those registers around this entry, including their upper halves.
-	// Keep this after the call so it cannot become a tail call.
-	__asm__ volatile("" ::: "xmm6", "xmm7", "xmm8", "xmm9", "xmm10",
-	                 "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
-#endif
 	return ret;
 }
 
-void CPU::jit_end_of_block(jit_state_t *_jit, uint32_t pc, const CPU::InstructionInfo &last_info)
+void CPU::jit_end_of_block(Emitter *_jit, uint32_t pc, const CPU::InstructionInfo &last_info)
 {
 	// If we run off the end of a block with a pending delay slot, we need to move it to CPUState.
 	// We always branch to the next PC, and the delay slot will be handled after the first instruction in next block.
@@ -510,28 +475,28 @@ void CPU::jit_end_of_block(jit_state_t *_jit, uint32_t pc, const CPU::Instructio
 	regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
 	regs.flush_register_window(_jit);
 
-	jit_node_t *forward = nullptr;
+	CodeLabel *forward = nullptr;
 	if (last_info.branch)
 	{
 		if (last_info.conditional)
-			forward = jit_beqi(cond_branch_reg, 0);
+			forward = _jit->beqi(cond_branch_reg, 0);
 
 		if (last_info.indirect)
 			jit_load_indirect_register(_jit, scratch_reg);
 		else
-			jit_movi(scratch_reg, last_info.branch_target);
-		jit_stxi_i(offsetof(CPUState, branch_target), JIT_REGISTER_STATE, scratch_reg);
-		jit_movi(scratch_reg, 1);
-		jit_stxi_i(offsetof(CPUState, has_delay_slot), JIT_REGISTER_STATE, scratch_reg);
+			_jit->movi(scratch_reg, last_info.branch_target);
+		_jit->stxi_i(offsetof(CPUState, branch_target), JIT_REGISTER_STATE, scratch_reg);
+		_jit->movi(scratch_reg, 1);
+		_jit->stxi_i(offsetof(CPUState, has_delay_slot), JIT_REGISTER_STATE, scratch_reg);
 	}
 
 	if (forward)
-		jit_patch(forward);
-	jit_movi(JIT_REGISTER_NEXT_PC, pc);
-	jit_patch_abs(jit_jmpi(), thunks.enter_thunk);
+		_jit->patch(forward);
+	_jit->movi(JIT_REGISTER_NEXT_PC, pc);
+	_jit->jump_absolute(thunks.enter_thunk);
 }
 
-void CPU::jit_handle_impossible_delay_slot(jit_state_t *_jit, const InstructionInfo &info,
+void CPU::jit_handle_impossible_delay_slot(Emitter *_jit, const InstructionInfo &info,
                                            const InstructionInfo &last_info, uint32_t base_pc,
                                            uint32_t end_pc)
 {
@@ -563,26 +528,26 @@ void CPU::jit_handle_impossible_delay_slot(jit_state_t *_jit, const InstructionI
 	// If the first branch is not taken, we will defer any control transfer until the next instruction, nothing happens,
 	// except that FP[0] is cleared.
 
-	jit_node_t *nobranch = nullptr;
+	CodeLabel *nobranch = nullptr;
 	if (last_info.conditional)
 	{
 		jit_restore_illegal_cond_branch_taken(_jit, illegal_cond_reg);
 		jit_clear_illegal_cond_branch_taken(_jit, scratch_reg);
-		nobranch = jit_beqi(illegal_cond_reg, 0);
+		nobranch = _jit->beqi(illegal_cond_reg, 0);
 	}
 	else
 		jit_clear_illegal_cond_branch_taken(_jit, cond_branch_reg);
 
 	// ... But do we have a delay slot to take care of?
 	if (!info.conditional)
-		jit_movi(cond_branch_reg, 1);
-	jit_stxi_i(offsetof(CPUState, has_delay_slot), JIT_REGISTER_STATE, cond_branch_reg);
+		_jit->movi(cond_branch_reg, 1);
+	_jit->stxi_i(offsetof(CPUState, has_delay_slot), JIT_REGISTER_STATE, cond_branch_reg);
 
 	if (info.indirect)
 		jit_load_indirect_register(_jit, cond_branch_reg);
 	else
-		jit_movi(cond_branch_reg, info.branch_target);
-	jit_stxi_i(offsetof(CPUState, branch_target), JIT_REGISTER_STATE, cond_branch_reg);
+		_jit->movi(cond_branch_reg, info.branch_target);
+	_jit->stxi_i(offsetof(CPUState, branch_target), JIT_REGISTER_STATE, cond_branch_reg);
 
 	// We are done with register use.
 
@@ -590,36 +555,36 @@ void CPU::jit_handle_impossible_delay_slot(jit_state_t *_jit, const InstructionI
 	if (last_info.indirect)
 		jit_load_illegal_indirect_register(_jit, JIT_REGISTER_NEXT_PC);
 	else
-		jit_movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
+		_jit->movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
 
-	jit_patch_abs(jit_jmpi(), thunks.enter_thunk);
+	_jit->jump_absolute(thunks.enter_thunk);
 
 	if (nobranch)
-		jit_patch(nobranch);
+		_jit->patch(nobranch);
 }
 
 // Taken branches consume a redirect clock after their delay slot (ares RSP
 // instructionBranchEpilogue). NEXT_PC has not been selected at these call
 // sites. Register state must already be flushed and no cached host register
 // may remain live across this helper.
-void CPU::jit_branch_stall(jit_state_t *_jit, bool conditional, bool latent, bool illegal)
+void CPU::jit_branch_stall(Emitter *_jit, bool conditional, bool latent, bool illegal)
 {
     if (!cycle_timing) return;
-    jit_node_t *skip = nullptr;
+    CodeLabel *skip = nullptr;
     if (conditional) {
         if (illegal) jit_restore_illegal_cond_branch_taken(_jit, JIT_REGISTER_NEXT_PC);
-        else jit_ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE,
+        else _jit->ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE,
             latent ? offsetof(CPUState, has_delay_slot) :
             offsetof(CPUState, sr) + RegisterCache::COND_BRANCH_TAKEN * 4);
-        skip = jit_beqi(JIT_REGISTER_NEXT_PC, 0);
+        skip = _jit->beqi(JIT_REGISTER_NEXT_PC, 0);
     }
-    jit_ldxi_ui(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, cycles));
-    jit_addi(JIT_REGISTER_NEXT_PC, JIT_REGISTER_NEXT_PC, 1);
-    jit_stxi_i(offsetof(CPUState, cycles), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
-    if (skip) jit_patch(skip);
+    _jit->ldxi_ui(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, cycles));
+    _jit->addi(JIT_REGISTER_NEXT_PC, JIT_REGISTER_NEXT_PC, 1);
+    _jit->stxi_i(offsetof(CPUState, cycles), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
+    if (skip) _jit->patch(skip);
 }
 
-void CPU::jit_handle_delay_slot(jit_state_t *_jit, const InstructionInfo &last_info,
+void CPU::jit_handle_delay_slot(Emitter *_jit, const InstructionInfo &last_info,
                                 uint32_t base_pc, uint32_t end_pc)
 {
 	regs.flush_register_window(_jit);
@@ -633,8 +598,8 @@ void CPU::jit_handle_delay_slot(jit_state_t *_jit, const InstructionInfo &last_i
 		scratch_cond_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
 
 		// Clear out branch state.
-		jit_movr(scratch_cond_reg, cond_branch_reg);
-		jit_movi(cond_branch_reg, 0);
+		_jit->movr(scratch_cond_reg, cond_branch_reg);
+		_jit->movi(cond_branch_reg, 0);
 
 		regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
 		regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
@@ -643,7 +608,7 @@ void CPU::jit_handle_delay_slot(jit_state_t *_jit, const InstructionInfo &last_i
 	else
 	{
 		unsigned cond_branch_reg = regs.modify_mips_register(_jit, RegisterCache::COND_BRANCH_TAKEN);
-		jit_movi(cond_branch_reg, 0);
+		_jit->movi(cond_branch_reg, 0);
 		regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
 	}
 	regs.flush_register_window(_jit);
@@ -654,17 +619,17 @@ void CPU::jit_handle_delay_slot(jit_state_t *_jit, const InstructionInfo &last_i
 		{
 			// Patch this up later.
 			unsigned local_index = (last_info.branch_target - base_pc) >> 2;
-			local_branches.push_back({ jit_bnei(scratch_cond_reg, 0), local_index });
+			local_branches.push_back({ _jit->bnei(scratch_cond_reg, 0), local_index });
 		}
 		else
 		{
-			auto *no_branch = jit_beqi(scratch_cond_reg, 0);
+			auto *no_branch = _jit->beqi(scratch_cond_reg, 0);
 			if (last_info.indirect)
 				jit_load_indirect_register(_jit, JIT_REGISTER_NEXT_PC);
 			else
-				jit_movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
-			jit_patch_abs(jit_jmpi(), thunks.enter_thunk);
-			jit_patch(no_branch);
+				_jit->movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
+			_jit->jump_absolute(thunks.enter_thunk);
+			_jit->patch(no_branch);
 		}
 	}
 	else
@@ -673,28 +638,28 @@ void CPU::jit_handle_delay_slot(jit_state_t *_jit, const InstructionInfo &last_i
 		{
 			// Patch this up later.
 			unsigned local_index = (last_info.branch_target - base_pc) >> 2;
-			local_branches.push_back({ jit_jmpi(), local_index });
+			local_branches.push_back({ _jit->jmpi(), local_index });
 		}
 		else
 		{
 			if (last_info.indirect)
 				jit_load_indirect_register(_jit, JIT_REGISTER_NEXT_PC);
 			else
-				jit_movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
-			jit_patch_abs(jit_jmpi(), thunks.enter_thunk);
+				_jit->movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
+			_jit->jump_absolute(thunks.enter_thunk);
 		}
 	}
 }
 
-void CPU::jit_exit(jit_state_t *_jit, uint32_t pc, const InstructionInfo &last_info,
+void CPU::jit_exit(Emitter *_jit, uint32_t pc, const InstructionInfo &last_info,
                    ReturnMode mode, bool first_instruction)
 {
 	regs.flush_register_window(_jit);
-	jit_movi(JIT_REGISTER_MODE, mode);
+	_jit->movi(JIT_REGISTER_MODE, mode);
 	jit_exit_dynamic(_jit, pc, last_info, first_instruction);
 }
 
-void CPU::jit_exit_dynamic(jit_state_t *_jit, uint32_t pc, const InstructionInfo &last_info, bool first_instruction)
+void CPU::jit_exit_dynamic(Emitter *_jit, uint32_t pc, const InstructionInfo &last_info, bool first_instruction)
 {
 	if (first_instruction) jit_branch_stall(_jit, true, true);
 	else if (last_info.branch) jit_branch_stall(_jit, last_info.conditional);
@@ -702,32 +667,32 @@ void CPU::jit_exit_dynamic(jit_state_t *_jit, uint32_t pc, const InstructionInfo
 	if (first_instruction)
 	{
 		// Need to consider that we need to move delay slot to PC.
-		jit_ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, has_delay_slot));
+		_jit->ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, has_delay_slot));
 
-		auto *latent_delay_slot = jit_bnei(JIT_REGISTER_NEXT_PC, 0);
+		auto *latent_delay_slot = _jit->bnei(JIT_REGISTER_NEXT_PC, 0);
 
 		// Common case.
 		// Immediately exit.
-		jit_movi(JIT_REGISTER_NEXT_PC, (pc + 4) & 0xffcu);
-		jit_patch_abs(jit_jmpi(), thunks.return_thunk);
+		_jit->movi(JIT_REGISTER_NEXT_PC, (pc + 4) & 0xffcu);
+		_jit->jump_absolute(thunks.return_thunk);
 
 		// If we had a latent delay slot, we handle it here.
-		jit_patch(latent_delay_slot);
+		_jit->patch(latent_delay_slot);
 
 		// jit_exit is never called from a branch instruction, so we do not have to handle double branch delay slots here.
-		jit_movi(JIT_REGISTER_NEXT_PC, 0);
-		jit_stxi_i(offsetof(CPUState, has_delay_slot), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
-		jit_ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, branch_target));
+		_jit->movi(JIT_REGISTER_NEXT_PC, 0);
+		_jit->stxi_i(offsetof(CPUState, has_delay_slot), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
+		_jit->ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, branch_target));
 	}
 	else if (!last_info.branch)
 	{
 		// Immediately exit.
-		jit_movi(JIT_REGISTER_NEXT_PC, (pc + 4) & 0xffcu);
+		_jit->movi(JIT_REGISTER_NEXT_PC, (pc + 4) & 0xffcu);
 	}
 	else if (!last_info.indirect && !last_info.conditional)
 	{
 		// Redirect PC to whatever value we were supposed to branch to.
-		jit_movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
+		_jit->movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
 	}
 	else if (!last_info.conditional)
 	{
@@ -737,35 +702,35 @@ void CPU::jit_exit_dynamic(jit_state_t *_jit, uint32_t pc, const InstructionInfo
 	else if (last_info.indirect)
 	{
 		// Indirect conditional branch.
-		jit_ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE,
+		_jit->ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE,
 		           offsetof(CPUState, sr) + RegisterCache::COND_BRANCH_TAKEN * 4);
-		auto *node = jit_beqi(JIT_REGISTER_NEXT_PC, 0);
+		auto *node = _jit->beqi(JIT_REGISTER_NEXT_PC, 0);
 		jit_load_indirect_register(_jit, JIT_REGISTER_NEXT_PC);
-		auto *to_end = jit_jmpi();
-		jit_patch(node);
-		jit_movi(JIT_REGISTER_NEXT_PC, (pc + 4) & 0xffcu);
-		jit_patch(to_end);
+		auto *to_end = _jit->jmpi();
+		_jit->patch(node);
+		_jit->movi(JIT_REGISTER_NEXT_PC, (pc + 4) & 0xffcu);
+		_jit->patch(to_end);
 	}
 	else
 	{
 		// Direct conditional branch.
-		jit_ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE,
+		_jit->ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE,
 		           offsetof(CPUState, sr) + RegisterCache::COND_BRANCH_TAKEN * 4);
-		auto *node = jit_beqi(JIT_REGISTER_NEXT_PC, 0);
-		jit_movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
-		auto *to_end = jit_jmpi();
-		jit_patch(node);
-		jit_movi(JIT_REGISTER_NEXT_PC, (pc + 4) & 0xffcu);
-		jit_patch(to_end);
+		auto *node = _jit->beqi(JIT_REGISTER_NEXT_PC, 0);
+		_jit->movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
+		auto *to_end = _jit->jmpi();
+		_jit->patch(node);
+		_jit->movi(JIT_REGISTER_NEXT_PC, (pc + 4) & 0xffcu);
+		_jit->patch(to_end);
 	}
 
-	jit_patch_abs(jit_jmpi(), thunks.return_thunk);
+	_jit->jump_absolute(thunks.return_thunk);
 }
 
-void CPU::jit_emit_store_operation(jit_state_t *_jit,
+void CPU::jit_emit_store_operation(Emitter *_jit,
                                    uint32_t pc, uint32_t instr,
-                                   void (*jit_emitter)(jit_state_t *jit, unsigned, unsigned, unsigned), const char *asmop,
-                                   jit_pointer_t rsp_unaligned_op,
+                                   void (*jit_emitter)(Emitter *jit, unsigned, unsigned, unsigned), const char *asmop,
+                                   CodePointer rsp_unaligned_op,
                                    uint32_t endian_flip,
                                    const InstructionInfo &last_info)
 {
@@ -776,11 +741,11 @@ void CPU::jit_emit_store_operation(jit_state_t *_jit,
 	unsigned rt_reg = regs.load_mips_register_noext(_jit, rt);
 	unsigned rs_reg = regs.load_mips_register_noext(_jit, rs);
 	unsigned rs_tmp_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
-	jit_addi(rs_tmp_reg, rs_reg, simm);
-	jit_andi(rs_tmp_reg, rs_tmp_reg, 0xfffu);
+	_jit->addi(rs_tmp_reg, rs_reg, simm);
+	_jit->andi(rs_tmp_reg, rs_tmp_reg, 0xfffu);
 
 	// If we are unaligned, it gets very messy to JIT, so just thunk it out to C code.
-	jit_node_t *unaligned = nullptr;
+	CodeLabel *unaligned = nullptr;
 	if (align_mask)
 	{
 		regs.unlock_mips_register(rt);
@@ -789,27 +754,27 @@ void CPU::jit_emit_store_operation(jit_state_t *_jit,
 		// We're going to call, so need to save caller-save register we care about.
 		regs.flush_caller_save_registers(_jit);
 
-		unaligned = jit_bmsi(rs_tmp_reg, align_mask);
+		unaligned = _jit->bmsi(rs_tmp_reg, align_mask);
 	}
 
 	// The MIPS is big endian, but the words are swapped per word in integration, so it's kinda little-endian,
 	// except we need to XOR the address for byte and half-word accesses.
 	if (endian_flip != 0)
-		jit_xori(rs_tmp_reg, rs_tmp_reg, endian_flip);
+		_jit->xori(rs_tmp_reg, rs_tmp_reg, endian_flip);
 
 	jit_emitter(_jit, rs_tmp_reg, JIT_REGISTER_DMEM, rt_reg);
 
-	jit_node_t *aligned = nullptr;
+	CodeLabel *aligned = nullptr;
 	if (align_mask)
 	{
-		aligned = jit_jmpi();
-		jit_patch(unaligned);
+		aligned = _jit->jmpi();
+		_jit->patch(unaligned);
 		jit_begin_call(_jit);
-		jit_pushargr(JIT_REGISTER_DMEM);
-		jit_pushargr(rs_tmp_reg);
-		jit_pushargr(rt_reg);
+		_jit->pushargr(JIT_REGISTER_DMEM);
+		_jit->pushargr(rs_tmp_reg);
+		_jit->pushargr(rt_reg);
 		jit_end_call(_jit, rsp_unaligned_op);
-		jit_patch(aligned);
+		_jit->patch(aligned);
 	}
 	else
 	{
@@ -822,10 +787,10 @@ void CPU::jit_emit_store_operation(jit_state_t *_jit,
 // The RSP may or may not have a load-delay slot, but it doesn't seem to matter in practice, so just emulate without
 // a load-delay slot.
 
-void CPU::jit_emit_load_operation(jit_state_t *_jit,
+void CPU::jit_emit_load_operation(Emitter *_jit,
                                   uint32_t pc, uint32_t instr,
-                                  void (*jit_emitter)(jit_state_t *jit, unsigned, unsigned, unsigned), const char *asmop,
-                                  jit_pointer_t rsp_unaligned_op,
+                                  void (*jit_emitter)(Emitter *jit, unsigned, unsigned, unsigned), const char *asmop,
+                                  CodePointer rsp_unaligned_op,
                                   uint32_t endian_flip,
                                   const InstructionInfo &last_info)
 {
@@ -838,13 +803,13 @@ void CPU::jit_emit_load_operation(jit_state_t *_jit,
 	unsigned rs = (instr >> 21) & 31;
 	unsigned rs_reg = regs.load_mips_register_noext(_jit, rs);
 	unsigned rs_tmp_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
-	jit_addi(rs_tmp_reg, rs_reg, simm);
-	jit_andi(rs_tmp_reg, rs_tmp_reg, 0xfffu);
+	_jit->addi(rs_tmp_reg, rs_reg, simm);
+	_jit->andi(rs_tmp_reg, rs_tmp_reg, 0xfffu);
 
 	unsigned ret_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER1);
 
 	// If we are unaligned, it gets very messy to JIT, so just thunk it out to C code.
-	jit_node_t *unaligned = nullptr;
+	CodeLabel *unaligned = nullptr;
 	if (align_mask)
 	{
 		// Flush the register cache here since we might call.
@@ -854,32 +819,32 @@ void CPU::jit_emit_load_operation(jit_state_t *_jit,
 		regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER1);
 
 		regs.flush_caller_save_registers(_jit);
-		unaligned = jit_bmsi(rs_tmp_reg, align_mask);
+		unaligned = _jit->bmsi(rs_tmp_reg, align_mask);
 	}
 
 	// The MIPS is big endian, but the words are swapped per word in integration, so it's kinda little-endian,
 	// except we need to XOR the address for byte and half-word accesses.
 	if (endian_flip != 0)
-		jit_xori(rs_tmp_reg, rs_tmp_reg, endian_flip);
+		_jit->xori(rs_tmp_reg, rs_tmp_reg, endian_flip);
 
 	jit_emitter(_jit, ret_reg, JIT_REGISTER_DMEM, rs_tmp_reg);
 
-	jit_node_t *aligned = nullptr;
+	CodeLabel *aligned = nullptr;
 	if (align_mask)
 	{
-		aligned = jit_jmpi();
-		jit_patch(unaligned);
+		aligned = _jit->jmpi();
+		_jit->patch(unaligned);
 	}
 
 	if (align_mask)
 	{
 		// We're going to call, so need to save caller-save register we care about.
 		jit_begin_call(_jit);
-		jit_pushargr(JIT_REGISTER_DMEM);
-		jit_pushargr(rs_tmp_reg);
+		_jit->pushargr(JIT_REGISTER_DMEM);
+		_jit->pushargr(rs_tmp_reg);
 		jit_end_call(_jit, rsp_unaligned_op);
-		jit_retval(ret_reg);
-		jit_patch(aligned);
+		_jit->retval(ret_reg);
+		_jit->patch(aligned);
 	}
 	else
 	{
@@ -889,21 +854,21 @@ void CPU::jit_emit_load_operation(jit_state_t *_jit,
 	}
 
 	unsigned rt_reg = regs.modify_mips_register(_jit, rt);
-	jit_movr(rt_reg, ret_reg);
+	_jit->movr(rt_reg, ret_reg);
 	regs.unlock_mips_register(rt);
 }
 
-void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
+void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
                           InstructionInfo &info, const InstructionInfo &last_info,
                           bool first_instruction, bool next_instruction_is_branch_target)
 {
 #ifdef TRACE
 	regs.flush_register_window(_jit);
 	jit_begin_call(_jit);
-	jit_pushargr(JIT_REGISTER_STATE);
-	jit_pushargi(pc);
-	jit_pushargi(instr);
-	jit_end_call(_jit, reinterpret_cast<jit_pointer_t>(rsp_report_pc));
+	_jit->pushargr(JIT_REGISTER_STATE);
+	_jit->pushargi(pc);
+	_jit->pushargi(instr);
+	jit_end_call(_jit, reinterpret_cast<CodePointer>(rsp_report_pc));
 #endif
 
 	// VU
@@ -937,12 +902,12 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 
 		regs.flush_caller_save_registers(_jit);
 		jit_begin_call(_jit);
-		jit_pushargr(JIT_REGISTER_STATE);
-		jit_pushargi(vd);
-		jit_pushargi(vs);
-		jit_pushargi(vt);
-		jit_pushargi(e);
-		jit_end_call(_jit ,reinterpret_cast<jit_pointer_t>(vuop));
+		_jit->pushargr(JIT_REGISTER_STATE);
+		_jit->pushargi(vd);
+		_jit->pushargi(vs);
+		_jit->pushargi(vt);
+		_jit->pushargi(e);
+		jit_end_call(_jit ,reinterpret_cast<CodePointer>(vuop));
 		return;
 	}
 
@@ -972,7 +937,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			NOP_IF_RD_ZERO();
 			unsigned rt_reg = regs.load_mips_register_noext(_jit, rt);
 			unsigned rd_reg = regs.modify_mips_register(_jit, rd);
-			jit_lshi(rd_reg, rt_reg, shift);
+			_jit->lshi(rd_reg, rt_reg, shift);
 			regs.unlock_mips_register(rt);
 			regs.unlock_mips_register(rd);
 			break;
@@ -983,7 +948,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			NOP_IF_RD_ZERO();
 			unsigned rt_reg = regs.load_mips_register_zext(_jit, rt);
 			unsigned rd_reg = regs.modify_mips_register(_jit, rd);
-			jit_rshi_u(rd_reg, rt_reg, shift);
+			_jit->rshi_u(rd_reg, rt_reg, shift);
 			regs.unlock_mips_register(rt);
 			regs.unlock_mips_register(rd);
 			break;
@@ -994,7 +959,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			NOP_IF_RD_ZERO();
 			unsigned rt_reg = regs.load_mips_register_sext(_jit, rt);
 			unsigned rd_reg = regs.modify_mips_register(_jit, rd);
-			jit_rshi(rd_reg, rt_reg, shift);
+			_jit->rshi(rd_reg, rt_reg, shift);
 			regs.unlock_mips_register(rt);
 			regs.unlock_mips_register(rd);
 			break;
@@ -1006,10 +971,10 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			unsigned rt_reg = regs.load_mips_register_noext(_jit, rt);
 			unsigned rs_reg = regs.load_mips_register_noext(_jit, rs);
 			unsigned rs_tmp_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
-			jit_andi(rs_tmp_reg, rs_reg, 31);
+			_jit->andi(rs_tmp_reg, rs_reg, 31);
 			regs.unlock_mips_register(rs);
 			unsigned rd_reg = regs.modify_mips_register(_jit, rd);
-			jit_lshr(rd_reg, rt_reg, rs_tmp_reg);
+			_jit->lshr(rd_reg, rt_reg, rs_tmp_reg);
 			regs.unlock_mips_register(rt);
 			regs.unlock_mips_register(rd);
 			regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
@@ -1022,10 +987,10 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			unsigned rt_reg = regs.load_mips_register_zext(_jit, rt);
 			unsigned rs_reg = regs.load_mips_register_noext(_jit, rs);
 			unsigned rs_tmp_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
-			jit_andi(rs_tmp_reg, rs_reg, 31);
+			_jit->andi(rs_tmp_reg, rs_reg, 31);
 			regs.unlock_mips_register(rs);
 			unsigned rd_reg = regs.modify_mips_register(_jit, rd);
-			jit_rshr_u(rd_reg, rt_reg, rs_tmp_reg);
+			_jit->rshr_u(rd_reg, rt_reg, rs_tmp_reg);
 			regs.unlock_mips_register(rt);
 			regs.unlock_mips_register(rd);
 			regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
@@ -1034,13 +999,14 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 
 		case 007: // SRAV
 		{
+			NOP_IF_RD_ZERO();
 			unsigned rt_reg = regs.load_mips_register_sext(_jit, rt);
 			unsigned rs_reg = regs.load_mips_register_noext(_jit, rs);
 			unsigned rs_tmp_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
-			jit_andi(rs_tmp_reg, rs_reg, 31);
+			_jit->andi(rs_tmp_reg, rs_reg, 31);
 			regs.unlock_mips_register(rs);
 			unsigned rd_reg = regs.modify_mips_register(_jit, rd);
-			jit_rshr(rd_reg, rt_reg, rs_tmp_reg);
+			_jit->rshr(rd_reg, rt_reg, rs_tmp_reg);
 			regs.unlock_mips_register(rt);
 			regs.unlock_mips_register(rd);
 			regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
@@ -1113,7 +1079,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 	unsigned rs_reg = regs.load_mips_register_##ext(_jit, rs); \
 	unsigned rt_reg = regs.load_mips_register_##ext(_jit, rt); \
 	unsigned rd_reg = regs.modify_mips_register(_jit, rd); \
-	jit_##op(rd_reg, rs_reg, rt_reg); \
+	_jit->op(rd_reg, rs_reg, rt_reg); \
 	regs.unlock_mips_register(rs); \
 	regs.unlock_mips_register(rt); \
 	regs.unlock_mips_register(rd)
@@ -1156,8 +1122,8 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			unsigned rt_reg = regs.load_mips_register_noext(_jit, rt);
 			unsigned rs_reg = regs.load_mips_register_noext(_jit, rs);
 			unsigned rd_reg = regs.modify_mips_register(_jit, rd);
-			jit_orr(rd_reg, rt_reg, rs_reg);
-			jit_xori(rd_reg, rd_reg, jit_word_t(-1));
+			_jit->orr(rd_reg, rt_reg, rs_reg);
+			_jit->xori(rd_reg, rd_reg, HostWord(-1));
 			regs.unlock_mips_register(rt);
 			regs.unlock_mips_register(rs);
 			regs.unlock_mips_register(rd);
@@ -1195,7 +1161,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			uint32_t target_pc = (pc + 4 + (instr << 2)) & 0xffc;
 			unsigned rs_reg = regs.load_mips_register_sext(_jit, rs);
 			unsigned cond_reg = regs.modify_mips_register(_jit, RegisterCache::COND_BRANCH_TAKEN);
-			jit_lti(cond_reg, rs_reg, 0);
+			_jit->lti(cond_reg, rs_reg, 0);
 
 			regs.unlock_mips_register(rs);
 			regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
@@ -1218,7 +1184,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 
 			unsigned rs_reg = regs.load_mips_register_sext(_jit, rs);
 			unsigned cond_reg = regs.modify_mips_register(_jit, RegisterCache::COND_BRANCH_TAKEN);
-			jit_lti(cond_reg, rs_reg, 0);
+			_jit->lti(cond_reg, rs_reg, 0);
 
 			regs.unlock_mips_register(rs);
 			regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
@@ -1236,7 +1202,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			uint32_t target_pc = (pc + 4 + (instr << 2)) & 0xffc;
 			unsigned rs_reg = regs.load_mips_register_sext(_jit, rs);
 			unsigned cond_reg = regs.modify_mips_register(_jit, RegisterCache::COND_BRANCH_TAKEN);
-			jit_gei(cond_reg, rs_reg, 0);
+			_jit->gei(cond_reg, rs_reg, 0);
 
 			regs.unlock_mips_register(rs);
 			regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
@@ -1258,7 +1224,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			uint32_t target_pc = (pc + 4 + (instr << 2)) & 0xffc;
 			unsigned rs_reg = regs.load_mips_register_sext(_jit, rs);
 			unsigned cond_reg = regs.modify_mips_register(_jit, RegisterCache::COND_BRANCH_TAKEN);
-			jit_gei(cond_reg, rs_reg, 0);
+			_jit->gei(cond_reg, rs_reg, 0);
 
 			regs.unlock_mips_register(rs);
 			regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
@@ -1324,7 +1290,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 		unsigned rs_reg = regs.load_mips_register_sext(_jit, rs);
 		unsigned rt_reg = regs.load_mips_register_sext(_jit, rt);
 		unsigned cond_reg = regs.modify_mips_register(_jit, RegisterCache::COND_BRANCH_TAKEN);
-		jit_eqr(cond_reg, rs_reg, rt_reg);
+		_jit->eqr(cond_reg, rs_reg, rt_reg);
 		regs.unlock_mips_register(rs);
 		regs.unlock_mips_register(rt);
 		regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
@@ -1343,7 +1309,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 		unsigned rs_reg = regs.load_mips_register_sext(_jit, rs);
 		unsigned rt_reg = regs.load_mips_register_sext(_jit, rt);
 		unsigned cond_reg = regs.modify_mips_register(_jit, RegisterCache::COND_BRANCH_TAKEN);
-		jit_ner(cond_reg, rs_reg, rt_reg);
+		_jit->ner(cond_reg, rs_reg, rt_reg);
 		regs.unlock_mips_register(rs);
 		regs.unlock_mips_register(rt);
 		regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
@@ -1364,7 +1330,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 		{
 			unsigned rs_reg = regs.load_mips_register_sext(_jit, rs);
 			unsigned cond_reg = regs.modify_mips_register(_jit, RegisterCache::COND_BRANCH_TAKEN);
-			jit_lei(cond_reg, rs_reg, 0);
+			_jit->lei(cond_reg, rs_reg, 0);
 			regs.unlock_mips_register(rs);
 			regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
 			info.conditional = true;
@@ -1387,7 +1353,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 		uint32_t target_pc = (pc + 4 + (instr << 2)) & 0xffc;
 		unsigned rs_reg = regs.load_mips_register_sext(_jit, rs);
 		unsigned cond_reg = regs.modify_mips_register(_jit, RegisterCache::COND_BRANCH_TAKEN);
-		jit_gti(cond_reg, rs_reg, 0);
+		_jit->gti(cond_reg, rs_reg, 0);
 		regs.unlock_mips_register(rs);
 		regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
 
@@ -1405,7 +1371,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 	unsigned rs = (instr >> 21) & 31; \
 	unsigned rs_reg = regs.load_mips_register_##ext(_jit, rs); \
 	unsigned rt_reg = regs.modify_mips_register(_jit, rt); \
-	jit_##op(rt_reg, rs_reg, immtype(instr)); \
+	_jit->op(rt_reg, rs_reg, immtype(instr)); \
 	regs.unlock_mips_register(rs); \
 	regs.unlock_mips_register(rt)
 
@@ -1489,15 +1455,15 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			regs.flush_register_window(_jit);
 
 			jit_begin_call(_jit);
-			jit_pushargr(JIT_REGISTER_STATE);
-			jit_pushargi(rt);
-			jit_pushargi(rd);
-			jit_end_call(_jit, reinterpret_cast<jit_pointer_t>(RSP_MFC0));
-			jit_retval(JIT_REGISTER_MODE);
+			_jit->pushargr(JIT_REGISTER_STATE);
+			_jit->pushargi(rt);
+			_jit->pushargi(rd);
+			jit_end_call(_jit, reinterpret_cast<CodePointer>(RSP_MFC0));
+			_jit->retval(JIT_REGISTER_MODE);
 
-			jit_node_t *noexit = jit_beqi(JIT_REGISTER_MODE, MODE_CONTINUE);
+			CodeLabel *noexit = _jit->beqi(JIT_REGISTER_MODE, MODE_CONTINUE);
 			jit_exit_dynamic(_jit, pc, last_info, first_instruction);
-			jit_patch(noexit);
+			_jit->patch(noexit);
 
 			break;
 		}
@@ -1507,15 +1473,15 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			regs.flush_register_window(_jit);
 
 			jit_begin_call(_jit);
-			jit_pushargr(JIT_REGISTER_STATE);
-			jit_pushargi(rd);
-			jit_pushargi(rt);
-			jit_end_call(_jit, reinterpret_cast<jit_pointer_t>(RSP_MTC0));
-			jit_retval(JIT_REGISTER_MODE);
+			_jit->pushargr(JIT_REGISTER_STATE);
+			_jit->pushargi(rd);
+			_jit->pushargi(rt);
+			jit_end_call(_jit, reinterpret_cast<CodePointer>(RSP_MTC0));
+			_jit->retval(JIT_REGISTER_MODE);
 
-			jit_node_t *noexit = jit_beqi(JIT_REGISTER_MODE, MODE_CONTINUE);
+			CodeLabel *noexit = _jit->beqi(JIT_REGISTER_MODE, MODE_CONTINUE);
 			jit_exit_dynamic(_jit, pc, last_info, first_instruction);
-			jit_patch(noexit);
+			_jit->patch(noexit);
 
 			break;
 		}
@@ -1540,11 +1506,11 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			regs.flush_caller_save_registers(_jit);
 			regs.flush_mips_register(_jit, rt);
 			jit_begin_call(_jit);
-			jit_pushargr(JIT_REGISTER_STATE);
-			jit_pushargi(rt);
-			jit_pushargi(rd);
-			jit_pushargi(imm);
-			jit_end_call(_jit, reinterpret_cast<jit_pointer_t>(RSP_MFC2));
+			_jit->pushargr(JIT_REGISTER_STATE);
+			_jit->pushargi(rt);
+			_jit->pushargi(rd);
+			_jit->pushargi(imm);
+			jit_end_call(_jit, reinterpret_cast<CodePointer>(RSP_MFC2));
 			break;
 		}
 
@@ -1553,10 +1519,10 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			regs.flush_caller_save_registers(_jit);
 			regs.flush_mips_register(_jit, rt);
 			jit_begin_call(_jit);
-			jit_pushargr(JIT_REGISTER_STATE);
-			jit_pushargi(rt);
-			jit_pushargi(rd);
-			jit_end_call(_jit, reinterpret_cast<jit_pointer_t>(RSP_CFC2));
+			_jit->pushargr(JIT_REGISTER_STATE);
+			_jit->pushargi(rt);
+			_jit->pushargi(rd);
+			jit_end_call(_jit, reinterpret_cast<CodePointer>(RSP_CFC2));
 			break;
 		}
 
@@ -1565,11 +1531,11 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			regs.flush_caller_save_registers(_jit);
 			regs.flush_mips_register(_jit, rt);
 			jit_begin_call(_jit);
-			jit_pushargr(JIT_REGISTER_STATE);
-			jit_pushargi(rt);
-			jit_pushargi(rd);
-			jit_pushargi(imm);
-			jit_end_call(_jit, reinterpret_cast<jit_pointer_t>(RSP_MTC2));
+			_jit->pushargr(JIT_REGISTER_STATE);
+			_jit->pushargi(rt);
+			_jit->pushargi(rd);
+			_jit->pushargi(imm);
+			jit_end_call(_jit, reinterpret_cast<CodePointer>(RSP_MTC2));
 			break;
 		}
 
@@ -1579,10 +1545,10 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			regs.flush_mips_register(_jit, rt);
 
 			jit_begin_call(_jit);
-			jit_pushargr(JIT_REGISTER_STATE);
-			jit_pushargi(rt);
-			jit_pushargi(rd);
-			jit_end_call(_jit, reinterpret_cast<jit_pointer_t>(RSP_CTC2));
+			_jit->pushargr(JIT_REGISTER_STATE);
+			_jit->pushargi(rt);
+			_jit->pushargi(rd);
+			jit_end_call(_jit, reinterpret_cast<CodePointer>(RSP_CTC2));
 			break;
 		}
 
@@ -1595,7 +1561,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 	case 040: // LB
 	{
 		jit_emit_load_operation(_jit, pc, instr,
-		                        [](jit_state_t *_jit, unsigned a, unsigned b, unsigned c) { jit_ldxr_c(a, b, c); },
+		                        [](Emitter *_jit, unsigned a, unsigned b, unsigned c) { _jit->ldxr_c(a, b, c); },
 		                        "lb",
 		                        nullptr,
 		                        3, last_info);
@@ -1605,9 +1571,9 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 	case 041: // LH
 	{
 		jit_emit_load_operation(_jit, pc, instr,
-		                        [](jit_state_t *_jit, unsigned a, unsigned b, unsigned c) { jit_ldxr_s(a, b, c); },
+		                        [](Emitter *_jit, unsigned a, unsigned b, unsigned c) { _jit->ldxr_s(a, b, c); },
 		                        "lh",
-		                        reinterpret_cast<jit_pointer_t>(rsp_unaligned_lh),
+		                        reinterpret_cast<CodePointer>(rsp_unaligned_lh),
 		                        2, last_info);
 		break;
 	}
@@ -1615,9 +1581,9 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 	case 043: // LW
 	{
 		jit_emit_load_operation(_jit, pc, instr,
-		                        [](jit_state_t *_jit, unsigned a, unsigned b, unsigned c) { jit_ldxr_i(a, b, c); },
+		                        [](Emitter *_jit, unsigned a, unsigned b, unsigned c) { _jit->ldxr_i(a, b, c); },
 		                        "lw",
-		                        reinterpret_cast<jit_pointer_t>(rsp_unaligned_lw),
+		                        reinterpret_cast<CodePointer>(rsp_unaligned_lw),
 		                        0, last_info);
 		break;
 	}
@@ -1625,7 +1591,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 	case 044: // LBU
 	{
 		jit_emit_load_operation(_jit, pc, instr,
-		                        [](jit_state_t *_jit, unsigned a, unsigned b, unsigned c) { jit_ldxr_uc(a, b, c); },
+		                        [](Emitter *_jit, unsigned a, unsigned b, unsigned c) { _jit->ldxr_uc(a, b, c); },
 		                        "lbu",
 		                        nullptr,
 		                        3, last_info);
@@ -1635,9 +1601,9 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 	case 045: // LHU
 	{
 		jit_emit_load_operation(_jit, pc, instr,
-		                        [](jit_state_t *_jit, unsigned a, unsigned b, unsigned c) { jit_ldxr_us(a, b, c); },
+		                        [](Emitter *_jit, unsigned a, unsigned b, unsigned c) { _jit->ldxr_us(a, b, c); },
 		                        "lhu",
-		                        reinterpret_cast<jit_pointer_t>(rsp_unaligned_lhu),
+		                        reinterpret_cast<CodePointer>(rsp_unaligned_lhu),
 		                        2, last_info);
 		break;
 	}
@@ -1645,7 +1611,7 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 	case 050: // SB
 	{
 		jit_emit_store_operation(_jit, pc, instr,
-		                         [](jit_state_t *_jit, unsigned a, unsigned b, unsigned c) { jit_stxr_c(a, b, c); },
+		                         [](Emitter *_jit, unsigned a, unsigned b, unsigned c) { _jit->stxr_c(a, b, c); },
 		                         "sb",
 		                         nullptr,
 		                         3, last_info);
@@ -1655,9 +1621,9 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 	case 051: // SH
 	{
 		jit_emit_store_operation(_jit, pc, instr,
-		                         [](jit_state_t *_jit, unsigned a, unsigned b, unsigned c) { jit_stxr_s(a, b, c); },
+		                         [](Emitter *_jit, unsigned a, unsigned b, unsigned c) { _jit->stxr_s(a, b, c); },
 		                         "sh",
-		                         reinterpret_cast<jit_pointer_t>(rsp_unaligned_sh),
+		                         reinterpret_cast<CodePointer>(rsp_unaligned_sh),
 		                         2, last_info);
 		break;
 	}
@@ -1665,9 +1631,9 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 	case 053: // SW
 	{
 		jit_emit_store_operation(_jit, pc, instr,
-		                         [](jit_state_t *_jit, unsigned a, unsigned b, unsigned c) { jit_stxr_i(a, b, c); },
+		                         [](Emitter *_jit, unsigned a, unsigned b, unsigned c) { _jit->stxr_i(a, b, c); },
 		                         "sh",
-		                         reinterpret_cast<jit_pointer_t>(rsp_unaligned_sw),
+		                         reinterpret_cast<CodePointer>(rsp_unaligned_sw),
 		                         0, last_info);
 		break;
 	}
@@ -1694,12 +1660,12 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			regs.flush_caller_save_registers(_jit);
 			regs.flush_mips_register(_jit, rs);
 			jit_begin_call(_jit);
-			jit_pushargr(JIT_REGISTER_STATE);
-			jit_pushargi(rt);
-			jit_pushargi(imm);
-			jit_pushargi(simm);
-			jit_pushargi(rs);
-			jit_end_call(_jit, reinterpret_cast<jit_pointer_t>(op));
+			_jit->pushargr(JIT_REGISTER_STATE);
+			_jit->pushargi(rt);
+			_jit->pushargi(imm);
+			_jit->pushargi(simm);
+			_jit->pushargi(rs);
+			jit_end_call(_jit, reinterpret_cast<CodePointer>(op));
 		}
 		break;
 	}
@@ -1726,12 +1692,12 @@ void CPU::jit_instruction(jit_state_t *_jit, uint32_t pc, uint32_t instr,
 			regs.flush_caller_save_registers(_jit);
 			regs.flush_mips_register(_jit, rs);
 			jit_begin_call(_jit);
-			jit_pushargr(JIT_REGISTER_STATE);
-			jit_pushargi(rt);
-			jit_pushargi(imm);
-			jit_pushargi(simm);
-			jit_pushargi(rs);
-			jit_end_call(_jit, reinterpret_cast<jit_pointer_t>(op));
+			_jit->pushargr(JIT_REGISTER_STATE);
+			_jit->pushargi(rt);
+			_jit->pushargi(imm);
+			_jit->pushargi(simm);
+			_jit->pushargi(rs);
+			jit_end_call(_jit, reinterpret_cast<CodePointer>(op));
 		}
 		break;
 	}
@@ -1802,7 +1768,7 @@ void CPU::jit_mark_block_entries(uint32_t pc, uint32_t end, bool *block_entries)
 	}
 }
 
-void CPU::jit_handle_latent_delay_slot(jit_state_t *_jit, const InstructionInfo &last_info)
+void CPU::jit_handle_latent_delay_slot(Emitter *_jit, const InstructionInfo &last_info)
 {
 	regs.flush_register_window(_jit);
 	jit_branch_stall(_jit, false);
@@ -1818,25 +1784,25 @@ void CPU::jit_handle_latent_delay_slot(jit_state_t *_jit, const InstructionInfo 
 	{
 		// Well then ... two branches in a row just happened. Try to do something sensible.
 		if (!last_info.conditional)
-			jit_movi(cond_branch_reg, 1);
-		jit_stxi_i(offsetof(CPUState, has_delay_slot), JIT_REGISTER_STATE, cond_branch_reg);
+			_jit->movi(cond_branch_reg, 1);
+		_jit->stxi_i(offsetof(CPUState, has_delay_slot), JIT_REGISTER_STATE, cond_branch_reg);
 
-		jit_ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, branch_target));
+		_jit->ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, branch_target));
 
 		if (last_info.indirect)
 			jit_load_indirect_register(_jit, JIT_REGISTER_MODE);
 		else
-			jit_movi(JIT_REGISTER_MODE, last_info.branch_target);
+			_jit->movi(JIT_REGISTER_MODE, last_info.branch_target);
 
-		jit_stxi_i(offsetof(CPUState, branch_target), JIT_REGISTER_STATE, JIT_REGISTER_MODE);
-		jit_patch_abs(jit_jmpi(), thunks.enter_thunk);
+		_jit->stxi_i(offsetof(CPUState, branch_target), JIT_REGISTER_STATE, JIT_REGISTER_MODE);
+		_jit->jump_absolute(thunks.enter_thunk);
 	}
 	else
 	{
-		jit_movi(JIT_REGISTER_NEXT_PC, 0);
-		jit_stxi_i(offsetof(CPUState, has_delay_slot), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
-		jit_ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, branch_target));
-		jit_patch_abs(jit_jmpi(), thunks.enter_thunk);
+		_jit->movi(JIT_REGISTER_NEXT_PC, 0);
+		_jit->stxi_i(offsetof(CPUState, has_delay_slot), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
+		_jit->ldxi_i(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, branch_target));
+		_jit->jump_absolute(thunks.enter_thunk);
 	}
 }
 
@@ -1845,13 +1811,12 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 	regs.reset();
 
 	mips_disasm.clear();
-	jit_state_t *_jit = jit_new_state();
+	Emitter emitter;
+	Emitter *_jit = &emitter;
 
-	jit_prolog();
-	jit_tramp(JIT_FRAME_SIZE);
 
-	jit_node_t *branch_targets[CODE_BLOCK_WORDS * 2];
-	jit_node_t *latent_delay_slot = nullptr;
+	CodeLabel *branch_targets[CODE_BLOCK_WORDS * 2];
+	CodeLabel *latent_delay_slot = nullptr;
 	local_branches.clear();
 
 	assert(instruction_count <= (CODE_BLOCK_WORDS * 2));
@@ -1908,18 +1873,18 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 			// Before we enter into a new block, we have to flush register window since someone can branch here.
 			regs.flush_register_window(_jit);
 			regs.reset();
-			branch_targets[i] = jit_label();
+			branch_targets[i] = _jit->label();
 			// A local target may also be a fallthrough delay slot. Resolve
 			// its preceding branch before yielding; only region-entry delay
 			// slots already have their pending branch in CPUState.
 			if (cycle_timing && !last_info.branch) {
-				jit_ldxi_ui(JIT_REGISTER_MODE, JIT_REGISTER_STATE, offsetof(CPUState, cycles));
-				jit_ldxi_ui(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, cycle_limit));
-				auto *continue_slice = jit_bltr_u(JIT_REGISTER_MODE, JIT_REGISTER_NEXT_PC);
-				jit_movi(JIT_REGISTER_MODE, MODE_TIMESLICE);
-				jit_movi(JIT_REGISTER_NEXT_PC, (pc_word + i) << 2);
-				jit_patch_abs(jit_jmpi(), thunks.return_thunk);
-				jit_patch(continue_slice);
+				_jit->ldxi_ui(JIT_REGISTER_MODE, JIT_REGISTER_STATE, offsetof(CPUState, cycles));
+				_jit->ldxi_ui(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, cycle_limit));
+				auto *continue_slice = _jit->bltr_u(JIT_REGISTER_MODE, JIT_REGISTER_NEXT_PC);
+				_jit->movi(JIT_REGISTER_MODE, MODE_TIMESLICE);
+				_jit->movi(JIT_REGISTER_NEXT_PC, (pc_word + i) << 2);
+				_jit->jump_absolute(thunks.return_thunk);
+				_jit->patch(continue_slice);
 			}
 		}
 
@@ -1931,9 +1896,9 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 		// both memory traffic and a needless scratch-register eviction.
 		if (timing_cost[i]) {
 			unsigned cycle_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
-			jit_ldxi_ui(cycle_reg, JIT_REGISTER_STATE, offsetof(CPUState, cycles));
-			jit_addi(cycle_reg, cycle_reg, timing_cost[i]);
-			jit_stxi_i(offsetof(CPUState, cycles), JIT_REGISTER_STATE, cycle_reg);
+			_jit->ldxi_ui(cycle_reg, JIT_REGISTER_STATE, offsetof(CPUState, cycles));
+			_jit->addi(cycle_reg, cycle_reg, timing_cost[i]);
+			_jit->stxi_i(offsetof(CPUState, cycles), JIT_REGISTER_STATE, cycle_reg);
 			regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
 		}
 
@@ -1964,12 +1929,12 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 		if (i == 0 && !inst_info.handles_delay_slot)
 		{
 			unsigned scratch_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
-			jit_ldxi_i(scratch_reg, JIT_REGISTER_STATE, offsetof(CPUState, has_delay_slot));
+			_jit->ldxi_i(scratch_reg, JIT_REGISTER_STATE, offsetof(CPUState, has_delay_slot));
 			regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
 			regs.flush_register_window(_jit);
 
 			// After the first instruction, we might need to resolve a latent delay slot.
-			latent_delay_slot = jit_bnei(scratch_reg, 0);
+			latent_delay_slot = _jit->bnei(scratch_reg, 0);
 			first_info = inst_info;
 		}
 		else if (inst_info.branch && last_info.branch)
@@ -1995,22 +1960,21 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 	// If we had a latent delay slot, we handle it here.
 	if (latent_delay_slot)
 	{
-		jit_patch(latent_delay_slot);
+		_jit->patch(latent_delay_slot);
 		jit_handle_latent_delay_slot(_jit, first_info);
 	}
 
 	for (auto &b : local_branches)
-		jit_patch_at(b.node, branch_targets[b.local_index]);
+		_jit->patch_at(b.node, branch_targets[b.local_index]);
 
-	jit_realize();
-	jit_word_t code_size;
-	jit_get_code(&code_size);
+	HostWord code_size;
+	_jit->get_code(&code_size);
 	auto *block_code = allocator.allocate_code(code_size);
 	if (!block_code)
 		abort();
-	jit_set_code(block_code, code_size);
+	_jit->set_code(block_code, code_size);
 
-	auto ret = reinterpret_cast<Func>(jit_emit());
+	auto ret = reinterpret_cast<Func>(_jit->emit());
 #ifdef RSP_JIT_CODE_DUMP
     if(const char *directory=std::getenv("RSP_JIT_CODE_DUMP")) {
         char path[1024];std::snprintf(path,sizeof(path),"%s/%03x.bin",directory,pc_word*4);
@@ -2023,11 +1987,8 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 #ifdef TRACE_DISASM
 	printf(" === DISASM ===\n");
 	printf("%s\n", mips_disasm.c_str());
-	jit_disassemble();
 	printf(" === DISASM END ===\n\n");
 #endif
-	jit_clear_state();
-	jit_destroy_state();
 
 	if (!Allocator::commit_code(block_code, code_size))
 		abort();
@@ -2145,24 +2106,24 @@ RegisterCache::CacheEntry &RegisterCache::find_register(unsigned mips_reg)
 	return *reg;
 }
 
-void RegisterCache::writeback_register(jit_state_t *_jit, CacheEntry &entry)
+void RegisterCache::writeback_register(Emitter *_jit, CacheEntry &entry)
 {
 	// The scratch registers are never flushed out to memory.
 	assert(entry.mips_register != 0);
 	if (entry.mips_register <= COND_BRANCH_TAKEN)
-		jit_stxi_i(offsetof(CPUState, sr) + 4 * entry.mips_register, JIT_REGISTER_STATE, entry_to_jit_register(entry));
+		_jit->stxi_i(offsetof(CPUState, sr) + 4 * entry.mips_register, JIT_REGISTER_STATE, entry_to_jit_register(entry));
 	entry.modified = false;
 }
 
-unsigned RegisterCache::immediate_mips_register(jit_state_t *_jit, unsigned mips_reg, jit_word_t value)
+unsigned RegisterCache::immediate_mips_register(Emitter *_jit, unsigned mips_reg, HostWord value)
 {
 	unsigned jit_reg = modify_mips_register(_jit, mips_reg);
-	jit_movi(jit_reg, value);
+	_jit->movi(jit_reg, value);
 	entries[jit_register_to_index(jit_reg)].sign = SExt;
 	return jit_reg;
 }
 
-unsigned RegisterCache::load_mips_register_noext(jit_state_t *_jit, unsigned mips_reg)
+unsigned RegisterCache::load_mips_register_noext(Emitter *_jit, unsigned mips_reg)
 {
 	auto &reg = find_register(mips_reg);
 	unsigned jit_reg = entry_to_jit_register(reg);
@@ -2175,9 +2136,9 @@ unsigned RegisterCache::load_mips_register_noext(jit_state_t *_jit, unsigned mip
 		reg.mips_register = mips_reg;
 
 		if (mips_reg)
-			jit_ldxi_i(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
+			_jit->ldxi_i(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
 		else
-			jit_movi(jit_reg, 0);
+			_jit->movi(jit_reg, 0);
 		reg.modified = false;
 
 		// We know that the input is sign-extended so future opcodes which rely on
@@ -2189,9 +2150,9 @@ unsigned RegisterCache::load_mips_register_noext(jit_state_t *_jit, unsigned mip
 		reg.mips_register = mips_reg;
 
 		if (mips_reg)
-			jit_ldxi_i(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
+			_jit->ldxi_i(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
 		else
-			jit_movi(jit_reg, 0);
+			_jit->movi(jit_reg, 0);
 
 		reg.sign = SExt;
 		reg.is_live = true;
@@ -2205,7 +2166,7 @@ unsigned RegisterCache::load_mips_register_noext(jit_state_t *_jit, unsigned mip
 	return jit_reg;
 }
 
-unsigned RegisterCache::modify_mips_register(jit_state_t *_jit, unsigned mips_reg)
+unsigned RegisterCache::modify_mips_register(Emitter *_jit, unsigned mips_reg)
 {
 	auto &reg = find_register(mips_reg);
 	unsigned jit_reg = entry_to_jit_register(reg);
@@ -2231,7 +2192,7 @@ unsigned RegisterCache::modify_mips_register(jit_state_t *_jit, unsigned mips_re
 	return jit_reg;
 }
 
-unsigned RegisterCache::load_mips_register_sext(jit_state_t *_jit, unsigned mips_reg)
+unsigned RegisterCache::load_mips_register_sext(Emitter *_jit, unsigned mips_reg)
 {
 	auto &reg = find_register(mips_reg);
 	unsigned jit_reg = entry_to_jit_register(reg);
@@ -2244,9 +2205,9 @@ unsigned RegisterCache::load_mips_register_sext(jit_state_t *_jit, unsigned mips
 		reg.mips_register = mips_reg;
 
 		if (mips_reg)
-			jit_ldxi_i(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
+			_jit->ldxi_i(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
 		else
-			jit_movi(jit_reg, 0);
+			_jit->movi(jit_reg, 0);
 
 		reg.modified = false;
 		reg.sign = SExt;
@@ -2256,9 +2217,9 @@ unsigned RegisterCache::load_mips_register_sext(jit_state_t *_jit, unsigned mips
 		reg.mips_register = mips_reg;
 
 		if (mips_reg)
-			jit_ldxi_i(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
+			_jit->ldxi_i(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
 		else
-			jit_movi(jit_reg, 0);
+			_jit->movi(jit_reg, 0);
 
 		reg.sign = SExt;
 		reg.is_live = true;
@@ -2266,11 +2227,11 @@ unsigned RegisterCache::load_mips_register_sext(jit_state_t *_jit, unsigned mips
 	}
 	else if (reg.sign != SExt)
 	{
-#if __WORDSIZE > 32
+#if INTPTR_MAX > INT32_MAX
 		if (mips_reg)
 		{
 			// Have to sign-extend if we're not sure.
-			jit_extr_i(jit_reg, jit_reg);
+			_jit->extr_i(jit_reg, jit_reg);
 		}
 #endif
 		reg.sign = SExt;
@@ -2281,7 +2242,7 @@ unsigned RegisterCache::load_mips_register_sext(jit_state_t *_jit, unsigned mips
 	return jit_reg;
 }
 
-unsigned RegisterCache::load_mips_register_zext(jit_state_t *_jit, unsigned mips_reg)
+unsigned RegisterCache::load_mips_register_zext(Emitter *_jit, unsigned mips_reg)
 {
 	auto &reg = find_register(mips_reg);
 	unsigned jit_reg = entry_to_jit_register(reg);
@@ -2294,9 +2255,9 @@ unsigned RegisterCache::load_mips_register_zext(jit_state_t *_jit, unsigned mips
 		reg.mips_register = mips_reg;
 
 		if (mips_reg)
-			jit_ldxi_ui(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
+			_jit->ldxi_ui(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
 		else
-			jit_movi(jit_reg, 0);
+			_jit->movi(jit_reg, 0);
 
 		reg.modified = false;
 		reg.sign = ZExt;
@@ -2306,9 +2267,9 @@ unsigned RegisterCache::load_mips_register_zext(jit_state_t *_jit, unsigned mips
 		reg.mips_register = mips_reg;
 
 		if (mips_reg)
-			jit_ldxi_ui(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
+			_jit->ldxi_ui(jit_reg, JIT_REGISTER_STATE, offsetof(CPUState, sr) + 4 * mips_reg);
 		else
-			jit_movi(jit_reg, 0);
+			_jit->movi(jit_reg, 0);
 
 		reg.sign = ZExt;
 		reg.is_live = true;
@@ -2316,11 +2277,11 @@ unsigned RegisterCache::load_mips_register_zext(jit_state_t *_jit, unsigned mips
 	}
 	else if (reg.sign != ZExt)
 	{
-#if __WORDSIZE > 32
+#if INTPTR_MAX > INT32_MAX
 		if (mips_reg)
 		{
 			// Have to zero-extend if we're not sure.
-			jit_extr_ui(jit_reg, jit_reg);
+			_jit->extr_ui(jit_reg, jit_reg);
 		}
 #endif
 		reg.sign = ZExt;
@@ -2339,7 +2300,7 @@ void RegisterCache::unlock_mips_register(unsigned mips_reg)
 	live_reg->num_locks--;
 }
 
-void RegisterCache::flush_register_window(jit_state_t *_jit)
+void RegisterCache::flush_register_window(Emitter *_jit)
 {
 	for (auto &entry : entries)
 	{
@@ -2354,7 +2315,7 @@ void RegisterCache::flush_register_window(jit_state_t *_jit)
 	timestamp = 0;
 }
 
-void RegisterCache::flush_caller_save_registers(jit_state_t *_jit)
+void RegisterCache::flush_caller_save_registers(Emitter *_jit)
 {
 	for (unsigned i = 0; i < JIT_R_NUM; i++)
 	{
@@ -2375,7 +2336,7 @@ void RegisterCache::reset()
 		entry = {};
 }
 
-void RegisterCache::flush_mips_register(jit_state_t *_jit, unsigned mips_reg)
+void RegisterCache::flush_mips_register(Emitter *_jit, unsigned mips_reg)
 {
 	auto *live_reg = find_live_mips_register(mips_reg);
 	if (live_reg)

@@ -10,9 +10,9 @@
 #ifndef __arch_rsp_h__
 #define __arch_rsp_h__
 
-#ifdef __ARM_NEON
+#if defined(__ARM_NEON) || defined(__aarch64__) || defined(_M_ARM64)
 #define __SSSE3__
-#include "SSE2NEON.h"
+#include <sse2neon.h>
 #elif defined(__SSE4_2__)
 #include <nmmintrin.h>
 #elif defined(__SSE4_1__)

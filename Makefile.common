@@ -167,18 +167,16 @@ ifneq ($(DEBUG_JIT),)
 	LDFLAGS += -ldl
 else
 	SOURCES_CXX += $(RSPDIR_PARALLEL)/rsp_jit.cpp
-	SOURCES_C += \
-				 $(RSPDIR_PARALLEL)/lightning/lib/jit_disasm.c \
-				 $(RSPDIR_PARALLEL)/lightning/lib/jit_memory.c \
-				 $(RSPDIR_PARALLEL)/lightning/lib/jit_names.c \
-				 $(RSPDIR_PARALLEL)/lightning/lib/jit_note.c \
-				 $(RSPDIR_PARALLEL)/lightning/lib/jit_print.c \
-				 $(RSPDIR_PARALLEL)/lightning/lib/jit_size.c \
-				 $(RSPDIR_PARALLEL)/lightning/lib/lightning.c
+ifneq (,$(filter aarch64 arm64,$(ARCH)))
+	INCFLAGS += -I$(ROOT_DIR)/deps/xbyak_aarch64 -I$(ROOT_DIR)/deps/xbyak_aarch64/xbyak_aarch64
+	SOURCES_CXX += $(filter-out $(ARI64_SOURCE),$(ROOT_DIR)/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp)
+else
+	INCFLAGS += -I$(ROOT_DIR)/deps/xbyak
+endif
 endif
 
-	CXXFLAGS += -I$(RSPDIR_PARALLEL)/arch/$(PARALLEL_RSP_ARCH)/rsp -I$(RSPDIR_PARALLEL)/lightning/include
-	CFLAGS += -DHAVE_PARALLEL_RSP -DPARALLEL_INTEGRATION -I$(RSPDIR_PARALLEL)/lightning/include
+	CXXFLAGS += -I$(RSPDIR_PARALLEL)/arch/$(PARALLEL_RSP_ARCH)/rsp
+	CFLAGS += -DHAVE_PARALLEL_RSP -DPARALLEL_INTEGRATION
 	CXXFLAGS += -DHAVE_PARALLEL_RSP -DPARALLEL_INTEGRATION
 
 ifeq ($(HAVE_NEON),1)
