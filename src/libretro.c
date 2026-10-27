@@ -913,7 +913,7 @@ int renderer_open_content(void)
     n64video_set_native_lod(renderer_settings.native_lod);
     if (log_cb) {
         extern uint32_t parallel_num_workers(void);
-        log_cb(RETRO_LOG_INFO, "Angrylion: %u rendering workers, adaptive synchronization.\n",
+        log_cb(RETRO_LOG_INFO, "SoftRDP: %u rendering workers, generation/condition synchronization.\n",
                 parallel_num_workers());
     }
     renderer_open = true;

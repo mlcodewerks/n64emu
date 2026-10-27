@@ -9,6 +9,9 @@
 #include <unordered_map>
 
 namespace RSP { namespace JIT {
+alignas(16) static const uint32_t blend_byte_sign_bits[4] = {
+    0x80808080u, 0x80808080u, 0x80808080u, 0x80808080u
+};
 enum class VOp { Load, Store, Constant, Shuffle, Add, Sub, Adds, Subs, Addu, Subu,
     And, Or, Xor, AndNot, Eq, Gt, Min, Max, MulLo, MulHi, MulHiU, Shl, Shr, Sar, UnpackLo, UnpackHi, Pack, Blend };
 static bool commutative(VOp op)
@@ -182,6 +185,9 @@ SHIFT(_mm_slli_epi16,Shl) SHIFT(_mm_srli_epi16,Shr) SHIFT(_mm_srai_epi16,Sar)
 static Value _mm_setzero_si128() { return current->add(VOp::Constant); }
 static Value _mm_set1_epi32(int n) { return current->add(VOp::Constant,-1,-1,-1,uint32_t(n)); }
 static Value _mm_blendv_epi8(Value a,Value b,Value c) { return a.program->add(VOp::Blend,a.id,b.id,c.id); }
+#ifndef __SSE4_1__
+static Value rsp_blendv_epi8_fallback(Value a,Value b,Value c) { return _mm_blendv_epi8(a,b,c); }
+#endif
 
 // Compile the same arithmetic against symbolic vectors. Intrinsics here build
 // an SSA program; none of these functions is called by generated code.
@@ -480,7 +486,21 @@ void Emitter::emit_vector_program(const VectorProgram &program)
         case VOp::Shl:code.psllw(dd,n.imm);break;
         case VOp::Shr:code.psrlw(dd,n.imm);break;
         case VOp::Sar:code.psraw(dd,n.imm);break;
-        case VOp::Blend:code.movdqa(code.xmm0,vr(c));code.pblendvb(dd,bb);break;
+        case VOp::Blend:
+            code.movdqa(code.xmm0,vr(c));
+            if (rsp_simd_level() >= 41) code.pblendvb(dd,bb);
+            else {
+                /* Expand each byte's sign bit, matching PBLENDVB even for
+                 * arbitrary internal flag values. r11 and XMM0 are reserved
+                 * temporaries; the remaining XMM registers may all be live. */
+                code.mov(code.r11,reinterpret_cast<uintptr_t>(blend_byte_sign_bits));
+                code.pminub(code.xmm0,code.ptr[code.r11]);
+                code.pcmpeqb(code.xmm0,code.ptr[code.r11]);
+                /* (~mask & (a ^ b)) ^ b. */
+                code.pxor(dd,bb); code.pandn(code.xmm0,dd);
+                code.movdqa(dd,code.xmm0); code.pxor(dd,bb);
+            }
+            break;
         }
 #endif
         for(int id:args)if(id>=0 && --uses[id]==0) {

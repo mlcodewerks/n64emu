@@ -42,7 +42,7 @@ _Static_assert(RDP_RASTER_STATE_OFFSET + 192 <= 20480,
     "RDP raster state overlaps optional HLE state");
 
 static const char* savestate_magic = "M64+SAVE";
-static const int savestate_latest_version = 0x00011c00;  /* 1.28: resumable F3D graphics */
+static const int savestate_latest_version = 0x00011d00;  /* 1.29: SoftRDP renderer state */
 
 struct savestate_work {
     char *data;
@@ -97,6 +97,12 @@ int core_state_load(struct device* dev, const void *data)
     version = (version << 8) | *curr++;
     if((version >> 16) != (savestate_latest_version >> 16) || version > (unsigned)savestate_latest_version)
         return 0;
+    /* Renderer state changes the following HLE-stream offsets. Reject older
+     * layouts before reading their payload instead of misinterpreting it. */
+    if(version<0x00011d00) {
+        core_log(CORE_LOG_WARNING,"This savestate predates the SoftRDP renderer state format; use the previous build to load it.");
+        return 0;
+    }
 
     if(memcmp((char *)curr, ROM_SETTINGS.MD5, 32))
         return 0;
@@ -921,7 +927,9 @@ int core_state_save(const struct device* dev, void *data)
     unsigned char outbuf[4];
     int i;
     struct savestate_work *save = NULL;
-    char queue[1024];
+    /* The event list ends at its sentinel, but the fixed-size snapshot stores
+     * the entire buffer. Do not serialize uninitialized stack padding. */
+    char queue[1024] = {0};
     char *curr;
 
     /* OK to cast away const qualifier */

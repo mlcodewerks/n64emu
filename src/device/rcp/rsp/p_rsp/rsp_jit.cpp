@@ -355,6 +355,9 @@ void CPU::jit_begin_call(Emitter *_jit)
 
 void CPU::jit_end_call(Emitter *_jit, CodePointer ptr)
 {
+#ifdef PARALLAX_RSP_SIMD_DISPATCH
+    ptr = rsp_resolve_simd_helper(ptr);
+#endif
 	_jit->finishi(ptr);
 }
 

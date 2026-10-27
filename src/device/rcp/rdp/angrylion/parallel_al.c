@@ -1,4 +1,4 @@
-/* Worker pool for the angrylion renderer.
+/* Worker pool for the software renderer.
  *
  * One thread per worker, worker 0 being the calling thread. Every
  * parallel_run() is a generation: the caller publishes the task, bumps
@@ -61,6 +61,31 @@ static void parallel_cond_wait(parallel_cond_t *condition, parallel_lock_t *lock
 }
 static void parallel_cond_signal(parallel_cond_t *condition) { WakeConditionVariable(condition); }
 static void parallel_cond_broadcast(parallel_cond_t *condition) { WakeAllConditionVariable(condition); }
+#elif defined(__linux__)
+#include <pthread.h>
+typedef pthread_mutex_t parallel_lock_t;
+typedef pthread_cond_t parallel_cond_t;
+static parallel_lock_t *parallel_lock_new(void)
+{
+    parallel_lock_t *lock = malloc(sizeof(*lock));
+    if (lock && pthread_mutex_init(lock, NULL)) { free(lock); return NULL; }
+    return lock;
+}
+static parallel_cond_t *parallel_cond_new(void)
+{
+    parallel_cond_t *condition = malloc(sizeof(*condition));
+    if (condition && pthread_cond_init(condition, NULL)) { free(condition); return NULL; }
+    return condition;
+}
+static void parallel_lock_free(parallel_lock_t *lock)
+{ if (lock) { pthread_mutex_destroy(lock); free(lock); } }
+static void parallel_cond_free(parallel_cond_t *condition)
+{ if (condition) { pthread_cond_destroy(condition); free(condition); } }
+#define parallel_lock_lock pthread_mutex_lock
+#define parallel_lock_unlock pthread_mutex_unlock
+#define parallel_cond_wait pthread_cond_wait
+#define parallel_cond_signal pthread_cond_signal
+#define parallel_cond_broadcast pthread_cond_broadcast
 #else
 typedef slock_t parallel_lock_t;
 typedef scond_t parallel_cond_t;
@@ -105,7 +130,11 @@ static struct parallel_pool pool;
  * Returns the new generation. */
 static int parallel_await_generation(struct parallel_pool *p, int seen)
 {
-    int gen;
+    /* A worker finishing the previous lane may already have another job.
+     * Acquire pairs with publication without touching the parking mutex. */
+    int gen = retro_atomic_load_acquire_int(&p->generation);
+    if (gen != seen)
+        return gen;
 
     parallel_lock_lock(p->work_lock);
     p->sleepers++;
@@ -170,7 +199,7 @@ static void parallel_bump_generation(struct parallel_pool *p)
 
     parallel_lock_lock(p->work_lock);
     gen = retro_atomic_load_acquire_int(&p->generation);
-    retro_atomic_store_release_int(&p->generation, gen + 1);
+    retro_atomic_store_release_int(&p->generation, (int)((unsigned)gen + 1u));
     sleepers = p->sleepers;
     /* The legacy Windows scond implementation requires the associated
      * lock to remain held while broadcasting to its waiter queue. */

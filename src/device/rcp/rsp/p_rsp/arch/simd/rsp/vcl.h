@@ -42,34 +42,26 @@ static inline __m128i rsp_vcl(__m128i vs, __m128i vt, __m128i zero, __m128i *ge,
 #ifdef __SSE4_1__
 	*le = _mm_blendv_epi8(*le, le_eq, do_le);
 #else
-	le_eq = _mm_and_si128(do_le, le_eq);
-	*le = _mm_andnot_si128(do_le, *le);
-	*le = _mm_or_si128(le_eq, *le);
+	*le = rsp_blendv_epi8_fallback(*le, le_eq, do_le);
 #endif
 
 	do_ge = _mm_or_si128(sign, eq);
 #ifdef __SSE4_1__
 	*ge = _mm_blendv_epi8(ge_eq, *ge, do_ge);
 #else
-	*ge = _mm_and_si128(do_ge, *ge);
-	ge_eq = _mm_andnot_si128(do_ge, ge_eq);
-	*ge = _mm_or_si128(ge_eq, *ge);
+	*ge = rsp_blendv_epi8_fallback(ge_eq, *ge, do_ge);
 #endif
 
 	// Mux the result based on the value of sign.
 #ifdef __SSE4_1__
 	mux_mask = _mm_blendv_epi8(*ge, *le, sign);
 #else
-	do_le = _mm_and_si128(sign, *le);
-	do_ge = _mm_andnot_si128(sign, *ge);
-	mux_mask = _mm_or_si128(do_le, do_ge);
+	mux_mask = rsp_blendv_epi8_fallback(*ge, *le, sign);
 #endif
 
 #ifdef __SSE4_1__
 	return _mm_blendv_epi8(vs, sign_negvt, mux_mask);
 #else
-	sign_negvt = _mm_and_si128(mux_mask, sign_negvt);
-	vs = _mm_andnot_si128(mux_mask, vs);
-	return _mm_or_si128(sign_negvt, vs);
+	return rsp_blendv_epi8_fallback(vs, sign_negvt, mux_mask);
 #endif
 }

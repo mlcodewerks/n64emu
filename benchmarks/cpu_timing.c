@@ -26,6 +26,7 @@ void poweron_device(struct device* dev) { (void)dev; abort(); }
 void pif_bootrom_hle_execute(struct r4300_core* core) { (void)core; abort(); }
 void core_log(int level, const char* message, ...) { (void)level; (void)message; }
 uint32_t* mem_base_u32(void* base, uint32_t address) { return (uint32_t*)((char*)base + address); }
+#ifndef CPU_JIT_REAL_RDRAM
 void read_rdram_dram(void* opaque, uint32_t address, uint32_t* value)
 {
     (void)opaque; (void)address; (void)value; abort();
@@ -34,6 +35,7 @@ void write_rdram_dram(void* opaque, uint32_t address, uint32_t value, uint32_t m
 {
     (void)opaque; (void)address; (void)value; (void)mask; abort();
 }
+#endif
 
 static struct r4300_core cpu;
 static struct memory memory;
@@ -75,7 +77,7 @@ static void setup(int cached)
     handlers[2].opaque = &cpu;
     handlers[1].callback = compare_int_handler;
     handlers[1].opaque = &cpu;
-    init_cp0(&cpu.cp0, 3, 2, handlers); /* Legacy scaling must not affect timing. */
+    init_cp0(&cpu.cp0, handlers);
     poweron_cp0(&cpu.cp0);
     poweron_cp1(&cpu.cp1);
     translate_event_queue(&cpu.cp0, 0);

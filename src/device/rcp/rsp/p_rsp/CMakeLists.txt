@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD 99)
 project(parallel-rsp LANGUAGES CXX C)
 
@@ -75,6 +75,38 @@ else()
 endif()
 target_compile_definitions(parallel-rsp PUBLIC DEBUG_JIT)
 
+# The emitter stays on the x64 baseline. Compile only vector/memory helpers
+# again for higher ISAs and bind their addresses while generating each block.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND
+    (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
+    set(RSP_SIMD_BASE_FLAGS -mno-avx -mno-avx2 -mno-fma -mno-sse4.2
+        -mno-sse4.1 -mno-ssse3 -mno-sse3 -msse2)
+    target_sources(parallel-rsp PRIVATE simd_dispatch.cpp)
+    target_compile_definitions(parallel-rsp PUBLIC PARALLAX_RSP_SIMD_DISPATCH)
+    target_compile_options(parallel-rsp PUBLIC ${RSP_SIMD_BASE_FLAGS})
+    set_target_properties(parallel-rsp PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    foreach(variant ssse3 sse41 sse42)
+        if (variant STREQUAL "ssse3")
+            set(variant_flag -mssse3)
+        elseif (variant STREQUAL "sse41")
+            set(variant_flag -msse4.1)
+        else()
+            set(variant_flag -msse4.2)
+        endif()
+        add_library(rsp-${variant}-helpers OBJECT
+            rsp/vfunctions.cpp rsp/ls.cpp arch/simd/rsp/rsp_core.cpp)
+        target_include_directories(rsp-${variant}-helpers PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/arch/simd/rsp
+            ${PARALLAX_ROOT}/deps ${PARALLAX_ROOT}/deps/xbyak)
+        target_compile_definitions(rsp-${variant}-helpers PRIVATE RSP_SIMD_SUFFIX=_${variant})
+        target_compile_options(rsp-${variant}-helpers PRIVATE ${PARALLEL_RSP_CXX_FLAGS}
+            ${RSP_SIMD_BASE_FLAGS} ${variant_flag}
+            -include ${CMAKE_CURRENT_SOURCE_DIR}/simd_rename.hpp)
+        set_target_properties(rsp-${variant}-helpers PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        target_sources(parallel-rsp PRIVATE $<TARGET_OBJECTS:rsp-${variant}-helpers>)
+    endforeach()
+endif()
+
 option(PARALLEL_RSP_BENCHMARKS "Build the synthetic vector optimizer benchmark." OFF)
 if (PARALLEL_RSP_BENCHMARKS)
     # Keep Xbyak's C++-standard-dependent CodeGenerator layout identical in
@@ -97,6 +129,7 @@ if (PARALLEL_RSP_DEBUG_JIT AND NOT WIN32)
 endif()
 
 option(PARALLEL_RSP_TESTS "Enable unit tests for the RSP block JIT." ON)
+option(PARALLEL_RSP_QUICK_FUZZ "Use bounded native VU fuzzing in CTest instead of the exhaustive run." OFF)
 option(PARALLEL_RSP_BUILD_TEST_IMAGES "Assemble RSP test binaries with the MIPS GNU toolchain." ON)
 set(PARALLEL_RSP_TEST_IMAGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/debug-toolchain" CACHE PATH "Directory containing assembled RSP test images")
 
@@ -117,6 +150,10 @@ if (PARALLEL_RSP_TESTS)
 		add_test(NAME rsp-vu-fuzz
 				COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/android_fuzz_runner.sh
 				${CMAKE_CURRENT_BINARY_DIR}/rsp-vu-fuzzer)
+	elseif (PARALLEL_RSP_QUICK_FUZZ)
+		# Opt-in for interactive CTest runs. The default exhaustive test and
+		# no-argument fuzzer remain unchanged; streaming tools avoid huge logs.
+		add_test(NAME rsp-vu-fuzz COMMAND $<TARGET_FILE:rsp-vu-fuzzer> --quick)
 	else()
 		add_test(NAME rsp-vu-fuzz COMMAND $<TARGET_FILE:rsp-vu-fuzzer>)
 	endif()

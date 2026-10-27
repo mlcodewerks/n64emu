@@ -77,3 +77,18 @@ benchmarks/timing-reference/*
 !benchmarks/timing-reference/*.md
 !benchmarks/timing-reference/*.csv
 !benchmarks/timing-reference/timing-results.json
+
+# Authored SoftRDP profiling and exactness checks; generated data stays local.
+!benchmarks/softrdp/
+benchmarks/softrdp/*
+!benchmarks/softrdp/*.c
+!benchmarks/softrdp/*.cpp
+!benchmarks/softrdp/*.h
+!benchmarks/softrdp/*.py
+!benchmarks/softrdp/*.mk
+!benchmarks/softrdp/*.md
+!benchmarks/softrdp/validation.json
+!benchmarks/softrdp/profile-summary.json
+src/device/rcp/rdp/softrdp/.build-config
+src/device/rcp/rdp/softrdp/build/
+src/device/rcp/rsp/p_rsp/simd-build/

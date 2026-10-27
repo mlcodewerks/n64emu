@@ -78,10 +78,10 @@ SOURCES_C += $(wildcard $(RSP_HLE_DIR)/*.c) \
 SOURCES_C += $(LIBRETRO_COMM_DIR)/encodings/encoding_crc32.c
 SOURCES_C += $(CORE_DIR)/src/renderer_options.c \
              $(CORE_DIR)/src/device/rcp/rdp/performance_cores.c
-SOURCES_C += $(ANGRYLION_DIR)/n64video.c \
-             $(ANGRYLION_DIR)/parallel_al.c \
+SOURCES_C += $(ANGRYLION_DIR)/parallel_al.c \
              $(ANGRYLION_DIR)/output.c \
              $(LIBRETRO_COMM_DIR)/rthreads/rthreads.c
+include $(CORE_DIR)/src/device/rcp/rdp/softrdp/softrdp.mk
 # Keep the software rasterizer optimized in debug builds.
 $(ANGRYLION_DIR)/n64video.o $(ANGRYLION_DIR)/parallel_al.o: CFLAGS += -O3
 $(ANGRYLION_DIR)/parallel_al.o: $(CORE_DIR)/src/device/rcp/rdp/performance_cores.h

@@ -330,7 +330,7 @@ else ifneq (,$(findstring AMLG,$(platform)))
    else
       GL_LIB := -lGLESv2
    endif
-  
+
    HAVE_NEON = 1
    WITH_DYNAREC=arm
    COREFLAGS += -DUSE_GENERIC_GLESV2 -DOS_LINUX
@@ -508,7 +508,7 @@ else ifeq ($(platform), emscripten)
 else
    TARGET := $(TARGET_NAME)_libretro.dll
    LDFLAGS += -shared -Wl,--version-script=$(ROOT_DIR)/src/link.T
-   
+
    ifeq ($(MSYSTEM),MINGW64)
       CC ?= x86_64-w64-mingw32-gcc
       CXX ?= x86_64-w64-mingw32-g++
@@ -537,7 +537,7 @@ ifeq ($(STATIC_LINKING), 1)
    ifneq (,$(findstring win,$(platform)))
       TARGET := $(TARGET:.dll=.lib)
    else ifneq ($(platform), $(filter $(platform), osx ios))
-      TARGET := $(TARGET:.dylib=.a)            
+      TARGET := $(TARGET:.dylib=.a)
    else
       TARGET := $(TARGET:.so=.a)
    endif
@@ -581,9 +581,7 @@ endif
 endif
 CXXFLAGS += -std=c++17 -D_CRT_SECURE_NO_WARNINGS
 CXXFLAGS += -fpermissive
-ifneq (,$(filter x86_64 amd64 x86 i386 i486 i586 i686,$(ARCH)))
-CXXFLAGS += -msse4.1
-endif
+# ISA upgrades belong to runtime-dispatched leaves, never the default C++ ABI.
 
 # HLE integer kernels share SSE4.2 and the existing NEON translation layer.
 # Keep this ISA requirement local to HLE; scalar reference builds can opt out.
@@ -615,11 +613,15 @@ else
    fpic = -fno-PIC
 endif
 
-OBJECTS     += $(SOURCES_CXX:.cpp=.o) $(SOURCES_C:.c=.o) $(SOURCES_ASM:.S=.o) $(SOURCES_NASM:.asm=.o)
+include $(CORE_DIR)/src/device/rcp/rsp/p_rsp/simd.mk
+OBJECTS     += $(SOURCES_CXX:.cpp=.o) $(SOURCES_C:.c=.o) $(SOURCES_ASM:.S=.o) $(SOURCES_NASM:.asm=.o) $(SOFTRDP_OBJECTS) $(RSP_SIMD_OBJECTS)
+ifneq ($(platform),win)
+COREFLAGS += -D_GNU_SOURCE
+endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
 # Ari64 emitter and interpreter-only configuration, or optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):headless=$(HEADLESS_BENCHMARK):headless-cpu=$(HEADLESS_BENCH_CPU):$(WITH_DYNAREC):$(if $(ARI64_DIR),ari64-emitter,interpreter):debug=$(DEBUG):profile=$(ARI64_PROFILE):interp=$(INTERP_OPTIMIZE):branchless=$(INTERP_BRANCHLESS):hle-simd=$(HLE_SIMD):angrylion-simd=$(ANGRYLION_SIMD)
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):headless=$(HEADLESS_BENCHMARK):headless-cpu=$(HEADLESS_BENCH_CPU):$(WITH_DYNAREC):$(if $(ARI64_DIR),ari64-emitter,interpreter):debug=$(DEBUG):profile=$(ARI64_PROFILE):interp=$(INTERP_OPTIMIZE):branchless=$(INTERP_BRANCHLESS):hle-simd=$(HLE_SIMD):angrylion-simd=$(ANGRYLION_SIMD):software=softrdp:simd=sse2-dispatch-v1
 ifneq ($(strip $(file <$(CPU_JIT_CONFIG))),$(CPU_JIT_CONFIG_VALUE))
 $(file >$(CPU_JIT_CONFIG),$(CPU_JIT_CONFIG_VALUE))
 endif

@@ -9,6 +9,7 @@
 #include <cassert>
 #include <array>
 #include <utility>
+#include "simd_caps.hpp"
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
 #include <xbyak_aarch64/xbyak_aarch64.h>
 #elif defined(__x86_64__) || defined(_M_X64)
@@ -81,10 +82,10 @@ public:
     void native_vector_return() { code.ret(); }
     static bool native_quad_partial()
     {
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64) || defined(__SSSE3__)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
         return true;
 #else
-        return false;
+        return rsp_simd_level() >= 3;
 #endif
     }
     static const uint8_t* vector_quad_masks(bool store)

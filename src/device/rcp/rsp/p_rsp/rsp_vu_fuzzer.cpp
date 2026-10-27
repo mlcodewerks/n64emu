@@ -1,6 +1,7 @@
 #include "rsp_op.hpp"
 #include "rsp_disasm.hpp"
 #include <random>
+#include <cstring>
 
 using namespace RSP;
 
@@ -54,19 +55,22 @@ static void run_vu_opcode(std::mt19937 &rnd, CPUState *rsp, unsigned instr)
 	printf("%s (%llx)\n", disasm.c_str(), static_cast<unsigned long long>(register_hash));
 }
 
-int main()
+int main(int argc,char **argv)
 {
+    const bool quick=argc==2 && !std::strcmp(argv[1],"--quick");
+    if(argc!=1 && !quick) return 2;
 	// Exhaustive test every single VU opcode with random input.
 	std::mt19937 rnd(0xf00b4); // Fixed seed.
 	CPUState state = {};
 
 	// Sweep through every opcode at least once.
 	constexpr unsigned num_opcodes = 1u << 25u;
-	for (unsigned instr = 0; instr < num_opcodes; instr++)
-		run_vu_opcode(rnd, &state, instr);
+	const unsigned sweep=quick?16384u:num_opcodes;
+	for (unsigned i = 0; i < sweep; i++)
+		run_vu_opcode(rnd, &state, quick?(i*2053u)&(num_opcodes-1u):i);
 
 	// Try random opcodes some more, should hopefully hit some interesting corner cases eventually.
-	constexpr unsigned num_random_opcodes = 50000000;
+	const unsigned num_random_opcodes = quick?32768u:50000000u;
 	for (unsigned i = 0; i < num_random_opcodes; i++)
 	{
 		unsigned instr = rnd() & (num_opcodes - 1);

@@ -4,9 +4,9 @@
 
 struct renderer_settings renderer_settings;
 #ifdef HAVE_PARALLEL_RDP
-#define RENDERERS_BASE "angrylion|parallel-rdp"
+#define RENDERERS_BASE "softrdp|parallel-rdp"
 #else
-#define RENDERERS_BASE "angrylion"
+#define RENDERERS_BASE "softrdp"
 #endif
 #ifdef HAVE_GLRDP
 #define RENDERERS RENDERERS_BASE "|glrdp"
@@ -45,17 +45,17 @@ static const struct retro_variable options[] = {
 #endif
     {"wtfn64_cpu_core", "CPU core (restart required); " CPU_CORES},
     {"wtfn64_timing", "Timing accuracy (restart required); fast|accurate"},
-    {"wtfn64_angrylion_threads", "Angrylion rendering threads (restart required); 6|2|4|8|10|auto"},
+    {"wtfn64_angrylion_threads", "SoftRDP rendering threads (restart required); 6|2|4|8|10|auto"},
     {"wtfn64_performance_cores", "Performance cores only (restart required); enabled|disabled"},
-    {"wtfn64_angrylion_upscale", "Angrylion upscaling (restart required); 1|2|4"},
+    {"wtfn64_angrylion_upscale", "SoftRDP upscaling (restart required); 1|2|4"},
 #ifdef HAVE_PARALLEL_RDP
     {"wtfn64_parallel_upscale", "paraLLEl-RDP upscaling (restart required); 1|2|4|8"},
 #endif
-    {"wtfn64_vi_filter", "Angrylion/paraLLEl-RDP VI filtering (restart required); enabled|disabled"},
-    {"wtfn64_vi_dedither", "Angrylion/paraLLEl-RDP VI dedithering (restart required); enabled|disabled"},
-    {"wtfn64_vi_blur", "Angrylion/paraLLEl-RDP VI divot filter (restart required); enabled|disabled"},
+    {"wtfn64_vi_filter", "SoftRDP/paraLLEl-RDP VI filtering (restart required); enabled|disabled"},
+    {"wtfn64_vi_dedither", "SoftRDP/paraLLEl-RDP VI dedithering (restart required); enabled|disabled"},
+    {"wtfn64_vi_blur", "SoftRDP/paraLLEl-RDP VI divot filter (restart required); enabled|disabled"},
     {"wtfn64_crop_overscan", "Crop overscan (restart required); disabled|enabled"},
-    {"wtfn64_angrylion_deinterlace", "Angrylion deinterlacing (restart required); weave|bob"},
+    {"wtfn64_angrylion_deinterlace", "SoftRDP deinterlacing (restart required); weave|bob"},
     {"wtfn64_native_lod", "Native texture LOD (restart required); enabled|disabled"},
     {"mupen64plus-pak1", "Player 1 controller pak; memory|none|rumble|transfer"},
     {"mupen64plus-pak2", "Player 2 controller pak; none|memory|rumble|transfer"},
@@ -82,7 +82,7 @@ void renderer_register_options(retro_environment_t environment)
 #ifdef HAVE_GLRDP
         {"glrdp", "GLRDP", "Native GPU RDP rendering with OpenGL 3.3 or OpenGL ES 2.0."},
 #endif
-        {"angrylion", "Angrylion", "Software RDP rendering and synchronization."},
+        {"angrylion", "SoftRDP", "Software RDP rendering and synchronization."},
 #ifdef HAVE_PARALLEL_RDP
         {"parallel", "paraLLEl-RDP", "Vulkan RDP rendering."},
 #endif
@@ -246,11 +246,11 @@ void renderer_read_options(retro_environment_t env)
     if (!strcmp(v, "dynarec")) s->cpu_core = CPU_CORE_DYNAREC;
 #endif
 #ifdef HAVE_PARALLEL_RDP
-    if (strcmp(value(env, "wtfn64_renderer", "angrylion"), "parallel-rdp") == 0)
+    if (strcmp(value(env, "wtfn64_renderer", "softrdp"), "parallel-rdp") == 0)
         s->renderer = RENDERER_PARALLEL;
 #endif
 #ifdef HAVE_GLRDP
-    if (!strcmp(value(env, "wtfn64_renderer", "angrylion"), "glrdp"))
+    if (!strcmp(value(env, "wtfn64_renderer", "softrdp"), "glrdp"))
         s->renderer = RENDERER_GLRDP;
     s->glrdp = glrdp_default_config();
     s->glrdp.blending = !strcmp(value(env, "wtfn64_glrdp_blending", "accurate"), "fast") ?

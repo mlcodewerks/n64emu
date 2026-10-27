@@ -12,6 +12,8 @@
 #define _WIN32_WINNT 0x0601
 #endif
 #include <windows.h>
+#elif defined(__linux__)
+#include <sched.h>
 #endif
 #ifdef __cplusplus
 extern "C" {
@@ -19,6 +21,8 @@ extern "C" {
 struct performance_affinity {
 #ifdef _WIN32
     GROUP_AFFINITY previous;
+#elif defined(__linux__)
+    cpu_set_t previous;
 #endif
     bool changed;
 };

@@ -29,6 +29,17 @@
 
 typedef __m128i rsp_vect_t;
 
+#ifndef __SSE4_1__
+// Match PBLENDVB's per-byte sign-bit selection even for noncanonical flag
+// values (the exhaustive VU fuzzer initializes every CP2 bit randomly).
+// Architectural flag lanes are normally zero or all ones.
+static inline __m128i rsp_blendv_epi8_fallback(__m128i a, __m128i b, __m128i mask)
+{
+	mask = _mm_cmpgt_epi8(_mm_setzero_si128(), mask);
+	return _mm_or_si128(_mm_andnot_si128(mask, a), _mm_and_si128(mask, b));
+}
+#endif
+
 namespace RSP
 {
 struct CPUState;
