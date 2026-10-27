@@ -22,6 +22,7 @@ int pure_interp_fpu_prepare(struct r4300_core*, uint32_t op, uint64_t inputs[3])
 void pure_interp_fpu_finish(struct r4300_core*, uint32_t op, uint64_t bits, unsigned int flags);
 int pure_interp_fpu_compare_prepare(struct r4300_core*, uint32_t op, uint64_t inputs[3]);
 int pure_interp_jit_fpu_prepare(struct r4300_core*, uint32_t op, uint64_t inputs[3], uint64_t* commits);
+int pure_interp_jit_fpu_prepare_prefetched(struct r4300_core*,uint32_t,uint64_t[3],uint64_t*);
 void pure_interp_fpu_compare_finish(struct r4300_core*, int result);
 
 #endif /* PARALLAX_DEVICE_R4300_PURE_INTERP_H */

@@ -1,5 +1,5 @@
-// Host emission for the RSP block compiler. The frontend owns register allocation,
-// block boundaries and delay slots; this layer owns encodings and the host ABI.
+// Host emission for the RSP block compiler. The frontend owns scalar allocation,
+// block boundaries and delay slots; this layer owns SIMD allocation and the ABI.
 #ifndef RSP_JIT_EMITTER_HPP
 #define RSP_JIT_EMITTER_HPP
 #include <cstdint>
@@ -7,6 +7,8 @@
 #include <memory>
 #include <vector>
 #include <cassert>
+#include <array>
+#include <utility>
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
 #include <xbyak_aarch64/xbyak_aarch64.h>
 #elif defined(__x86_64__) || defined(_M_X64)
@@ -40,6 +42,7 @@ using NativeCode = Xbyak::CodeGenerator;
 using NativeAllocator = Xbyak::Allocator;
 #endif
 struct CodeLabel { NativeLabel label; size_t offset = 0; };
+struct VectorProgram;
 
 class Emitter
 {
@@ -54,12 +57,206 @@ class Emitter
     struct Relocation { size_t offset; uintptr_t target; };
     std::vector<Relocation> relocations;
     unsigned argument_count = 0;
+    bool optimize_code;
     uint8_t *destination = nullptr;
     CodeLabel *new_label()
     {
         labels.emplace_back(new CodeLabel);
         return labels.back().get();
     }
+public:
+    explicit Emitter(bool optimize=true) : optimize_code(optimize) {}
+    void vector_instruction(unsigned op, unsigned vd, unsigned vs, unsigned vt, unsigned e, bool register_arguments=false);
+    void vector_sequence(const uint32_t *instructions, unsigned count);
+    void vector_arguments(unsigned vd, unsigned vs, unsigned vt, unsigned e);
+    void vector_transfer(unsigned op, unsigned scalar, unsigned vector, unsigned element);
+    void native_vector_call(void *target)
+    {
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
+        imm(16,reinterpret_cast<uintptr_t>(target));code.blr(Xbyak_aarch64::XReg(16));
+#else
+        code.db(0xe8);relocations.push_back({code.getSize(),reinterpret_cast<uintptr_t>(target)});code.dd(0);
+#endif
+    }
+    void native_vector_return() { code.ret(); }
+    static bool native_quad_partial()
+    {
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64) || defined(__SSSE3__)
+        return true;
+#else
+        return false;
+#endif
+    }
+    static const uint8_t* vector_quad_masks(bool store)
+    {
+        // Each shuffle moves just the architectural suffix. Inactive bytes
+        // retain their old value, including bytes preceding an SQV address.
+        alignas(16) static const std::array<uint8_t,512> masks=[] {
+            std::array<uint8_t,512> result={};
+            for(unsigned save=0;save<2;save++)for(unsigned offset=0;offset<16;offset++)for(unsigned byte=0;byte<16;byte++) {
+                unsigned architectural=byte^(save?3:1);
+                bool active=save?architectural>=offset:architectural<16-offset;
+                result[save*256+offset*16+byte]=active?uint8_t(save?((architectural-offset)^1):((architectural+offset)^3)):0x80;
+            }
+            return result;
+        }();
+        return masks.data()+unsigned(store)*256;
+    }
+    void vector_quad_partial(unsigned state,unsigned dmem,unsigned address,HostWord vector_offset,bool store)
+    {
+        const auto* masks=vector_quad_masks(store);
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
+        using namespace Xbyak_aarch64;
+        code.and_(XReg(17),r(address),0xff0);code.add(XReg(17),r(dmem),XReg(17));
+        code.ldr(QReg(store?1:0),ptr(XReg(17)));
+        memory(state,vector_offset);code.ldr(QReg(store?0:1),ptr(XReg(17)));
+        imm(16,uintptr_t(masks));code.and_(XReg(17),r(address),15);
+        code.lsl(XReg(17),XReg(17),4);code.add(XReg(17),XReg(16),XReg(17));code.ldr(QReg(2),ptr(XReg(17)));
+        code.tbl(VReg(0).b16,VReg(0).b16,1,VReg(2).b16);code.sshr(VReg(2).b16,VReg(2).b16,7);
+        code.and_(VReg(1).b16,VReg(1).b16,VReg(2).b16);code.orr(VReg(0).b16,VReg(0).b16,VReg(1).b16);
+        if(store){code.and_(XReg(17),r(address),0xff0);code.add(XReg(17),r(dmem),XReg(17));}
+        else memory(state,vector_offset);
+        code.str(QReg(0),ptr(XReg(17)));
+#else
+        const Xbyak::Xmm data(0),old(1),indices(2),inactive(3);
+        code.mov(code.rcx,r(address));code.and_(code.ecx,15);code.shl(code.ecx,4);
+        code.mov(code.r11,uintptr_t(masks));code.movdqa(indices,code.ptr[code.r11+code.rcx]);
+        code.mov(code.rcx,r(address));code.and_(code.ecx,0xff0);
+        code.movdqu(data,store?code.ptr[r(state)+vector_offset]:code.ptr[r(dmem)+code.rcx]);
+        code.movdqu(old,store?code.ptr[r(dmem)+code.rcx]:code.ptr[r(state)+vector_offset]);
+        code.pshufb(data,indices);code.pxor(inactive,inactive);code.pcmpgtb(inactive,indices);
+        code.pand(old,inactive);code.por(data,old);
+        code.movdqu(store?code.ptr[r(dmem)+code.rcx]:code.ptr[r(state)+vector_offset],data);
+#endif
+    }
+#if !defined(__aarch64__) && !defined(_M_ARM64) && !defined(RSP_JIT_EMITTER_AARCH64)
+    void vector_quad_arguments(unsigned state,unsigned address,HostWord vector_offset)
+    {
+        code.mov(code.rcx,r(address));code.lea(code.r11,code.ptr[r(state)+vector_offset]);
+    }
+    void vector_quad_leaf(unsigned dmem,bool store)
+    {
+        // Internal ABI: RCX=DMEM offset, R11=vector pointer. Preserve every
+        // allocated scalar register; only emitter scratch and XMM0..4 change.
+        const Xbyak::Xmm data(0),old(1),indices(2),inactive(3),pointer(4);
+        Xbyak::Label eight,four,twelve,two,one;
+        code.push(code.rax);code.mov(code.eax,code.ecx);code.and_(code.eax,15);
+        for(auto branch:{std::pair<unsigned,Xbyak::Label*>{8,&eight},{12,&four},{4,&twelve},{14,&two},{15,&one}}) {
+            code.cmp(code.eax,branch.first);code.je(*branch.second,NativeCode::T_NEAR);
+        }
+        code.shl(code.eax,4);code.and_(code.ecx,0xff0);
+        code.movdqu(data,store?code.ptr[code.r11]:code.ptr[r(dmem)+code.rcx]);
+        code.movdqu(old,store?code.ptr[r(dmem)+code.rcx]:code.ptr[code.r11]);
+        if(store){code.lea(code.rcx,code.ptr[r(dmem)+code.rcx]);code.movq(pointer,code.rcx);}
+        code.mov(code.rcx,uintptr_t(vector_quad_masks(store)));code.movdqa(indices,code.ptr[code.rcx+code.rax]);
+        code.pshufb(data,indices);code.pxor(inactive,inactive);code.pcmpgtb(inactive,indices);
+        code.pand(old,inactive);code.por(data,old);
+        if(store){code.movq(code.rcx,pointer);code.movdqu(code.ptr[code.rcx],data);}
+        else code.movdqu(code.ptr[code.r11],data);
+        code.pop(code.rax);code.ret();
+        auto fragment=[&](unsigned size,unsigned offset) {
+            auto memory=code.ptr[r(dmem)+code.rcx+offset],vector=code.ptr[code.r11+offset];
+            if(size==8)code.movq(data,store?vector:memory);else code.movd(data,store?vector:memory);
+            code.pshuflw(data,data,0xb1);
+            if(size==8)code.movq(store?memory:vector,data);else code.movd(store?memory:vector,data);
+        };
+        code.L(eight);fragment(8,0);code.pop(code.rax);code.ret();
+        code.L(four);fragment(4,0);code.pop(code.rax);code.ret();
+        code.L(twelve);fragment(8,0);fragment(4,8);code.pop(code.rax);code.ret();
+        code.L(two);code.xor_(code.ecx,2);
+        code.movzx(code.eax,store?code.word[code.r11]:code.word[r(dmem)+code.rcx]);
+        code.mov(store?code.word[r(dmem)+code.rcx]:code.word[code.r11],code.ax);code.pop(code.rax);code.ret();
+        code.L(one);code.xor_(code.ecx,3);
+        code.movzx(code.eax,store?code.byte[code.r11+1]:code.byte[r(dmem)+code.rcx]);
+        code.mov(store?code.byte[r(dmem)+code.rcx]:code.byte[code.r11+1],code.al);code.pop(code.rax);code.ret();
+    }
+#endif
+    void vector_memory(unsigned state,unsigned dmem,unsigned address,HostWord vector_offset,bool store,unsigned size)
+    {
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
+        const Xbyak_aarch64::VReg8H lanes(0);
+        auto transfer=[&](bool load){
+            const auto pointer=Xbyak_aarch64::ptr(Xbyak_aarch64::XReg(17));
+#define RSP_VECTOR_MEMORY(n,type) case n:if(load)code.ldr(Xbyak_aarch64::type(0),pointer);else code.str(Xbyak_aarch64::type(0),pointer);break
+            switch(size){RSP_VECTOR_MEMORY(1,BReg);RSP_VECTOR_MEMORY(2,HReg);RSP_VECTOR_MEMORY(4,SReg);RSP_VECTOR_MEMORY(8,DReg);RSP_VECTOR_MEMORY(16,QReg);}
+#undef RSP_VECTOR_MEMORY
+        };
+        if(store){memory(state,vector_offset);transfer(true);}
+        if(size<4){code.eor(Xbyak_aarch64::XReg(17),r(address),size==1?3:2);code.add(Xbyak_aarch64::XReg(17),r(dmem),Xbyak_aarch64::XReg(17));}
+        else code.add(Xbyak_aarch64::XReg(17),r(dmem),r(address));
+        if(!store)transfer(true);
+        if(size>=4)code.rev32(lanes,lanes);
+        if(store)transfer(false);else{memory(state,vector_offset);transfer(false);}
+#else
+        const Xbyak::Xmm lanes(0);
+        if(size<4) {
+            // RCX/R11 are emitter scratch registers, outside the scalar cache.
+            code.mov(code.r11,r(address));code.xor_(code.r11,size==1?3:2);
+            if(store) {
+                if(size==1){code.movzx(code.ecx,code.byte[r(state)+vector_offset]);code.mov(code.byte[r(dmem)+code.r11],code.cl);}
+                else{code.movzx(code.ecx,code.word[r(state)+vector_offset]);code.mov(code.word[r(dmem)+code.r11],code.cx);}
+            } else {
+                if(size==1){code.movzx(code.ecx,code.byte[r(dmem)+code.r11]);code.mov(code.byte[r(state)+vector_offset],code.cl);}
+                else{code.movzx(code.ecx,code.word[r(dmem)+code.r11]);code.mov(code.word[r(state)+vector_offset],code.cx);}
+            }
+            return;
+        }
+        auto transfer=[&](bool load,const Xbyak::Address& pointer){
+            if(load){if(size==16)code.movdqu(lanes,pointer);else if(size==8)code.movq(lanes,pointer);else code.movd(lanes,pointer);}
+            else{if(size==16)code.movdqu(pointer,lanes);else if(size==8)code.movq(pointer,lanes);else code.movd(pointer,lanes);}
+        };
+        if(store)transfer(true,code.ptr[r(state)+vector_offset]);
+        else transfer(true,code.ptr[r(dmem)+r(address)]);
+        // DMEM contains native words; vector lanes contain native halfwords.
+        code.pshuflw(lanes,lanes,0xb1);if(size==16)code.pshufhw(lanes,lanes,0xb1);
+        if(store)transfer(false,code.ptr[r(dmem)+r(address)]);
+        else transfer(false,code.ptr[r(state)+vector_offset]);
+#endif
+    }
+    void vector_packed_load(unsigned state,unsigned dmem,unsigned address,HostWord vector_offset,unsigned shift)
+    {
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
+        const Xbyak_aarch64::VReg8B bytes(0);const Xbyak_aarch64::VReg8H lanes(0);
+        code.add(Xbyak_aarch64::XReg(17),r(dmem),r(address));
+        code.ldr(Xbyak_aarch64::DReg(0),Xbyak_aarch64::ptr(Xbyak_aarch64::XReg(17)));
+        code.rev32(bytes,bytes);code.uxtl(lanes,bytes);code.shl(lanes,lanes,shift);
+        memory(state,vector_offset);code.str(Xbyak_aarch64::QReg(0),Xbyak_aarch64::ptr(Xbyak_aarch64::XReg(17)));
+#else
+        const Xbyak::Xmm lanes(0),zero(1);
+        code.movq(lanes,code.qword[r(dmem)+r(address)]);code.pxor(zero,zero);code.punpcklbw(lanes,zero);
+        code.pshuflw(lanes,lanes,0x1b);code.pshufhw(lanes,lanes,0x1b);code.psllw(lanes,shift);
+        code.movdqu(code.ptr[r(state)+vector_offset],lanes);
+#endif
+    }
+#ifdef RSP_JIT_PROFILE
+    void profile_counter(uint64_t *counter)
+    {
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
+#error RSP_JIT_PROFILE currently requires an x64 host
+#else
+        // Profiling must preserve the frontend's scalar cache and flags.
+        code.push(code.r11); code.pushfq();
+        code.mov(code.r11,reinterpret_cast<uintptr_t>(counter));
+        code.inc(code.qword[code.r11]);
+        code.popfq(); code.pop(code.r11);
+#endif
+    }
+#endif
+private:
+    void emit_vector_program(const VectorProgram &program);
+    void vector_scalar(unsigned op, unsigned vd, unsigned vs, unsigned vt, unsigned e);
+#if !defined(__aarch64__) && !defined(_M_ARM64) && !defined(RSP_JIT_EMITTER_AARCH64)
+    void vector_shuffle(Xbyak::Xmm dest, Xbyak::Xmm source, unsigned element)
+    {
+        if (element < 2) { if (dest.getIdx() != source.getIdx()) code.movdqa(dest, source); return; }
+        unsigned lane = element & (element < 4 ? 1u : element < 8 ? 3u : 7u);
+        unsigned mask = element < 4 ? (lane ? 0xf5 : 0xa0) : (lane & 3) * 0x55;
+        if (element < 8 || lane < 4) code.pshuflw(dest, source, mask);
+        else code.pshufhw(dest, source, mask);
+        if (element < 8) code.pshufhw(dest, dest, mask);
+        else code.pshufd(dest, dest, lane < 4 ? 0 : 0xaa);
+    }
+#endif
 public:
     CodeLabel *label()
     {
@@ -184,11 +381,20 @@ public:
 #define RSP_BINARY(name, op) void name(unsigned d,unsigned a,unsigned b) { code.op(r(d),r(a),r(b)); }
     RSP_BINARY(addr, add) RSP_BINARY(subr, sub) RSP_BINARY(andr, and_) RSP_BINARY(orr, orr) RSP_BINARY(xorr, eor)
 #undef RSP_BINARY
-#define RSP_IMMEDIATE(name, op) void name(unsigned d,unsigned a,HostWord v) { imm(16,v); code.op(r(d),r(a),Xbyak_aarch64::XReg(16)); }
+    static bool simple_logical_mask(uint64_t v)
+    {
+        // Low or high contiguous runs of ones always fit AArch64's logical
+        // immediate encoding. Leave other masks to the existing general path.
+        return v && v!=~uint64_t(0) && (!(v&(v+1)) || !(~v&(~v+1)));
+    }
+#define RSP_IMMEDIATE(name, op) void name(unsigned d,unsigned a,HostWord v) { \
+        if(optimize_code && simple_logical_mask(uint64_t(v)))code.op(r(d),r(a),uint64_t(v)); \
+        else { imm(16,v); code.op(r(d),r(a),Xbyak_aarch64::XReg(16)); } }
     RSP_IMMEDIATE(andi, and_) RSP_IMMEDIATE(ori, orr) RSP_IMMEDIATE(xori, eor)
 #undef RSP_IMMEDIATE
     void addi(unsigned d,unsigned a,HostWord v)
     {
+        if (optimize_code && v == 0) { movr(d,a); return; }
         if (v >= 0 && v < 4096) code.add(r(d),r(a),uint32_t(v));
         else if (v < 0 && v > -4096) code.sub(r(d),r(a),uint32_t(-v));
         else { imm(16,v); code.add(r(d),r(a),Xbyak_aarch64::XReg(16)); }
@@ -207,8 +413,8 @@ public:
 #define RSP_CMP(name, cc) void name(unsigned d,unsigned a,HostWord v) { compare_imm(a,v); condition(d,Xbyak_aarch64::cc); }
     RSP_CMP(lti, LT) RSP_CMP(lti_u, LO) RSP_CMP(gei, GE) RSP_CMP(lei, LE) RSP_CMP(gti, GT)
 #undef RSP_CMP
-    CodeLabel *beqi(unsigned a,HostWord v) { compare_imm(a,v); return branch(Xbyak_aarch64::EQ); }
-    CodeLabel *bnei(unsigned a,HostWord v) { compare_imm(a,v); return branch(Xbyak_aarch64::NE); }
+    CodeLabel *beqi(unsigned a,HostWord v) { if(optimize_code && !v){auto *n=new_label();code.cbz(r(a),n->label);return n;} compare_imm(a,v); return branch(Xbyak_aarch64::EQ); }
+    CodeLabel *bnei(unsigned a,HostWord v) { if(optimize_code && !v){auto *n=new_label();code.cbnz(r(a),n->label);return n;} compare_imm(a,v); return branch(Xbyak_aarch64::NE); }
     CodeLabel *bltr_u(unsigned a,unsigned b) { code.cmp(r(a),r(b)); return branch(Xbyak_aarch64::LO); }
     CodeLabel *bmsi(unsigned a,HostWord v) { imm(16,v); code.tst(r(a),Xbyak_aarch64::XReg(16)); return branch(Xbyak_aarch64::NE); }
     CodeLabel *jmpi() { auto *n = new_label(); code.b(n->label); return n; }
@@ -251,6 +457,9 @@ private:
     }
     void compare_imm(unsigned a,HostWord v)
     {
+        // Compare/branch emitters own condition codes. TEST has the same
+        // relevant flags as CMP zero, with a shorter encoding.
+        if (optimize_code && v == 0) { code.test(r(a),r(a)); return; }
         if (v >= INT32_MIN && v <= INT32_MAX) code.cmp(r(a), int32_t(v));
         else { code.mov(code.r11,uint64_t(v)); code.cmp(r(a),code.r11); }
     }
@@ -283,7 +492,12 @@ public:
 #ifdef _WIN32
         code.push(code.rsi); code.push(code.rdi);
 #endif
-        code.sub(code.rsp,264); // aligned calls, shadow space and delay-slot spills
+#ifdef _WIN32
+        code.sub(code.rsp,424);
+        for (unsigned i = 0; i < 10; i++) code.movdqu(code.ptr[code.rsp+64+i*16], Xbyak::Xmm(6+i));
+#else
+        code.sub(code.rsp,264);
+#endif
     }
     void getarg(unsigned d)
     {
@@ -295,7 +509,13 @@ public:
     }
     void retr(unsigned s)
     {
-        code.mov(code.rax,r(s)); code.add(code.rsp,264);
+        code.mov(code.rax,r(s));
+#ifdef _WIN32
+        for (unsigned i = 0; i < 10; i++) code.movdqu(Xbyak::Xmm(6+i),code.ptr[code.rsp+64+i*16]);
+        code.add(code.rsp,424);
+#else
+        code.add(code.rsp,264);
+#endif
 #ifdef _WIN32
         code.pop(code.rdi); code.pop(code.rsi);
 #endif
@@ -325,8 +545,16 @@ public:
         else { code.mov(code.r11,r(a)); code.sub(code.r11,r(b)); code.mov(r(d),code.r11); }
     }
 #define RSP_IMMEDIATE(name, op) void name(unsigned d,unsigned a,HostWord v) { movr(d,a); code.op(r(d),int32_t(v)); }
-    RSP_IMMEDIATE(addi, add) RSP_IMMEDIATE(andi, and_) RSP_IMMEDIATE(ori, or_) RSP_IMMEDIATE(xori, xor_)
+    RSP_IMMEDIATE(andi, and_) RSP_IMMEDIATE(ori, or_) RSP_IMMEDIATE(xori, xor_)
 #undef RSP_IMMEDIATE
+    void addi(unsigned d,unsigned a,HostWord v)
+    {
+        // Arithmetic emitters do not expose condition codes. LEA avoids a
+        // copy when the destination differs, preserving full 64-bit wrapping.
+        if (optimize_code && v == 0) movr(d,a);
+        else if (optimize_code && d != a) code.lea(r(d),code.ptr[r(a)+int32_t(v)]);
+        else { movr(d,a);code.add(r(d),int32_t(v)); }
+    }
 #define RSP_SHIFT(name, op) void name(unsigned d,unsigned a,unsigned b) { code.mov(code.rcx,r(b)); movr(d,a); code.op(r(d),code.cl); }
     RSP_SHIFT(lshr, shl) RSP_SHIFT(rshr, sar) RSP_SHIFT(rshr_u, shr)
 #undef RSP_SHIFT

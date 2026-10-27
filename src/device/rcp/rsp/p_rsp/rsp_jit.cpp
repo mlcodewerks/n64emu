@@ -6,6 +6,10 @@
 #include "rsp_disasm.hpp"
 #include <utility>
 #include <assert.h>
+#ifdef RSP_JIT_PROFILE
+#include <cstdio>
+#include <cstdlib>
+#endif
 
 using namespace std;
 
@@ -35,6 +39,20 @@ CPU::CPU()
 
 CPU::~CPU()
 {
+#ifdef RSP_JIT_PROFILE
+    if (const char *path = std::getenv("RSP_JIT_PROFILE_FILE")) {
+        if (FILE *file = std::fopen(path,"w")) {
+            std::fprintf(file,"overlay,pc,instruction,hits\n");
+            for (const auto &p : execution_profiles)
+                for (unsigned i=0;i<p->count;++i) if (p->hits[i])
+                    for (unsigned j=0;j<p->spans[i];++j)
+                        std::fprintf(file,"%016llx,%03x,%08x,%llu\n",
+                            (unsigned long long)p->hash,(p->pc+i+j)*4,p->instructions[i+j],
+                            (unsigned long long)p->hits[i]);
+            std::fclose(file);
+        }
+    }
+#endif
 }
 
 void CPU::invalidate_imem()
@@ -739,17 +757,25 @@ void CPU::jit_emit_store_operation(Emitter *_jit,
 	int16_t simm = int16_t(instr);
 	unsigned rs = (instr >> 21) & 31;
 	unsigned rt_reg = regs.load_mips_register_noext(_jit, rt);
-	unsigned rs_reg = regs.load_mips_register_noext(_jit, rs);
+    uint32_t address = 0;
+    bool known_address = regs.constant_mips_register(rs, address);
+    unsigned rs_reg = known_address ? 0 : regs.load_mips_register_noext(_jit, rs);
 	unsigned rs_tmp_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
-	_jit->addi(rs_tmp_reg, rs_reg, simm);
-	_jit->andi(rs_tmp_reg, rs_tmp_reg, 0xfffu);
+    if (known_address) {
+        address = (address + uint32_t(int32_t(simm))) & 0xfffu;
+        _jit->movi(rs_tmp_reg, address);
+        if (!(address & align_mask)) align_mask = 0;
+    } else {
+        _jit->addi(rs_tmp_reg, rs_reg, simm);
+        _jit->andi(rs_tmp_reg, rs_tmp_reg, 0xfffu);
+    }
 
 	// If we are unaligned, it gets very messy to JIT, so just thunk it out to C code.
 	CodeLabel *unaligned = nullptr;
 	if (align_mask)
 	{
 		regs.unlock_mips_register(rt);
-		regs.unlock_mips_register(rs);
+		if (!known_address) regs.unlock_mips_register(rs);
 		regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
 		// We're going to call, so need to save caller-save register we care about.
 		regs.flush_caller_save_registers(_jit);
@@ -779,7 +805,7 @@ void CPU::jit_emit_store_operation(Emitter *_jit,
 	else
 	{
 		regs.unlock_mips_register(rt);
-		regs.unlock_mips_register(rs);
+		if (!known_address) regs.unlock_mips_register(rs);
 		regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
 	}
 }
@@ -801,10 +827,18 @@ void CPU::jit_emit_load_operation(Emitter *_jit,
 
 	int16_t simm = int16_t(instr);
 	unsigned rs = (instr >> 21) & 31;
-	unsigned rs_reg = regs.load_mips_register_noext(_jit, rs);
+    uint32_t address = 0;
+    bool known_address = regs.constant_mips_register(rs, address);
+    unsigned rs_reg = known_address ? 0 : regs.load_mips_register_noext(_jit, rs);
 	unsigned rs_tmp_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
-	_jit->addi(rs_tmp_reg, rs_reg, simm);
-	_jit->andi(rs_tmp_reg, rs_tmp_reg, 0xfffu);
+    if (known_address) {
+        address = (address + uint32_t(int32_t(simm))) & 0xfffu;
+        _jit->movi(rs_tmp_reg, address);
+        if (!(address & align_mask)) align_mask = 0;
+    } else {
+        _jit->addi(rs_tmp_reg, rs_reg, simm);
+        _jit->andi(rs_tmp_reg, rs_tmp_reg, 0xfffu);
+    }
 
 	unsigned ret_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER1);
 
@@ -814,7 +848,7 @@ void CPU::jit_emit_load_operation(Emitter *_jit,
 	{
 		// Flush the register cache here since we might call.
 		// We will still use rs_reg/rt_reg, but they only live for this short burst only.
-		regs.unlock_mips_register(rs);
+		if (!known_address) regs.unlock_mips_register(rs);
 		regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
 		regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER1);
 
@@ -848,7 +882,7 @@ void CPU::jit_emit_load_operation(Emitter *_jit,
 	}
 	else
 	{
-		regs.unlock_mips_register(rs);
+		if (!known_address) regs.unlock_mips_register(rs);
 		regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
 		regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER1);
 	}
@@ -856,6 +890,171 @@ void CPU::jit_emit_load_operation(Emitter *_jit,
 	unsigned rt_reg = regs.modify_mips_register(_jit, rt);
 	_jit->movr(rt_reg, ret_reg);
 	regs.unlock_mips_register(rt);
+}
+
+Func CPU::get_vector_sequence(const uint32_t *instructions, unsigned count)
+{
+    // Exact byte keys avoid relying on hash collision assumptions for code.
+    std::string key(reinterpret_cast<const char *>(instructions), count * sizeof(uint32_t));
+    auto found = vector_sequences.find(key);
+    if (found != vector_sequences.end()) return found->second;
+    Emitter emit;
+    emit.vector_sequence(instructions, count);
+    emit.native_vector_return();
+    HostWord size; emit.get_code(&size);
+    void *code = allocator.allocate_leaf_code(size); if (!code) abort();
+    emit.set_code(code, size); emit.emit(); if (!Allocator::commit_code(code, size)) abort();
+    vector_sequences.emplace(std::move(key), code);
+    return code;
+}
+
+Func CPU::get_vector_block(uint32_t instruction)
+{
+    unsigned op=instruction&63;
+    bool generic=op<0x30;
+    uint32_t key=generic?(0x80000000u|op):instruction;
+    auto found=vector_blocks.find(key);
+    if(found!=vector_blocks.end())return found->second;
+    Emitter emit;
+    if(generic)emit.vector_instruction(op,0,0,0,0,true);
+    else emit.vector_instruction(op,(instruction>>6)&31,(instruction>>11)&31,(instruction>>16)&31,(instruction>>21)&15);
+    emit.native_vector_return();
+    HostWord size;emit.get_code(&size);
+    void *code=allocator.allocate_leaf_code(size);if(!code)abort();
+    emit.set_code(code,size);emit.emit();if(!Allocator::commit_code(code,size))abort();
+    vector_blocks.emplace(key,code);return code;
+}
+
+#if !defined(__aarch64__) && !defined(_M_ARM64) && !defined(RSP_JIT_EMITTER_AARCH64)
+Func CPU::get_quad_partial(bool store)
+{
+    // COP0 keys cannot collide with the COP2 instruction keys or generic VU
+    // keys used by get_vector_block. Reuse its cache without changing layout.
+    uint32_t key=0x40000000u|unsigned(store);
+    auto found=vector_blocks.find(key);if(found!=vector_blocks.end())return found->second;
+    Emitter emit;emit.vector_quad_leaf(JIT_REGISTER_DMEM,store);
+    HostWord size;emit.get_code(&size);
+    void* code=allocator.allocate_leaf_code(size);if(!code)abort();
+    emit.set_code(code,size);emit.emit();if(!Allocator::commit_code(code,size))abort();
+    vector_blocks.emplace(key,code);return code;
+}
+#endif
+
+// Fold in architectural 32-bit arithmetic, before the host register cache's
+// sign/zero extensions. Constants describe only the current linear path;
+// register-window flushes (joins, delay-slot resolution and exits) kill them.
+bool CPU::jit_fold_scalar(Emitter *_jit, uint32_t instr)
+{
+    unsigned type = instr >> 26, op = instr & 63;
+    unsigned rs = (instr >> 21) & 31, rt = (instr >> 16) & 31;
+    unsigned rd = (instr >> 11) & 31, shift = (instr >> 6) & 31;
+    uint32_t x = 0, y = 0;
+    bool kx = regs.constant_mips_register(rs, x), ky = regs.constant_mips_register(rt, y);
+    auto constant = [&](unsigned dest, uint32_t value) {
+        if (dest) {
+            regs.immediate_mips_register(_jit, dest, int32_t(value));
+            regs.unlock_mips_register(dest);
+        }
+        return true;
+    };
+    auto copy = [&](unsigned dest, unsigned source) {
+        if (!dest || dest == source) return true;
+        uint32_t value;
+        if (regs.constant_mips_register(source, value)) return constant(dest, value);
+        unsigned s = regs.load_mips_register_noext(_jit, source);
+        unsigned d = regs.modify_mips_register(_jit, dest);
+        _jit->movr(d, s);
+        regs.unlock_mips_register(source); regs.unlock_mips_register(dest);
+        return true;
+    };
+    if (type == 0) {
+        switch (op) {
+        case 0: case 2: case 3:
+        case 4: case 6: case 7: {
+            if (!rd) return true;
+            bool variable = op >= 4;
+            if (variable && !kx) { if (ky && !y) return constant(rd, 0); return false; }
+            unsigned amount = variable ? x & 31 : shift;
+            if (ky) return constant(rd, (op == 0 || op == 4) ? y << amount :
+                (op == 2 || op == 6) ? y >> amount : uint32_t(int32_t(y) >> amount));
+            if (!amount) return copy(rd, rt);
+            if (!variable) return false;
+            unsigned s = op == 6 ? regs.load_mips_register_zext(_jit, rt) :
+                         op == 7 ? regs.load_mips_register_sext(_jit, rt) : regs.load_mips_register_noext(_jit, rt);
+            unsigned d = regs.modify_mips_register(_jit, rd);
+            if (op == 4) _jit->lshi(d, s, amount);
+            else if (op == 6) _jit->rshi_u(d, s, amount);
+            else _jit->rshi(d, s, amount);
+            regs.unlock_mips_register(rt); regs.unlock_mips_register(rd);
+            return true;
+        }
+        case 0x20: case 0x21: case 0x22: case 0x23:
+        case 0x24: case 0x25: case 0x26: case 0x27: case 0x2a: case 0x2b: break;
+        default: return false;
+        }
+        if (!rd) return true;
+        if (kx && ky) {
+            switch (op) {
+            case 0x20: case 0x21: return constant(rd, x + y);
+            case 0x22: case 0x23: return constant(rd, x - y);
+            case 0x24: return constant(rd, x & y);
+            case 0x25: return constant(rd, x | y);
+            case 0x26: return constant(rd, x ^ y);
+            case 0x27: return constant(rd, ~(x | y));
+            case 0x2a: return constant(rd, int32_t(x) < int32_t(y));
+            case 0x2b: return constant(rd, x < y);
+            }
+        }
+        if (rs == rt) {
+            if (op == 0x22 || op == 0x23 || op == 0x26 || op == 0x2a || op == 0x2b) return constant(rd, 0);
+            if (op == 0x24 || op == 0x25) return copy(rd, rs);
+        }
+        if (op == 0x24 && ((kx && !x) || (ky && !y))) return constant(rd, 0);
+        if (op == 0x25 && ((kx && x == UINT32_MAX) || (ky && y == UINT32_MAX))) return constant(rd, UINT32_MAX);
+        if (op == 0x2b && ky && !y) return constant(rd, 0);
+        if ((op == 0x22 || op == 0x23) && ky && !y) return copy(rd, rs);
+        bool commutes = op == 0x20 || op == 0x21 || op == 0x24 || op == 0x25 || op == 0x26;
+        if (commutes && kx) { std::swap(rs, rt); std::swap(x, y); std::swap(kx, ky); }
+        if (!ky) return false;
+        if ((commutes && !y && op != 0x24) || (op == 0x24 && y == UINT32_MAX)) return copy(rd, rs);
+        if (!commutes && op != 0x22 && op != 0x23 && op != 0x2a && op != 0x2b) return false;
+        unsigned s = op == 0x2a ? regs.load_mips_register_sext(_jit, rs) :
+                     op == 0x2b ? regs.load_mips_register_zext(_jit, rs) : regs.load_mips_register_noext(_jit, rs);
+        unsigned d = regs.modify_mips_register(_jit, rd);
+        switch (op) {
+        case 0x20: case 0x21: _jit->addi(d, s, int32_t(y)); break;
+        // Negate as unsigned to avoid overflow for INT32_MIN.
+        case 0x22: case 0x23: _jit->addi(d, s, int32_t(0u - y)); break;
+        case 0x24: _jit->andi(d, s, int32_t(y)); break;
+        case 0x25: _jit->ori(d, s, int32_t(y)); break;
+        case 0x26: _jit->xori(d, s, int32_t(y)); break;
+        case 0x2a: _jit->lti(d, s, int32_t(y)); break;
+        case 0x2b: _jit->lti_u(d, s, HostWord(y)); break;
+        }
+        regs.unlock_mips_register(rs); regs.unlock_mips_register(rd);
+        return true;
+    }
+    if (type < 8 || type > 15) return false;
+    if (!rt) return true;
+    uint32_t imm = uint32_t(int32_t(int16_t(instr)));
+    if (type >= 12) imm = uint16_t(instr);
+    if (type == 15) return constant(rt, imm << 16);
+    // Keep SLTIU's existing RSP/reference immediate interpretation.
+    if (type == 11) imm = uint16_t(instr);
+    if (kx) {
+        switch (type) {
+        case 8: case 9: return constant(rt, x + imm);
+        case 10: return constant(rt, int32_t(x) < int32_t(imm));
+        case 11: return constant(rt, x < imm);
+        case 12: return constant(rt, x & imm);
+        case 13: return constant(rt, x | imm);
+        case 14: return constant(rt, x ^ imm);
+        }
+    }
+    if (type == 12 && !imm) return constant(rt, 0);
+    if ((type == 8 || type == 9 || type == 13 || type == 14) && !imm) return copy(rt, rs);
+    if (type == 11 && !imm) return constant(rt, 0);
+    return false;
 }
 
 void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
@@ -871,6 +1070,37 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 	jit_end_call(_jit, reinterpret_cast<CodePointer>(rsp_report_pc));
 #endif
 
+    if (jit_fold_scalar(_jit, instr)) return;
+
+    // Keep the original branch and delay-slot bookkeeping, but replace a
+    // proven condition with a literal. Never remove a guest delay slot.
+    {
+        unsigned type = instr >> 26, rs = (instr >> 21) & 31, rt = (instr >> 16) & 31;
+        uint32_t x = 0, y = 0;
+        bool kx = regs.constant_mips_register(rs, x), ky = regs.constant_mips_register(rt, y);
+        bool known = false, taken = false, link = false;
+        if ((type == 4 || type == 5) && ((kx && ky) || rs == rt)) {
+            known = true; taken = type == 4 ? (rs == rt || x == y) : (rs != rt && x != y);
+        } else if ((type == 6 || type == 7) && kx) {
+            known = true; taken = type == 6 ? int32_t(x) <= 0 : int32_t(x) > 0;
+        } else if (type == 1 && kx && (rt == 0 || rt == 1 || rt == 16 || rt == 17)) {
+            known = true; taken = (rt & 1) ? int32_t(x) >= 0 : int32_t(x) < 0; link = (rt & 16) != 0;
+        }
+        if (known) {
+            if (last_info.branch && last_info.conditional) jit_save_illegal_cond_branch_taken(_jit);
+            if (last_info.branch && last_info.indirect) jit_save_illegal_indirect_register(_jit);
+            regs.immediate_mips_register(_jit, RegisterCache::COND_BRANCH_TAKEN, taken);
+            regs.unlock_mips_register(RegisterCache::COND_BRANCH_TAKEN);
+            if (link) {
+                regs.immediate_mips_register(_jit, 31, (pc + 8) & 0xffcu);
+                regs.unlock_mips_register(31);
+            }
+            info.branch = info.conditional = true;
+            info.branch_target = (pc + 4 + (instr << 2)) & 0xffc;
+            return;
+        }
+    }
+
 	// VU
 	if ((instr >> 25) == 0x25)
 	{
@@ -885,36 +1115,21 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 		uint32_t vt = (instr >> 16) & 31;
 		uint32_t e = (instr >> 21) & 15;
 
-		using VUOp = void (*)(RSP::CPUState *, unsigned vd, unsigned vs, unsigned vt, unsigned e);
-
-		static const VUOp ops[64] = {
-			RSP_VMULF, RSP_VMULU, nullptr, nullptr, RSP_VMUDL, RSP_VMUDM, RSP_VMUDN, RSP_VMUDH, RSP_VMACF, RSP_VMACU, nullptr,
-			nullptr, RSP_VMADL, RSP_VMADM, RSP_VMADN, RSP_VMADH, RSP_VADD, RSP_VSUB, nullptr, RSP_VABS, RSP_VADDC, RSP_VSUBC,
-			nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, RSP_VSAR, nullptr, nullptr, RSP_VLT,
-			RSP_VEQ, RSP_VNE, RSP_VGE, RSP_VCL, RSP_VCH, RSP_VCR, RSP_VMRG, RSP_VAND, RSP_VNAND, RSP_VOR, RSP_VNOR,
-			RSP_VXOR, RSP_VNXOR, nullptr, nullptr, RSP_VRCP, RSP_VRCPL, RSP_VRCPH, RSP_VMOV, RSP_VRSQ, RSP_VRSQL, RSP_VRSQH,
-			RSP_VNOP,
-		};
-
-		auto *vuop = ops[op];
-		if (!vuop)
-			vuop = RSP_RESERVED;
-
-		regs.flush_caller_save_registers(_jit);
-		jit_begin_call(_jit);
-		_jit->pushargr(JIT_REGISTER_STATE);
-		_jit->pushargi(vd);
-		_jit->pushargi(vs);
-		_jit->pushargi(vt);
-		_jit->pushargi(e);
-		jit_end_call(_jit ,reinterpret_cast<CodePointer>(vuop));
+		// Divider normalization uses volatile scalar scratch registers. Other
+		// vector instructions leave the scalar register cache intact.
+		if (op == 0x30 || op == 0x31 || op == 0x34 || op == 0x35)
+			regs.flush_caller_save_registers(_jit);
+        // Large arithmetic sequences share native leaves across overlapping
+        // regions and microcodes. Their private ABI keeps the scalar cache live.
+        bool arithmetic=op<=1 || (op>=4 && op<=9) || (op>=0x0c && op<=0x11) || (op>=0x13 && op<=0x15);
+        bool divider=op==0x30 || op==0x31 || op==0x34 || op==0x35;
+        if(arithmetic || (op>=0x20 && op<=0x26) || divider) {
+            if(!divider)_jit->vector_arguments(vd,vs,vt,e);
+            _jit->native_vector_call(get_vector_block(instr));
+        } else
+            _jit->vector_instruction(op, vd, vs, vt, e);
 		return;
 	}
-
-	// TODO: Meaningful register allocation.
-	// For now, always flush register state to memory after an instruction for simplicity.
-	// Should be red-hot in L1 cache, so probably won't be that bad.
-	// On x86 and x64, we unfortunately have an anemic register bank to work with in Lightning.
 
 	uint32_t type = instr >> 26;
 
@@ -1499,61 +1714,16 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 		unsigned rt = (instr >> 16) & 31;
 		unsigned imm = (instr >> 7) & 15;
 
-		switch (rs)
-		{
-		case 000: // MFC2
-		{
-			regs.flush_caller_save_registers(_jit);
-			regs.flush_mips_register(_jit, rt);
-			jit_begin_call(_jit);
-			_jit->pushargr(JIT_REGISTER_STATE);
-			_jit->pushargi(rt);
-			_jit->pushargi(rd);
-			_jit->pushargi(imm);
-			jit_end_call(_jit, reinterpret_cast<CodePointer>(RSP_MFC2));
-			break;
-		}
-
-		case 002: // CFC2
-		{
-			regs.flush_caller_save_registers(_jit);
-			regs.flush_mips_register(_jit, rt);
-			jit_begin_call(_jit);
-			_jit->pushargr(JIT_REGISTER_STATE);
-			_jit->pushargi(rt);
-			_jit->pushargi(rd);
-			jit_end_call(_jit, reinterpret_cast<CodePointer>(RSP_CFC2));
-			break;
-		}
-
-		case 004: // MTC2
-		{
-			regs.flush_caller_save_registers(_jit);
-			regs.flush_mips_register(_jit, rt);
-			jit_begin_call(_jit);
-			_jit->pushargr(JIT_REGISTER_STATE);
-			_jit->pushargi(rt);
-			_jit->pushargi(rd);
-			_jit->pushargi(imm);
-			jit_end_call(_jit, reinterpret_cast<CodePointer>(RSP_MTC2));
-			break;
-		}
-
-		case 006: // CTC2
-		{
-			regs.flush_caller_save_registers(_jit);
-			regs.flush_mips_register(_jit, rt);
-
-			jit_begin_call(_jit);
-			_jit->pushargr(JIT_REGISTER_STATE);
-			_jit->pushargi(rt);
-			_jit->pushargi(rd);
-			jit_end_call(_jit, reinterpret_cast<CodePointer>(RSP_CTC2));
-			break;
-		}
-
-		default:
-			break;
+		if (rs == 0 || rs == 2) {
+			if (rt) {
+				unsigned dest = regs.modify_mips_register(_jit, rt);
+				_jit->vector_transfer(rs, dest, rd, imm);
+				regs.unlock_mips_register(rt);
+			}
+		} else if (rs == 4 || rs == 6) {
+			unsigned source = regs.load_mips_register_noext(_jit, rt);
+			_jit->vector_transfer(rs, source, rd, imm);
+			regs.unlock_mips_register(rt);
 		}
 		break;
 	}
@@ -1640,6 +1810,7 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 
 	case 062: // LWC2
 	{
+        if(jit_vector_memory(_jit,instr,false))break;
 		unsigned rt = (instr >> 16) & 31;
 		int16_t simm = instr;
 		// Sign-extend.
@@ -1672,6 +1843,7 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 
 	case 072: // SWC2
 	{
+        if(jit_vector_memory(_jit,instr,true))break;
 		unsigned rt = (instr >> 16) & 31;
 		int16_t simm = instr;
 		// Sign-extend.
@@ -1705,6 +1877,68 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 	default:
 		break;
 	}
+}
+
+bool CPU::jit_vector_memory(Emitter *_jit,uint32_t instr,bool store)
+{
+#ifdef TRACE
+    return false;
+#endif
+    unsigned type=(instr>>11)&31,element=(instr>>7)&15;
+    bool packed=!store && (type==6 || type==7) && !element;
+    if(type>4 && !packed)return false;
+    unsigned size=packed?8:1u<<type;
+    bool quad_native=type==4 && Emitter::native_quad_partial();
+    if((size>1 && (element&1)) || element+size>16)return false;
+    unsigned rs=(instr>>21)&31,vt=(instr>>16)&31;
+    int offset=(int32_t(instr<<25)>>25)*int(size);
+    uint32_t base=0;bool known=regs.constant_mips_register(rs,base);
+    if(known && ((base+offset)&(size-1)) && !quad_native)return false;
+    unsigned address;
+    if(known)address=regs.immediate_mips_register(_jit,RegisterCache::SCRATCH_REGISTER0,(base+offset)&4095);
+    else {
+        unsigned source=regs.load_mips_register_noext(_jit,rs);
+        address=regs.modify_mips_register(_jit,RegisterCache::SCRATCH_REGISTER0);
+        _jit->addi(address,source,offset);_jit->andi(address,address,4095);
+        regs.unlock_mips_register(rs);
+    }
+    regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
+    bool fallback=!known && size>1 && !quad_native;
+    if(fallback){regs.flush_caller_save_registers(_jit);regs.flush_mips_register(_jit,rs);}
+    auto *unaligned=fallback?_jit->bmsi(address,size-1):nullptr;
+    HostWord vector_offset=offsetof(CPUState,cp2.regs)+vt*sizeof(state.cp2.regs[0])+(size==1?MES(element):element);
+    auto partial_quad=[&]() {
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
+        _jit->vector_quad_partial(JIT_REGISTER_STATE,JIT_REGISTER_DMEM,address,vector_offset,store);
+#else
+        _jit->vector_quad_arguments(JIT_REGISTER_STATE,address,vector_offset);
+        _jit->native_vector_call(get_quad_partial(store));
+#endif
+    };
+    if(quad_native && !known) {
+        auto *partial=_jit->bmsi(address,15);
+        _jit->vector_memory(JIT_REGISTER_STATE,JIT_REGISTER_DMEM,address,vector_offset,store,size);
+        auto *done=_jit->jmpi();_jit->patch(partial);
+        partial_quad();
+        _jit->patch(done);return true;
+    }
+    if(quad_native && known && ((base+offset)&15)) {
+        partial_quad();return true;
+    }
+    if(packed)_jit->vector_packed_load(JIT_REGISTER_STATE,JIT_REGISTER_DMEM,address,vector_offset,type==6?8:7);
+    else _jit->vector_memory(JIT_REGISTER_STATE,JIT_REGISTER_DMEM,address,vector_offset,store,size);
+    if(unaligned) {
+        auto *done=_jit->jmpi();_jit->patch(unaligned);
+        jit_begin_call(_jit);_jit->pushargr(JIT_REGISTER_STATE);_jit->pushargi(vt);
+        _jit->pushargi(element);_jit->pushargi(offset/int(size));_jit->pushargi(rs);
+        using Operation=void(*)(CPUState*,unsigned,unsigned,int,unsigned);
+        static const Operation loads[]={RSP_LBV,RSP_LSV,RSP_LLV,RSP_LDV,RSP_LQV};
+        static const Operation stores[]={RSP_SBV,RSP_SSV,RSP_SLV,RSP_SDV,RSP_SQV};
+        auto operation=packed?(type==6?RSP_LPV:RSP_LUV):(store?stores[type]:loads[type]);
+        jit_end_call(_jit,reinterpret_cast<CodePointer>(operation));
+        _jit->patch(done);
+    }
+    return true;
 }
 
 void CPU::jit_mark_block_entries(uint32_t pc, uint32_t end, bool *block_entries)
@@ -1806,9 +2040,38 @@ void CPU::jit_handle_latent_delay_slot(Emitter *_jit, const InstructionInfo &las
 	}
 }
 
+// Only these instructions have no externally observable effects beyond their
+// scalar destination. All other opcodes are barriers for backward liveness.
+static bool scalar_access(uint32_t instr, unsigned &dest, uint32_t &reads)
+{
+    unsigned type = instr >> 26, op = instr & 63;
+    unsigned rs = (instr >> 21) & 31, rt = (instr >> 16) & 31;
+    if (type >= 8 && type <= 15) {
+        dest = rt; reads = type == 15 ? 0 : 1u << rs; return true;
+    }
+    if (type != 0) return false;
+    dest = (instr >> 11) & 31;
+    switch (op) {
+    case 0: case 2: case 3: reads = 1u << rt; return true;
+    case 4: case 6: case 7:
+    case 0x20: case 0x21: case 0x22: case 0x23: case 0x24: case 0x25:
+    case 0x26: case 0x27: case 0x2a: case 0x2b: reads = (1u << rs) | (1u << rt); return true;
+    default: return false;
+    }
+}
+
 Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count)
 {
 	regs.reset();
+#ifdef RSP_JIT_PROFILE
+    ExecutionProfile *profile = nullptr;
+    if (std::getenv("RSP_JIT_PROFILE_FILE")) {
+        execution_profiles.emplace_back(new ExecutionProfile);
+        profile = execution_profiles.back().get();
+        profile->hash=hash;profile->pc=pc_word;profile->count=instruction_count;
+        std::memcpy(profile->instructions,state.imem+pc_word,instruction_count*sizeof(uint32_t));
+    }
+#endif
 
 	mips_disasm.clear();
 	Emitter emitter;
@@ -1825,6 +2088,22 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 	bool block_entry[CODE_BLOCK_WORDS * 2];
 	memset(block_entry, 0, instruction_count * sizeof(bool));
 	jit_mark_block_entries(pc_word, pc_word + instruction_count, block_entry);
+
+    bool dead_scalar[CODE_BLOCK_WORDS * 2] = {};
+#ifndef TRACE
+    uint32_t live_scalar = UINT32_MAX;
+    for (unsigned end = instruction_count; end; ) {
+        unsigned i = --end, dest; uint32_t reads;
+        // Entry instruction may be a pending delay slot, and joins may have
+        // predecessors outside the linear stream. Expose all registers there.
+        if ((i + 1 < instruction_count && block_entry[i + 1]) ||
+            (i && RSPTimingDecoder::decoderEXECUTE(state.imem[pc_word + i - 1]).branch()))
+            live_scalar = UINT32_MAX;
+        if (!scalar_access(state.imem[pc_word + i], dest, reads)) { live_scalar = UINT32_MAX; continue; }
+        if (i && (!dest || !(live_scalar & (1u << dest)))) dead_scalar[i] = true;
+        else live_scalar = (live_scalar & ~(1u << dest)) | reads;
+    }
+#endif
 
 	InstructionInfo last_info = {};
 	InstructionInfo first_info = {};
@@ -1855,6 +2134,7 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 	bool previous_branch = false;
 	for (unsigned i = 0; i < instruction_count; ++i) {
 		uint32_t instr = state.imem[pc_word + i];
+
 		auto op = RSPTimingDecoder::decoderEXECUTE(instr);
 		pending_cycles += timing_cost[i];
 		bool flush = i == 0 || i + 1 == instruction_count || block_entry[i + 1] ||
@@ -1890,14 +2170,29 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 
 		uint32_t instr = state.imem[pc_word + i];
 
+        unsigned vector_count = 1;
+#ifndef TRACE
+        // First instructions can resolve a latent delay slot; branch targets
+        // and ordinary delay slots also require individually visible state.
+        auto vector_only = [](uint32_t instruction) {
+            unsigned op = instruction & 63;
+            return (instruction >> 25) == 0x25 && (op < 0x30 || op > 0x36);
+        };
+        if (i && !last_info.branch && vector_only(instr))
+            while (vector_count < 8 && i + vector_count < instruction_count &&
+                   !block_entry[i + vector_count] && vector_only(state.imem[pc_word + i + vector_count]))
+                ++vector_count;
+#endif
+        unsigned cycle_cost = 0;
+        for (unsigned j = 0; j < vector_count; j++) cycle_cost += timing_cost[i + j];
 		// Count execution, including loop iterations and branch delay slots.
 		// Emit before instructions that can return to the task scheduler.
 		// Omit zero-cost pair members and coalesced arithmetic updates, avoiding
 		// both memory traffic and a needless scratch-register eviction.
-		if (timing_cost[i]) {
+		if (cycle_cost) {
 			unsigned cycle_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
 			_jit->ldxi_ui(cycle_reg, JIT_REGISTER_STATE, offsetof(CPUState, cycles));
-			_jit->addi(cycle_reg, cycle_reg, timing_cost[i]);
+			_jit->addi(cycle_reg, cycle_reg, cycle_cost);
 			_jit->stxi_i(offsetof(CPUState, cycles), JIT_REGISTER_STATE, cycle_reg);
 			regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
 		}
@@ -1920,8 +2215,19 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 #endif
 
 		InstructionInfo inst_info = {};
-		jit_instruction(_jit, (pc_word + i) << 2, instr, inst_info, last_info, i == 0,
+        if (vector_count > 1) {
+#ifdef RSP_JIT_PROFILE
+            if(profile){profile->spans[i]=vector_count;_jit->profile_counter(profile->hits+i);}
+#endif
+            _jit->native_vector_call(get_vector_sequence(state.imem + pc_word + i, vector_count));
+            i += vector_count - 1;
+        } else {
+#ifdef RSP_JIT_PROFILE
+            if(profile){profile->spans[i]=1;_jit->profile_counter(profile->hits+i);}
+#endif
+		jit_instruction(_jit, (pc_word + i) << 2, dead_scalar[i] ? 0 : instr, inst_info, last_info, i == 0,
 		                (i + 1 < instruction_count) && block_entry[i + 1]);
+        }
 
 		// Handle all the fun cases with branch delay slots.
 		// Not sure if we really need to handle them, but IIRC CXD4 does it and the LLVM RSP as well.
@@ -2120,6 +2426,7 @@ unsigned RegisterCache::immediate_mips_register(Emitter *_jit, unsigned mips_reg
 	unsigned jit_reg = modify_mips_register(_jit, mips_reg);
 	_jit->movi(jit_reg, value);
 	entries[jit_register_to_index(jit_reg)].sign = SExt;
+    if (mips_reg < 32) { constant_known[mips_reg] = true; constants[mips_reg] = uint32_t(value); }
 	return jit_reg;
 }
 
@@ -2168,6 +2475,7 @@ unsigned RegisterCache::load_mips_register_noext(Emitter *_jit, unsigned mips_re
 
 unsigned RegisterCache::modify_mips_register(Emitter *_jit, unsigned mips_reg)
 {
+    if (mips_reg < 32) constant_known[mips_reg] = false;
 	auto &reg = find_register(mips_reg);
 	unsigned jit_reg = entry_to_jit_register(reg);
 
@@ -2302,6 +2610,7 @@ void RegisterCache::unlock_mips_register(unsigned mips_reg)
 
 void RegisterCache::flush_register_window(Emitter *_jit)
 {
+    std::memset(constant_known, 0, sizeof(constant_known));
 	for (auto &entry : entries)
 	{
 		if (entry.is_live)
@@ -2332,12 +2641,14 @@ void RegisterCache::flush_caller_save_registers(Emitter *_jit)
 
 void RegisterCache::reset()
 {
+    std::memset(constant_known, 0, sizeof(constant_known));
 	for (auto &entry : entries)
 		entry = {};
 }
 
 void RegisterCache::flush_mips_register(Emitter *_jit, unsigned mips_reg)
 {
+    if (mips_reg < 32) constant_known[mips_reg] = false;
 	auto *live_reg = find_live_mips_register(mips_reg);
 	if (live_reg)
 	{

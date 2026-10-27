@@ -38,6 +38,10 @@ struct ari64_link_cache {
     void* target_block;
     uint64_t* profile_entries;
 };
+struct ari64_fetch_cache {
+    uint64_t generation;
+    uint32_t tag, cached;
+};
 struct ari64_config {
     uint32_t virtual_pc, physical_page;
     unsigned cache_timing;
@@ -57,6 +61,8 @@ struct ari64_config {
     uint64_t* direct_links;
     unsigned profile;
     unsigned compat_issue_clock;
+    struct ari64_fetch_cache* fetch_cache;
+    const uint64_t* fetch_generation;
 };
 struct ari64* ari64_create(void);
 void ari64_destroy(struct ari64*);

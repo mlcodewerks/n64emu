@@ -1,3 +1,4 @@
+#include "../fpu_flags.h"
 
 static int native_fpu_instruction(uint32_t instruction)
 {
@@ -89,17 +90,41 @@ static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
     for (unsigned n = 0; n < slow_count; ++n) patch_jump(slow[n],out);
     return done;
 }
+static constexpr size_t fpu_fetch_flag =
+#ifdef _WIN32
+    64; // Keep across C calls, beyond the Microsoft ABI's 32-byte home area.
+#else
+    4;
+#endif
+static void emit_fpu_save_fetch_flags()
+{
+#ifdef _WIN32
+    emit_mem(0x8b,0,RAX,RSP,-1,0,4);emit_mem(0x89,0,RAX,RSP,-1,0,fpu_fetch_flag);
+#endif
+}
 static void emit_fpu_native(uint32_t instruction, unsigned index, const struct ari64_config* config,
-    unsigned char** exits, unsigned* exit_count)
+    unsigned char** exits, unsigned* exit_count,bool prefetched=false,unsigned fetch_start=0)
 {
     unsigned fmt = (instruction >> 21) & 31, fn = instruction & 63;
     int integer = (fn >= 8 && fn <= 15) || fn == 36 || fn == 37;
     int out_single = fn == 32 || (fmt == 16 && fn != 33);
+    if(prefetched) {
+        emit_movimm(0,R13);
+        bool line=index==fetch_start || ((config->virtual_pc+index*4)>>5)!=((config->virtual_pc+(index-1)*4)>>5);
+        emit_fetch_native(config,index,fetch_start,0,line,true,fpu_fetch_flag);
+        emit_pending_clocks(config,0,1,fpu_fetch_flag);
+        emit_reg_op(0x85,R13,R13,0);auto *free_fetch=emit_jump(4);
+        emit_mem_imm(0xc7,0,0,RSP,-1,0,8,0);
+        emit_region_commit_native(config,index,0,0);
+        patch_jump(free_fetch,out);
+    }
     emit_state_imm(offsetof(struct r4300_core, interp_PC.addr), config->virtual_pc + index * 4, 0);
     emit_mov64(R12, ARG1_REG); emit_movimm(instruction, ARG2_REG);
     emit_mem(0x8d, 1, ARG3_REG, RSP, -1, 0, 32);
     emit_movimm64((intptr_t)config->commits,ARG4_REG);
-    emit_helper_call((const void*)config->fpu_prepare);
+    auto prepare=config->fpu_prepare;
+    if(prefetched)prepare=pure_interp_jit_fpu_prepare_prefetched;
+    emit_helper_call((const void*)prepare);
     emit_reg_op(0x85, RAX, RAX, 0); exits[(*exit_count)++] = emit_jump(4);
     if (fn >= 48) {
         emit_mem_imm(0x81,0,7,RSP,-1,0,48,0); unsigned char* unordered = emit_jump(5);
@@ -126,10 +151,8 @@ static void emit_fpu_native(uint32_t instruction, unsigned index, const struct a
     } else {
         emit_mxcsr(3, 16); /* STMXCSR */
         emit_mem(0x8b, 0, RAX, RSP, -1, 0, 48);
-        emit_movimm(4, RDX); emit_reg_op(0x29, RAX, RDX, 0);
-        emit_reg_op(0x85, RAX, RAX, 0); unsigned char* nonzero = emit_jump(5);
-        emit_movimm(0, RDX); patch_jump(nonzero, out);
-        emit_shift_reg(RDX, 4, 13, 0); emit_imm_op(1, RDX, 0x1f80, 0);
+        emit_movimm64((intptr_t)fpu_maps.mxcsr,RDX);
+        emit_mem(0x8b,0,RDX,RDX,RAX,2,0);
         emit_mem(0x89, 0, RDX, RSP, -1, 0, 20); emit_mxcsr(2, 20); /* LDMXCSR */
         emit_mem(0x8b, 1, RAX, RSP, -1, 0, 32);
         emit_mem(0x8b, 1, RCX, RSP, -1, 0, 40);
@@ -156,12 +179,9 @@ static void emit_fpu_native(uint32_t instruction, unsigned index, const struct a
         }
         emit_mxcsr(3, 20); emit_mxcsr(2, 16);
         emit_mem(0x8b, 0, RAX, RSP, -1, 0, 20);
-        emit_mov(RAX, R9); emit_shift_reg(R9,5,5,0); emit_imm_op(4,R9,1,0);
-        const unsigned shifts[] = {3,1,1,4}, masks[] = {2,4,8,16};
-        for (unsigned n = 0; n < 4; ++n) {
-            emit_mov(RAX,RDX); emit_shift_reg(RDX,n < 2 ? 5 : 4,shifts[n],0);
-            emit_imm_op(4,RDX,masks[n],0); emit_reg_op(0x09,RDX,R9,0);
-        }
+        emit_imm_op(4,RAX,63,0);
+        emit_movimm64((intptr_t)fpu_maps.sse,RDX);
+        JIT(movzx(Xbyak::Reg32(R9),host_mem(8,RDX,RAX,0,0)));
         if (integer && ((fn >= 12 && fn <= 15) || fn == 36)) {
             emit_imm_op(7,R8,INT32_MAX,1); unsigned char* too_high = emit_jump(15);
             emit_imm_op(7,R8,(uint32_t)INT32_MIN,1); unsigned char* too_low = emit_jump(12);

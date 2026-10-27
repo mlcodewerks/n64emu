@@ -18,6 +18,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef CI_NATIVE_HOT_THRESHOLD
+/* Amortize native compilation and keep transient boot code out of the arena. */
+#define CI_NATIVE_HOT_THRESHOLD 64
+#endif
+#ifndef CI_PRECISE_HOT_THRESHOLD
+#define CI_PRECISE_HOT_THRESHOLD 8
+#endif
+#if CI_NATIVE_HOT_THRESHOLD > 255 || CI_PRECISE_HOT_THRESHOLD > 255
+#error JIT heat thresholds must fit the block heat counter
+#endif
+
 #if defined(_MSC_VER) && defined(_M_X64)
 #include <intrin.h>
 #endif
@@ -163,7 +174,7 @@ struct cached_block
     uint8_t native_link_replace;
     struct ari64_link_cache native_links[2];
 #endif
-    struct interp_ram_poll poll;
+    union {struct interp_ram_poll poll;struct interp_simple_poll simple_poll;};
     uint32_t source_words[CI_BLOCK_INSTRUCTIONS + 2];
     uint8_t source_count;
 #ifdef ARI64_PROFILE
@@ -181,9 +192,13 @@ struct cached_interp_state
 {
 #ifdef HAVE_ARI64
     struct ari64* jit;
-    uint64_t jit_entries, jit_commits;
-    uint64_t jit_fast_commits, jit_links;
+    /* Linked entries are derived from direct/indirect edge counts, so a hot
+     * native tail updates one counter instead of three. Public totals agree. */
+    uint64_t jit_dispatch_entries, jit_commits;
+    uint64_t jit_fast_commits, jit_indirect_links;
     uint64_t jit_direct_links;
+    uint64_t fetch_generation;
+    struct ari64_fetch_cache fetch_cache[32];
     uint64_t jit_compile_misses[2], jit_verifications[2], jit_replacements;
 #ifdef ARI64_PROFILE
     uint64_t profile_slow[64], profile_special[64], profile_cop1[64];
@@ -912,6 +927,8 @@ static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r
     if (!r4300->cache_timing && block->count == 1 && block->has_delay && page_count >= 5 &&
         interp_thread_poll_shape(pc, op_ptr) &&
         interp_thread_poll_getter(r4300, pc, op_ptr)) block->ram_poll = 2;
+    if(!block->ram_poll && block->has_delay && (block->count==2 || block->count==3) && page_count>block->count &&
+        interp_simple_poll_decode(&block->simple_poll,pc,op_ptr,block->count+1))block->ram_poll=3;
     block->virtual_pc = pc;
     /* Keep the lookahead used by idle/delay decoding as well as the body.
      * Dirty code is reusable only after comparing every dependent word. */
@@ -1148,6 +1165,18 @@ void cached_interp_cache_stats(struct r4300_core* r, uint64_t stats[2])
     stats[1] = r->cached_interp ? r->cached_interp->restored_blocks : 0;
 }
 
+void cached_interp_tlb_changed(struct r4300_core* r4300)
+{
+#ifdef HAVE_ARI64
+    struct cached_interp_state* state=r4300->cached_interp;
+    if(state && ++state->fetch_generation==0) {
+        state->fetch_generation=1;
+        memset(state->fetch_cache,0,sizeof(state->fetch_cache));
+    }
+#else
+    (void)r4300;
+#endif
+}
 void cached_interp_invalidate(struct r4300_core* r4300, uint32_t address, size_t size)
 {
     struct cached_interp_state* state = r4300->cached_interp;
@@ -1160,6 +1189,7 @@ void cached_interp_invalidate(struct r4300_core* r4300, uint32_t address, size_t
 
     if (size == 0)
     {
+        cached_interp_tlb_changed(r4300);
         ++state->epoch;
         memset(state->page_cached, 0, sizeof(state->page_cached));
         if (state->epoch == 0)
@@ -1442,7 +1472,8 @@ static CI_FORCE_INLINE void ci_execute_block(struct r4300_core* r4300, unsigned 
 
 #ifndef WTFN64_DISABLE_RAM_POLL
     if ((block->ram_poll == 1 && interp_ram_poll_advance(r4300, &block->poll)) ||
-        (block->ram_poll == 2 && interp_thread_poll_advance(r4300, start_pc))) return;
+        (block->ram_poll == 2 && interp_thread_poll_advance(r4300, start_pc)) ||
+        (block->ram_poll == 3 && interp_simple_poll_advance(r4300,&block->simple_poll))) return;
 #endif
 
     for (i = 0; i < block->count; ++i)
@@ -1674,8 +1705,7 @@ static ari64_entry ci_jit_link(struct r4300_core* r)
 #endif
     }
     state->previous_block = next;
-    ++state->jit_entries;
-    ++state->jit_links;
+    ++state->jit_indirect_links;
 #ifdef ARI64_PROFILE
     ++next->profile_entries;
 #endif
@@ -1721,7 +1751,8 @@ static void ci_execute_jit(struct r4300_core* r, int one)
     }
 #ifndef WTFN64_DISABLE_RAM_POLL
     if (!one && ((block->ram_poll == 1 && interp_ram_poll_advance(r, &block->poll)) ||
-        (block->ram_poll == 2 && interp_thread_poll_advance(r, pc)))) return;
+        (block->ram_poll == 2 && interp_thread_poll_advance(r, pc)) ||
+        (block->ram_poll == 3 && interp_simple_poll_advance(r,&block->simple_poll)))) return;
 #endif
     if (!one && !block->native_candidate) {
         uint32_t ops[CI_BLOCK_INSTRUCTIONS];
@@ -1736,7 +1767,7 @@ static void ci_execute_jit(struct r4300_core* r, int one)
          * before spending code space and protection syscalls on them. */
         /* Short precise-only wrappers pay off by retaining native tail chains
          * across unsafe delay slots. Compile those sooner than cold regions. */
-        if (!one && block->heat < (block->native_candidate == 2 ? 3 : 8)) {
+        if (!one && block->heat < (block->native_candidate == 2 ? CI_PRECISE_HOT_THRESHOLD : CI_NATIVE_HOT_THRESHOLD)) {
             ++block->heat;
             ci_execute_block(r, r->cache_timing, block);
             return;
@@ -1751,7 +1782,9 @@ static void ci_execute_jit(struct r4300_core* r, int one)
         config.compat_issue_clock = r->compat_issue_clock;
         config.links = one ? NULL : block->native_links;
         config.previous_block = &state->previous_block; config.epoch = &state->epoch;
-        config.entries = &state->jit_entries; config.linked_entries = &state->jit_links; config.direct_links = &state->jit_direct_links;
+        config.fetch_generation=&state->fetch_generation;
+        config.fetch_cache=&state->fetch_cache[(block->virtual_pc>>12)&31];
+        config.entries = NULL; config.linked_entries = NULL; config.direct_links = &state->jit_direct_links;
 #ifdef ARI64_PROFILE
         config.profile = 1;
 #endif
@@ -1764,7 +1797,7 @@ static void ci_execute_jit(struct r4300_core* r, int one)
             return;
         }
     }
-    ++state->jit_entries;
+    ++state->jit_dispatch_entries;
 #ifdef ARI64_PROFILE
     ++block->profile_entries;
 #endif
@@ -1777,7 +1810,7 @@ void cached_dynarec_stats(struct r4300_core* r, uint64_t stats[4])
 {
     struct cached_interp_state* s = r->cached_interp;
     ari64_stats(s ? s->jit : NULL, &stats[0], &stats[1]);
-    stats[2] = s ? s->jit_entries : 0;
+    stats[2] = s ? s->jit_dispatch_entries + s->jit_indirect_links + s->jit_direct_links : 0;
     stats[3] = s ? s->jit_commits : 0;
     if (s) core_log(CORE_LOG_INFO, "Ari64 cache: new=%llu recycled=%llu verified=%llu changed=%llu replaced=%llu",
         (unsigned long long)s->jit_compile_misses[0], (unsigned long long)s->jit_compile_misses[1],
@@ -1816,7 +1849,7 @@ void cached_dynarec_optimization_stats(struct r4300_core* r, uint64_t stats[2])
 {
     struct cached_interp_state* s = r->cached_interp;
     stats[0] = s ? s->jit_fast_commits : 0;
-    stats[1] = s ? s->jit_links : 0;
+    stats[1] = s ? s->jit_indirect_links + s->jit_direct_links : 0;
 }
 uint64_t cached_dynarec_direct_links(struct r4300_core* r)
 {

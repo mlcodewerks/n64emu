@@ -24,3 +24,56 @@ benchmarks/*
 !benchmarks/f1-race-input.csv
 !benchmarks/F1_AUDIO_STUTTER.md
 !benchmarks/f1_audio_validation.json
+
+# RSP optimizer sources and compact validation record; keep generated ROMs,
+# binaries, captures, dependency installs, build trees and raw logs local.
+!benchmarks/rsp-optimizer/
+benchmarks/rsp-optimizer/*
+!benchmarks/rsp-optimizer/*.py
+!benchmarks/rsp-optimizer/*.cpp
+!benchmarks/rsp-optimizer/*.c
+!benchmarks/rsp-optimizer/*.mk
+!benchmarks/rsp-optimizer/*.md
+!benchmarks/rsp-optimizer/n64-input.csv
+!benchmarks/rsp-optimizer/validation.json
+
+# CPU optimizer checks and reproducible benchmark drivers.
+!benchmarks/cpu-optimizer/
+benchmarks/cpu-optimizer/*
+!benchmarks/cpu-optimizer/*.py
+!benchmarks/cpu-optimizer/*.c
+!benchmarks/cpu-optimizer/*.inc
+!benchmarks/cpu-optimizer/*.mk
+!benchmarks/cpu-optimizer/*.md
+!benchmarks/cpu-optimizer/n64-input.csv
+!benchmarks/cpu-optimizer/validation.json
+
+# Conker workload profiling, optimization checks, and compact results.
+!benchmarks/conker-optimizer/
+benchmarks/conker-optimizer/*
+!benchmarks/conker-optimizer/*.py
+!benchmarks/conker-optimizer/*.cpp
+!benchmarks/conker-optimizer/*.c
+!benchmarks/conker-optimizer/*.mk
+!benchmarks/conker-optimizer/*.md
+!benchmarks/conker-optimizer/CMakeLists.txt
+!benchmarks/conker-optimizer/conker-input.csv
+!benchmarks/conker-optimizer/conker-gameplay-input.csv
+!benchmarks/conker-optimizer/validation.json
+!benchmarks/conker-optimizer/five-game-results.json
+!benchmarks/conker-optimizer/five-game-sin-adjudication.json
+!benchmarks/conker-optimizer/rsp-speed-results.json
+!benchmarks/conker-optimizer/slower-c-results.json
+!benchmarks/conker-optimizer/slower-games-results.json
+!benchmarks/conker-optimizer/corpus-l-results.json
+!benchmarks/conker-optimizer/corpus-o-results.json
+!benchmarks/conker-optimizer/corpus-results.json
+
+# Timing-reference tools and authored replay inputs; captures remain local.
+!benchmarks/timing-reference/
+benchmarks/timing-reference/*
+!benchmarks/timing-reference/*.c
+!benchmarks/timing-reference/*.py
+!benchmarks/timing-reference/*.md
+!benchmarks/timing-reference/*.csv
+!benchmarks/timing-reference/timing-results.json

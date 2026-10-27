@@ -69,10 +69,9 @@ static osal_force_inline unsigned int r4300_pipeline_issue_cycles(
     return stalls > issue ? stalls : issue;
 }
 
-static osal_force_inline int r4300_begin_instruction_cycles(struct r4300_core* r4300,
+static osal_force_inline int r4300_begin_prefetched_instruction_cycles(struct r4300_core* r4300,
     uint32_t op, uint32_t pc, unsigned int cycles, unsigned int cache_timing)
 {
-    if (cache_timing) r4300_fetch_access_cycles(r4300, pc);
     /* Compatibility timing absorbs interlocks in its reserved clock. Native
      * timing charges the actual interlock, with no unconditional second issue.
      * Keep explicit compatibility profiles, including DK64's vine sequence. */
@@ -97,6 +96,13 @@ static osal_force_inline int r4300_begin_instruction_cycles(struct r4300_core* r
         cp0_step_cycles(&r4300->cp0, cycles + issue);
     }
     return 1;
+}
+
+static osal_force_inline int r4300_begin_instruction_cycles(struct r4300_core* r4300,
+    uint32_t op,uint32_t pc,unsigned int cycles,unsigned int cache_timing)
+{
+    if(cache_timing)r4300_fetch_access_cycles(r4300,pc);
+    return r4300_begin_prefetched_instruction_cycles(r4300,op,pc,cycles,cache_timing);
 }
 
 static osal_force_inline int r4300_begin_instruction(struct r4300_core* r4300, uint32_t op, uint32_t pc)

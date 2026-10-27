@@ -1457,6 +1457,7 @@ static void TLBWrite(struct r4300_core* r4300, unsigned int idx)
     r4300->cp0.tlb.entries[idx].phys_odd = r4300->cp0.tlb.entries[idx].pfn_odd << 12;
 
     tlb_map(&r4300->cp0.tlb, idx);
+    cached_interp_tlb_changed(r4300);
     /* Decoded blocks validate their physical code page against the current
      * read LUT. A data mapping change must not flush unrelated CPU code. */
 }
@@ -1686,15 +1687,24 @@ DECLARE_INSTRUCTION(CTC1)
 #include "fpu_compare.h"
 
 /* Shared issue/operand validation in one native COP1 helper boundary. */
-int pure_interp_jit_fpu_prepare(struct r4300_core* r, uint32_t op, uint64_t inputs[3], uint64_t* commits)
+static PARALLAX_FORCE_INLINE int jit_fpu_prepare_body(struct r4300_core* r, uint32_t op, uint64_t inputs[3], uint64_t* commits,int prefetched)
 {
-    if (r4300_begin_instruction_cycles(r,op,r->interp_PC.addr,1,r->cache_timing) &&
+    int issued=prefetched?r4300_begin_prefetched_instruction_cycles(r,op,r->interp_PC.addr,1,r->cache_timing):
+                         r4300_begin_instruction_cycles(r,op,r->interp_PC.addr,1,r->cache_timing);
+    if (issued &&
         ((op & 63) >= 48 ? fpu_compare_prepare(r,op,inputs) : fpu_prepare(r,op,inputs))) return 1;
     r->regs[0] = 0;
     if (commits) ++*commits;
     if (r->cp0.cycle_count >= 0) gen_interrupt(r);
     return 0;
 }
+
+int pure_interp_jit_fpu_prepare(struct r4300_core* r,uint32_t op,uint64_t inputs[3],uint64_t* commits)
+{
+    return jit_fpu_prepare_body(r,op,inputs,commits,0);
+}
+int pure_interp_jit_fpu_prepare_prefetched(struct r4300_core* r,uint32_t op,uint64_t inputs[3],uint64_t* commits)
+{return jit_fpu_prepare_body(r,op,inputs,commits,1);}
 
 r4300_interp_handler pure_interp_decode(uint32_t op, int idle)
 {

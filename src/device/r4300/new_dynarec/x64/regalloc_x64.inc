@@ -8,12 +8,17 @@ static const int cache_host[CACHE_REGS] = {R8, R9, R10, R15, RBX, RBP, RSI, RDI}
 enum { GUEST_HI = 32, GUEST_LO = 33, GUEST_REGS = 34, CACHE_REGS = 6 };
 static const int cache_host[CACHE_REGS] = {R8, R9, R10, R15, RBX, RBP};
 #endif
+#include "../optimizer_types.h"
+static region_analysis analysis;
+static void regcache_forget(unsigned guest);
 struct regcache_state {
     int active, map[CACHE_REGS], allow_dead_store;
     unsigned dirty, index, end;
     const uint32_t* ops;
     uint64_t constants[GUEST_REGS];
     uint64_t known, constant_dirty;
+    unsigned values[GUEST_REGS], serial;
+    uint64_t signed_words;
 };
 static struct regcache_state regcache;
 
@@ -75,13 +80,8 @@ static void guest_operands(uint32_t instruction, unsigned* source1, unsigned* so
  * without a read are dead; untouched values remain live at the region exit. */
 static unsigned next_use(unsigned reg, int* dead)
 {
-    *dead = 0;
-    for (unsigned i = regcache.index; i < regcache.end; ++i) {
-        unsigned a,b,d; guest_operands(regcache.ops[i], &a,&b,&d);
-        if (a == reg || b == reg) return i - regcache.index;
-        if (d == reg) { *dead = 1; return MAX_INSTRUCTIONS + 2; }
-    }
-    return MAX_INSTRUCTIONS + 1;
+    unsigned use = analysis.next[reg][regcache.index];
+    *dead = int(use >> 31); return use & 0x7fffffffu;
 }
 static int cache_find(unsigned reg)
 {
@@ -102,6 +102,7 @@ static int cache_allocate(unsigned reg)
     if (regcache.map[victim] >= 0 && (regcache.dirty & (1u << victim))) {
         int dead; next_use(regcache.map[victim], &dead);
         if (!dead || !regcache.allow_dead_store) emit_state_store_raw(guest_offset(regcache.map[victim]), cache_host[victim]);
+        else regcache_forget(unsigned(regcache.map[victim]));
     }
     regcache.map[victim] = reg;
     regcache.dirty &= ~(1u << victim);
@@ -123,6 +124,7 @@ static void emit_state_store(size_t offset, int reg)
 {
     int guest = offset_guest(offset);
     if (!regcache.active || guest < 0) { emit_state_store_raw(offset, reg); return; }
+    regcache_forget(guest);
     regcache.known &= ~(UINT64_C(1) << guest);
     regcache.constant_dirty &= ~(UINT64_C(1) << guest);
     int h = cache_allocate(guest);
@@ -130,6 +132,7 @@ static void emit_state_store(size_t offset, int reg)
     regcache.dirty |= 1u << h;
 }
 static uint64_t word_signed(uint64_t value) { return (uint64_t)(int64_t)(int32_t)(uint32_t)value; }
+#include "../optimizer.inc"
 static int regcache_fold(uint32_t instruction)
 {
     unsigned a,b,d; guest_operands(instruction, &a,&b,&d);
@@ -176,18 +179,29 @@ static int regcache_fold(uint32_t instruction)
     case R4300_OP_MFHI: case R4300_OP_MFLO: case R4300_OP_MTHI: case R4300_OP_MTLO: value = x; break;
     default: return 0;
     }
-    int h = cache_find(d);
-    if (h >= 0) { regcache.map[h] = -1; regcache.dirty &= ~(1u << h); }
-    regcache.known |= UINT64_C(1) << d;
-    regcache.constant_dirty |= UINT64_C(1) << d;
-    regcache.constants[d] = value;
-    return 1;
+    return regcache_constant(d,value);
 }
 static void regcache_begin(const uint32_t* ops, unsigned start, unsigned end)
 {
     memset(&regcache, 0, sizeof(regcache));
     for (unsigned i = 0; i < CACHE_REGS; ++i) regcache.map[i] = -1;
-    regcache.known = 1;
+    regcache.known = regcache.signed_words = 1;
+    regcache.serial = GUEST_REGS;
+    analysis.expression_count = 0;
+    unsigned reads_a[MAX_INSTRUCTIONS],reads_b[MAX_INSTRUCTIONS],writes[MAX_INSTRUCTIONS];
+    for(unsigned i=start;i<end;++i)guest_operands(ops[i],reads_a+i,reads_b+i,writes+i);
+    for(unsigned g=0;g<GUEST_REGS;++g) {
+        regcache.values[g]=g+1;
+        unsigned use=MAX_INSTRUCTIONS+1;
+        analysis.next[g][end]=use;
+        for(unsigned n=end;n>start;) {
+            unsigned i=--n;
+            if(reads_a[i]==g || reads_b[i]==g)use=0;
+            else if(writes[i]==g)use=0x80000000u|(MAX_INSTRUCTIONS+2);
+            else if(use<MAX_INSTRUCTIONS)++use;
+            analysis.next[g][i]=use;
+        }
+    }
     regcache.allow_dead_store = 1;
     regcache.ops = ops; regcache.index = start; regcache.end = end; regcache.active = 1;
 }

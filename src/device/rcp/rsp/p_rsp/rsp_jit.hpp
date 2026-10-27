@@ -37,6 +37,13 @@ public:
 	// modify_mips_register + immediate move helper.
 	unsigned immediate_mips_register(Emitter *_jit, unsigned mips_reg, HostWord value);
 
+    bool constant_mips_register(unsigned mips_reg, uint32_t &value) const
+    {
+        if (mips_reg == 0) { value = 0; return true; }
+        if (mips_reg >= 32 || !constant_known[mips_reg]) return false;
+        value = constants[mips_reg]; return true;
+    }
+
 	// Once we no longer require the register to be in register file, free it.
 	void unlock_mips_register(unsigned mips_reg);
 
@@ -67,6 +74,8 @@ private:
 	};
 	CacheEntry entries[NumFreeRegisters] = {};
 	unsigned timestamp = 0;
+    uint32_t constants[32] = {};
+    bool constant_known[32] = {};
 
 	CacheEntry *find_live_mips_register(unsigned mips_reg);
 	CacheEntry *find_free_register();
@@ -137,6 +146,11 @@ private:
 	alignas(64) uint32_t cached_imem[IMEM_WORDS] = {};
 
 	std::unordered_map<uint64_t, Func> cached_blocks[IMEM_WORDS];
+    std::unordered_map<uint32_t, Func> vector_blocks;
+    Func get_vector_block(uint32_t instruction);
+    Func get_quad_partial(bool store);
+    std::unordered_map<std::string, Func> vector_sequences;
+    Func get_vector_sequence(const uint32_t *instructions, unsigned count);
 
 	Func jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count);
 
@@ -164,6 +178,8 @@ private:
 	};
 	void jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr, InstructionInfo &info, const InstructionInfo &last_info,
 	                     bool first_instruction, bool next_instruction_is_target);
+    bool jit_fold_scalar(Emitter *_jit, uint32_t instr);
+    bool jit_vector_memory(Emitter *_jit,uint32_t instr,bool store);
 	void jit_exit(Emitter *_jit, uint32_t pc, const InstructionInfo &last_info, ReturnMode mode, bool first_instruction);
 	void jit_exit_dynamic(Emitter *_jit, uint32_t pc, const InstructionInfo &last_info, bool first_instruction);
 	void jit_end_of_block(Emitter *_jit, uint32_t pc, const InstructionInfo &last_info);
@@ -205,6 +221,16 @@ private:
 
 	RegisterCache regs;
 	Allocator allocator;
+#ifdef RSP_JIT_PROFILE
+    struct ExecutionProfile {
+        uint64_t hash;
+        unsigned pc, count;
+        uint32_t instructions[CODE_BLOCK_WORDS * 2];
+        uint64_t hits[CODE_BLOCK_WORDS * 2] = {};
+        unsigned spans[CODE_BLOCK_WORDS * 2] = {};
+    };
+    std::vector<std::unique_ptr<ExecutionProfile>> execution_profiles;
+#endif
 };
 } // namespace JIT
 } // namespace RSP

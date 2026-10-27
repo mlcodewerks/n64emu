@@ -60,14 +60,15 @@ static void emit_itlb_native(uint32_t pc)
 /* Fetch state changes happen only after the current instruction's guards.
  * A region stays on one code page, so its first fetch establishes the exact
  * two-entry instruction micro-TLB hit/replacement state for later fetches. */
-static void emit_fetch_native(const struct ari64_config* config, unsigned index, unsigned start, unsigned base, int check_line)
+static void emit_fetch_native(const struct ari64_config* config, unsigned index, unsigned start, unsigned base, int check_line, bool defer_base=false,size_t fetch_flag=4)
 {
     unsigned cycles = base + r4300_issue_reservation(config->compat_issue_clock);
-    emit_addimm(CLOCKS, cycles, CLOCKS);
+    if(!defer_base)emit_addimm(CLOCKS, cycles, CLOCKS);
     if (!config->cache_timing) return;
     uint32_t pc = config->virtual_pc + index * 4;
     if ((pc & UINT32_C(0xc0000000)) != UINT32_C(0x80000000) && index == start) emit_itlb_native(pc);
-    emit_mem_imm(0xf7, 0, 0, SP, -1, 0, 4,2);
+    if(defer_base && !check_line)return;
+    emit_mem_imm(0xf7, 0, 0, SP, -1, 0, fetch_flag,2);
     unsigned char* uncached = emit_jump(4);
     if (check_line) {
         size_t tag = offsetof(struct r4300_core, icache_tags) + ((pc >> 5) & 511) * 4;
@@ -78,6 +79,7 @@ static void emit_fetch_native(const struct ari64_config* config, unsigned index,
         emit_addimm(CLOCKS, 48, CLOCKS);
         patch_jump(hit, out);
     }
+    if(defer_base){patch_jump(uncached,out);return;}
     unsigned char* done = emit_b();
     patch_jump(uncached, out);
     emit_addimm(CLOCKS, 40, CLOCKS);
@@ -178,6 +180,7 @@ static void emit_mapped_cacheability(void)
     patch_jump(done, out);
     emit_mem(0x8b, 0, T2, SP, -1, 0, 0);
 }
+#include "../fetch_cache.inc"
 static void emit_memory_native(uint32_t instruction, unsigned index,
     const struct ari64_config* config, struct memory_exit* exit, int check_line,
     uint32_t previous, int known)
@@ -189,17 +192,27 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         op == R4300_OP_LW || op == R4300_OP_LWU || op == R4300_OP_SW || fp ? 4 :
         op == R4300_OP_LH || op == R4300_OP_LHU || op == R4300_OP_SH ? 2 : 1;
     int write = op == R4300_OP_SB || op == R4300_OP_SH || op == R4300_OP_SW || op == R4300_OP_SD || op == R4300_OP_SWC1 || op == R4300_OP_SDC1;
+    uint64_t base_constant=0;bool constant_address=known_value(rs,base_constant);
+    uint32_t address=uint32_t(base_constant)+int32_t(int16_t(instruction));
+    const bool fixed_direct=constant_address && (address&UINT32_C(0xc0000000))==UINT32_C(0x80000000);
+    const uint32_t physical=address&UINT32_C(0x1ffffffc);
+    if(constant_address)emit_movimm(address,ADDRESS);
+    else {
     emit_state_load(gpr_offset(rs), ADDRESS);
     emit_addimm(ADDRESS, (int16_t)instruction, ADDRESS);
+    }
     exit->registers = regcache;
     if (fp) {
         emit_mem_imm(0xf7,0,0,STATE,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_CU1);
         memory_guard(exit,4);
     }
-    if (size > 1) {
+    if (size > 1 && (!constant_address || (address & (size-1)))) {
         emit_mov(ADDRESS, T0); emit_imm_op(4, T0, size - 1, 0);
         emit_reg_op(0x85, T0, T0, 0); memory_guard(exit, 5);
     }
+    // Fold fixed KSEG translation, retaining the live memory safety checks.
+    if(fixed_direct)emit_movimm(physical,T2);
+    else {
     emit_mov(ADDRESS, T2);
     emit_mov(ADDRESS, T0); emit_imm_op(4, T0, UINT32_C(0xc0000000), 0);
     emit_imm_op(7, T0, UINT32_C(0x80000000), 0);
@@ -214,8 +227,10 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
     emit_reg_op(0x85, T2, T2, 0); memory_guard(exit, 4);
     patch_jump(direct, out);
     emit_imm_op(4, T2, UINT32_C(0x1ffffffc), 0);
+    }
     if (write) {
-        emit_mov(T2, T1); emit_shift_reg(T1, 5, 12, 0);
+        if(fixed_direct)emit_movimm(physical>>12,T1);
+        else {emit_mov(T2, T1); emit_shift_reg(T1, 5, 12, 0);}
         emit_mem(0x8b, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, cached_code_pages));
         /* BT treats the memory operand as a bit string, indexing the complete
          * physical-page bitmap. A tracked page must use shared invalidation. */
@@ -223,35 +238,50 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         memory_guard(exit, 2);
     }
     emit_mem(0x8b, 1, TARGET, STATE, -1, 0, offsetof(struct r4300_core, mem));
+    if(fixed_direct)emit_mem(0x8d,1,TARGET,TARGET,-1,0,offsetof(struct memory,handlers)+(physical>>16)*sizeof(struct mem_handler));
+    else {
     emit_mov(T2, T0); emit_shift_reg(T0, 5, 16, 0);
     emit_mem(0x8d, 1, T0, T0, T0, 1, 0); /* three pointers per handler */
     emit_mem(0x8d, 1, TARGET, TARGET, T0, 3, offsetof(struct memory, handlers));
+    }
     emit_movimm64((intptr_t)(write ? (void*)write_rdram_dram : (void*)read_rdram_dram), T1);
     emit_mem(0x39, 1, T1, TARGET, -1, 0, write ? offsetof(struct mem_handler, write32) : offsetof(struct mem_handler, read32));
     memory_guard(exit, 5);
     emit_mem(0x8b, 1, TARGET, TARGET, -1, 0, offsetof(struct mem_handler, opaque));
-    emit_mov(T2, T0); emit_imm_op(4, T0, UINT32_C(0x00fffffc), 0);
-    emit_addimm(T0, size == 8 ? 8 : 4, T0);
+    if(fixed_direct)emit_movimm((physical&UINT32_C(0x00fffffc))+(size==8?8:4),T0);
+    else {emit_mov(T2, T0); emit_imm_op(4, T0, UINT32_C(0x00fffffc), 0);emit_addimm(T0, size == 8 ? 8 : 4, T0);}
     emit_mem(0x3b, 1, T0, TARGET, -1, 0, offsetof(struct rdram, dram_size));
     memory_guard(exit, 7); /* unsigned greater: dispatch retains bounds behavior */
     emit_mem(0x8b, 1, TARGET, TARGET, -1, 0, offsetof(struct rdram, dram));
-    emit_mov(T2, T0); emit_imm_op(4, T0, UINT32_C(0x00fffffc), 0);
-    emit_reg_op(0x01, T0, TARGET, 1);
+    if(fixed_direct)emit_addimm64(TARGET,physical&UINT32_C(0x00fffffc),TARGET);
+    else {emit_mov(T2, T0); emit_imm_op(4, T0, UINT32_C(0x00fffffc), 0);emit_reg_op(0x01, T0, TARGET, 1);}
     if (config->cache_timing) {
+        unsigned char *uncached=nullptr,*config_uncached=nullptr,*mapped_uncached=nullptr,*data_ready=nullptr;
+        if(!fixed_direct || !(address&UINT32_C(0x20000000))) {
+        unsigned char* mapped=nullptr;
+        if(!fixed_direct) {
         emit_mov(ADDRESS, T0); emit_imm_op(4, T0, UINT32_C(0xe0000000), 0);
         emit_imm_op(7, T0, UINT32_C(0xa0000000), 0);
-        unsigned char* uncached = emit_jump(4);
+        uncached = emit_jump(4);
         emit_imm_op(7, T0, UINT32_C(0x80000000), 0);
-        unsigned char* mapped = emit_jump(5);
+        mapped = emit_jump(5);
+        }
+        if((config->virtual_pc&UINT32_C(0xe0000000))==UINT32_C(0x80000000))
+            emit_mem_imm(0xf7,0,0,SP,-1,0,4,2);
+        else {
         emit_mem(0x8b, 0, T0, STATE, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_CONFIG_REG]));
         emit_imm_op(4, T0, 7, 0); emit_imm_op(7, T0, 2, 0);
-        unsigned char* config_uncached = emit_jump(4);
+        }
+        config_uncached = emit_jump(4);
+        if(!fixed_direct) {
         unsigned char* direct_cached = emit_b();
         patch_jump(mapped, out);
         emit_mapped_cacheability(); emit_reg_op(0x85, T0, T0, 0);
-        unsigned char* mapped_uncached = emit_jump(4);
+        mapped_uncached = emit_jump(4);
         patch_jump(direct_cached, out);
-        emit_mov(ADDRESS, T1); emit_shift_reg(T1, 5, 4, 0); emit_imm_op(4, T1, 511, 0);
+        }
+        if(constant_address)emit_movimm((address>>4)&511,T1);
+        else {emit_mov(ADDRESS, T1); emit_shift_reg(T1, 5, 4, 0); emit_imm_op(4, T1, 511, 0);}
         emit_mem(0x8b, 0, T0, STATE, T1, 2, offsetof(struct r4300_core, dcache_tags));
         emit_imm_op(4, T0, ~UINT32_C(2), 0);
         /* Cached accesses no longer need PA after forming the tag key.
@@ -259,20 +289,23 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
          * pointer without a stack save/restore on every load and store.
          * Uncached branches above still retain the original PA. */
         int key_reg = config->cache_timing == 2 ? T2 : TARGET;
-        if (key_reg != T2) emit_mov(T2, key_reg);
-        emit_imm_op(4, key_reg, UINT32_C(0x1ffff000), 0); emit_imm_op(1, key_reg, 1, 0);
+        if(fixed_direct)emit_movimm((physical&UINT32_C(0x1ffff000))|1,key_reg);
+        else {if (key_reg != T2) emit_mov(T2, key_reg);emit_imm_op(4, key_reg, UINT32_C(0x1ffff000), 0);emit_imm_op(1, key_reg, 1, 0);}
         emit_reg_op(0x39, key_reg, T0, 0);
         memory_guard(exit, 5);
         if (write) {
             emit_mem_imm(0x81, 0, 1, STATE, T1, 2, offsetof(struct r4300_core, dcache_tags),2);
         }
         if (config->cache_timing != 2) {
-            emit_mov(ADDRESS, TARGET); emit_imm_op(4, TARGET, UINT32_C(0x1ffc), 0);
-            emit_mem(0x8d, 1, TARGET, STATE, TARGET, 0, offsetof(struct r4300_core, dcache_words));
+            if(constant_address)emit_mem(0x8d,1,TARGET,STATE,-1,0,offsetof(struct r4300_core,dcache_words)+(address&UINT32_C(0x1ffc)));
+            else {emit_mov(ADDRESS, TARGET); emit_imm_op(4, TARGET, UINT32_C(0x1ffc), 0);emit_mem(0x8d, 1, TARGET, STATE, TARGET, 0, offsetof(struct r4300_core, dcache_words));}
         }
         emit_movimm(1, T1); emit_movimm(1, T2);
-        unsigned char* data_ready = emit_b();
-        patch_jump(uncached, out); patch_jump(config_uncached, out); patch_jump(mapped_uncached, out);
+        data_ready = emit_b();
+        }
+        if(uncached)patch_jump(uncached,out);
+        if(config_uncached)patch_jump(config_uncached,out);
+        if(mapped_uncached)patch_jump(mapped_uncached,out);
         emit_movimm(0, T1);
         if (!write) {
             emit_imm_op(7, T2, UINT32_C(0x00800000), 0);
@@ -281,7 +314,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
             unsigned char* bus_ready = emit_b();
             patch_jump(larger, out); emit_movimm(38, T2); patch_jump(bus_ready, out);
         } else emit_movimm(38, T2);
-        patch_jump(data_ready, out);
+        if(data_ready)patch_jump(data_ready,out);
         emit_fetch_native(config, index, exit->start, 1, check_line);
         emit_reg_op(0x01, T2, CLOCKS, 0);
         if (!r4300_issue_reservation(config->compat_issue_clock)) {
@@ -340,7 +373,8 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_cc), 0, 0);
     }
     if (size < 4) {
-        emit_mov(ADDRESS, T2); emit_imm_op(4, T2, size == 1 ? 3 : 2, 0); emit_imm_op(6, T2, size == 1 ? 3 : 2, 0);
+        if(constant_address)emit_movimm((address^(size==1?3:2))&(size==1?3:2),T2);
+        else {emit_mov(ADDRESS, T2); emit_imm_op(4, T2, size == 1 ? 3 : 2, 0); emit_imm_op(6, T2, size == 1 ? 3 : 2, 0);}
     }
     if (write) {
         if (fp) {

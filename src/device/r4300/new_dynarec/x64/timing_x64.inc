@@ -1,3 +1,16 @@
+/* Straight-line ALU fetches cannot exit. Charge their fixed clocks and
+ * uncached penalties together, before any memory guard, branch or commit. */
+static void emit_pending_clocks(const struct ari64_config* config,unsigned base,unsigned fetches,size_t fetch_flag=4)
+{
+    if(base)emit_addimm(R13,base,R13);
+    if(!config->cache_timing || !fetches)return;
+    if((config->virtual_pc&UINT32_C(0xe0000000))==UINT32_C(0xa0000000)) {
+        emit_addimm(R13,40*fetches,R13);return;
+    }
+    emit_mem_imm(0xf7,0,0,RSP,-1,0,fetch_flag,2);
+    auto *cached=emit_jump(5);
+    emit_addimm(R13,40*fetches,R13);patch_jump(cached,out);
+}
 
 static void emit_region_guard(const struct ari64_config* config, unsigned start,
     unsigned count, unsigned base, unsigned memory_count, struct memory_exit* failure)
@@ -5,12 +18,13 @@ static void emit_region_guard(const struct ari64_config* config, unsigned start,
     emit_movimm64((intptr_t)&breakloop, R11);
     emit_mem_imm(0x80, 0, 7, R11, -1, 0, 0,0); memory_guard(failure, 5);
     emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, skip_jump),0); memory_guard(failure, 5);
-    emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, cache_timing),config->cache_timing); memory_guard(failure, 5);
-    emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, compat_issue_clock),config->compat_issue_clock); memory_guard(failure, 5);
+    static_assert(sizeof(unsigned)==4 && offsetof(struct r4300_core,compat_issue_clock)==offsetof(struct r4300_core,cache_timing)+4,"adjacent timing mode words");
+    emit_movimm64(uint64_t(config->cache_timing)|(uint64_t(config->compat_issue_clock)<<32),RAX);
+    emit_mem(0x39,1,RAX,R12,-1,0,offsetof(struct r4300_core,cache_timing));memory_guard(failure,5);
     emit_mem(0x8b, 0, RAX, R12, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_STATUS_REG]));
-    emit_mov(RAX, RDX); emit_imm_op(4, RDX, CP0_STATUS_EXL | CP0_STATUS_ERL, 0);
-    emit_reg_op(0x85, RDX, RDX, 0); unsigned char* kernel = emit_jump(5);
-    emit_imm_op(4, RAX, CP0_STATUS_MODE_MASK, 0); emit_reg_op(0x85, RAX, RAX, 0); memory_guard(failure, 5);
+    // KSU=kernel is the common case, with or without an active exception.
+    JIT(test(Xbyak::Reg32(RAX),CP0_STATUS_MODE_MASK));unsigned char* kernel=emit_jump(4);
+    JIT(test(Xbyak::Reg32(RAX),CP0_STATUS_EXL|CP0_STATUS_ERL));memory_guard(failure,4);
     patch_jump(kernel, out);
     if (config->cache_timing) {
         uint32_t pc = config->virtual_pc + start * 4;
@@ -19,7 +33,7 @@ static void emit_region_guard(const struct ari64_config* config, unsigned start,
             emit_imm_op(4, RAX, 7, 0); emit_imm_op(7, RAX, 2, 0);
             emit_set_condition(RAX,5);
         } else if ((pc & UINT32_C(0xe0000000)) == UINT32_C(0xa0000000)) emit_movimm(0, RAX);
-        else { emit_movimm(pc, R11); emit_mapped_cacheability(); }
+        else emit_code_cacheability(config,pc,R12,RAX,RCX,RDX,R11);
         emit_shift_reg(RAX, 4, 1, 0);
         emit_mem(0x89, 0, RAX, RSP, -1, 0, 4);
     }

@@ -2,7 +2,9 @@
 #define PARALLAX_R4300_INTERP_POLL_H
 
 #include "timing.h"
+#include "pure_interp.h"
 #include "device/rdram.h"
+#include <string.h>
 
 /* Two-block RAM flag waits: LUI/ADDIU/LBU/ANDI/BEQ/NOP, followed by
  * LUI/LW/BEQ/NOP. Only unchanged iterations can be elided; detailed timing
@@ -111,6 +113,73 @@ static int interp_ram_poll_advance(struct r4300_core* r, const struct interp_ram
     cp0_step_cycles(&r->cp0, (unsigned)iterations * cycles);
     r->cp0.last_addr = p->pc;
     return 1;
+}
+
+/* A stable RAM load followed by a zero-test backedge and NOP. An optional
+ * LUI establishes its base on every iteration. The plan contains guest words,
+ * never a ROM identity, and every skipped iteration ends at the same state. */
+struct interp_simple_poll {uint32_t pc,count,words[4];};
+static int interp_simple_poll_decode(struct interp_simple_poll* p,uint32_t pc,const uint32_t* words,unsigned count)
+{
+    if((count!=3 && count!=4) || (pc&UINT32_C(0xe0000000))!=UINT32_C(0x80000000) ||
+        (pc&4095)>4096-count*4 || words[count-1])return 0;
+    uint32_t load=words[count-3],branch=words[count-2];
+    unsigned major=load>>26,base=(load>>21)&31,rt=(load>>16)&31;
+    if(!rt || rt==base || (major!=32 && major!=33 && major!=35 && major!=36 && major!=37 && major!=39) ||
+        ((branch>>26)!=4 && (branch>>26)!=5) || (int16_t)branch!=-(int)(count-1) ||
+        !((((branch>>21)&31)==rt && !((branch>>16)&31)) ||
+          (!((branch>>21)&31) && ((branch>>16)&31)==rt)))return 0;
+    if(count==4 && ((words[0]&UINT32_C(0xffe00000))!=UINT32_C(0x3c000000) ||
+        !base || ((words[0]>>16)&31)!=base))return 0;
+    p->pc=pc;p->count=count;memcpy(p->words,words,count*4);return 1;
+}
+static const uint32_t* interp_simple_poll_ram(const struct r4300_core* r,uint32_t address,unsigned words)
+{
+    uint32_t physical=address&UINT32_C(0x1fffffff);
+    if((address&UINT32_C(0xe0000000))!=UINT32_C(0x80000000) || (address&3) ||
+        physical>=UINT32_C(0x800000) || words*4>UINT32_C(0x800000)-physical ||
+        (physical>>16)!=((physical+words*4-1)>>16))return NULL;
+    const struct mem_handler* h=&r->mem->handlers[physical>>16];
+    if(h->read32!=read_rdram_dram || !h->opaque || words*4>((const struct rdram*)h->opaque)->dram_size ||
+        physical>((const struct rdram*)h->opaque)->dram_size-words*4)return NULL;
+    return ((const struct rdram*)h->opaque)->dram+(physical>>2);
+}
+static int interp_simple_poll_advance(struct r4300_core* r,const struct interp_simple_poll* p)
+{
+    uint32_t status=r->cp0.regs[CP0_STATUS_REG];
+    if(breakloop || r->stop || r->delay_slot || r->skip_jump || r->regs[0] ||
+        r->interp_PC.addr!=p->pc || r->cp0.last_addr!=p->pc || r->cp0.cycle_count>=0 || r->cp0.count_phase>1 ||
+        ((status&CP0_STATUS_MODE_MASK) && !(status&(CP0_STATUS_EXL|CP0_STATUS_ERL))) ||
+        r->pipeline_load_mask || r->pipeline_fpu_result_mask || r->pipeline_fpu_cc || r->pipeline_cached_store)return 0;
+    const uint32_t* code=interp_simple_poll_ram(r,p->pc,p->count);
+    if(!code || memcmp(code,p->words,p->count*4))return 0;
+    uint32_t load=p->words[p->count-3];unsigned major=load>>26,base=(load>>21)&31,rt=(load>>16)&31;
+    if(p->count==4 && r->regs[base]!=(int64_t)(int32_t)(p->words[0]<<16))return 0;
+    uint32_t address=(uint32_t)r->regs[base]+(int32_t)(int16_t)load;
+    unsigned size=major==32 || major==36?1:major==33 || major==37?2:4;
+    if(address&(size-1))return 0;
+    int cached=r->cache_timing && (r->cp0.regs[CP0_CONFIG_REG]&7)!=2;
+    uint32_t word;
+    if(cached) {
+        if(!interp_ram_poll_fetch_hits(r,p->pc,p->count) || !interp_ram_poll_read(r,address,&word))return 0;
+    } else {
+        const uint32_t* data=interp_simple_poll_ram(r,address&~3u,1);if(!data)return 0;word=*data;
+    }
+    int64_t value;
+    if(size==1){word=(word>>((3-(address&3))*8))&255;value=major==32?(int64_t)(int8_t)word:word;}
+    else if(size==2){word=(word>>((2-(address&2))*8))&65535;value=major==33?(int64_t)(int16_t)word:word;}
+    else value=major==35?(int64_t)(int32_t)word:(int64_t)word;
+    if(r->regs[rt]!=value || ((p->words[p->count-2]>>26)==4 ? value!=0 : value==0))return 0;
+    const unsigned reservation=r4300_issue_reservation(r->compat_issue_clock);
+    const unsigned clocks=p->count*(1+reservation+(r->cache_timing && !cached?40:0))+
+        (r->cache_timing?(cached?R4300_DCACHE_HIT_CYCLES:31)+!reservation:0);
+    // COUNT advances on either half-clock phase. Retain the final partial
+    // iteration for ordinary execution so interrupts keep their exact prefix.
+    uint64_t budget=(uint64_t)(-(r->cp0.cycle_count+1))*2+(1-r->cp0.count_phase);
+    uint64_t iterations=budget/clocks;
+    if(iterations>(UINT32_MAX-1)/clocks)iterations=(UINT32_MAX-1)/clocks;
+    if(!iterations)return 0;
+    cp0_step_cycles(&r->cp0,(unsigned)iterations*clocks);r->cp0.last_addr=p->pc;return 1;
 }
 
 #endif

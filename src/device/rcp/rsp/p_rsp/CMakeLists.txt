@@ -11,7 +11,7 @@ endif()
 
 add_library(parallel-rsp STATIC
 		rsp/vfunctions.cpp
-		rsp_jit.cpp rsp_jit.hpp jit_emitter.hpp
+		rsp_jit.cpp rsp_jit.hpp jit_emitter.hpp jit_vector.cpp
 		jit_allocator.cpp jit_allocator.hpp
 		rsp_disasm.cpp rsp_disasm.hpp
 		rsp/ls.cpp rsp/pipeline.h
@@ -75,6 +75,15 @@ else()
 endif()
 target_compile_definitions(parallel-rsp PUBLIC DEBUG_JIT)
 
+option(PARALLEL_RSP_BENCHMARKS "Build the synthetic vector optimizer benchmark." OFF)
+if (PARALLEL_RSP_BENCHMARKS)
+    # Keep Xbyak's C++-standard-dependent CodeGenerator layout identical in
+    # the benchmark and the library, just as for the unit-test executables.
+    add_executable(rsp-vector-benchmark ${PARALLAX_ROOT}/benchmarks/rsp-optimizer/vector_benchmark.cpp)
+    target_link_libraries(rsp-vector-benchmark PRIVATE parallel-rsp)
+    target_compile_options(rsp-vector-benchmark PRIVATE ${PARALLEL_RSP_CXX_FLAGS})
+endif()
+
 if (NOT WIN32)
 	target_link_libraries(parallel-rsp PRIVATE dl)
 endif()
@@ -100,6 +109,9 @@ if (PARALLEL_RSP_TESTS)
 	add_executable(rsp-jit-tests jit_tests.cpp)
 	target_link_libraries(rsp-jit-tests PRIVATE parallel-rsp)
 	add_test(NAME rsp-jit-checks COMMAND $<TARGET_FILE:rsp-jit-tests>)
+	add_executable(rsp-vector-jit-tests vector_jit_tests.cpp)
+	target_link_libraries(rsp-vector-jit-tests PRIVATE parallel-rsp)
+	add_test(NAME rsp-vector-jit-checks COMMAND $<TARGET_FILE:rsp-vector-jit-tests>)
 
 	if (ANDROID)
 		add_test(NAME rsp-vu-fuzz

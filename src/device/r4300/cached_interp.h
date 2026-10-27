@@ -12,6 +12,7 @@ struct cached_interp_state;
 int cached_interp_init(struct r4300_core* r4300);
 void cached_interp_destroy(struct r4300_core* r4300);
 void cached_interp_invalidate(struct r4300_core* r4300, uint32_t address, size_t size);
+void cached_interp_tlb_changed(struct r4300_core* r4300);
 void cached_interp_execute_one(struct r4300_core* r4300);
 void cached_interp_run(struct r4300_core* r4300);
 void cached_interp_cache_stats(struct r4300_core*, uint64_t stats[2]);

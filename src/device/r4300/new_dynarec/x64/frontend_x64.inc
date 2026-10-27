@@ -255,11 +255,67 @@ static void emit_step_call(void* block, unsigned index, unsigned phase, ari64_st
 
 #include "memory_x64.inc"
 #include "muldiv_x64.inc"
+#include "alu_x64.inc"
+#define OPT_TEMP0 RAX
+#define OPT_TEMP1 RCX
+#define OPT_TEMP2 RDX
+#include "../optimizer_alu.inc"
+#undef OPT_TEMP0
+#undef OPT_TEMP1
+#undef OPT_TEMP2
 #include "branch_x64.inc"
 #include "timing_x64.inc"
 #include "fpu_x64.inc"
-#include "alu_x64.inc"
+
 #include "link_x64.inc"
+/* A failed RAM guard replays the branch and delay together. Checkpoint the
+ * link register as well as fetch/hazard state before any branch side effects.
+ * Cross-page delay slots retain the precise path. */
+static bool native_ram_delay(uint32_t branch,uint32_t delay,uint32_t pc)
+{
+    if((pc&4095)==4092 ||
+       !native_ram_opcode(r4300_get_idec(delay)->opcode))return false;
+    unsigned major=branch>>26,sub=(branch>>16)&31;
+    unsigned link=major==3 || (major==1 && sub>=16 && sub<=19)?31:
+        major==0 && (branch&63)==9?(branch>>11)&31:0;
+    /* Direct-code call handlers have cheap fetches. Their native checkpoint
+     * and memory guards increased the instruction working set enough to lose
+     * whole-core throughput. Mapped calls avoid the larger precise TLB path. */
+    if(link && (pc&UINT32_C(0xc0000000))==UINT32_C(0x80000000))return false;
+    return (major>=4 && major<=7) || (major>=20 && major<=23) || major==2 || major==3 ||
+        (major==0 && ((branch&63)==8 || (branch&63)==9)) ||
+        (major==1 && (sub<=3 || (sub>=16 && sub<=19)));
+}
+static void emit_ram_delay_checkpoint(uint32_t pc,uint32_t branch,bool restore)
+{
+    unsigned major=branch>>26,sub=(branch>>16)&31;
+    unsigned link=major==3 || (major==1 && sub>=16 && sub<=19)?31:
+        major==0 && (branch&63)==9?(branch>>11)&31:0;
+    if(link) {
+        emit_mem(0x8b,1,RAX,restore?RSP:R12,-1,0,restore?80:gpr_offset(link));
+        emit_mem(0x89,1,RAX,restore?R12:RSP,-1,0,restore?gpr_offset(link):80);
+    }
+    static_assert(offsetof(struct r4300_core,pipeline_fpu_result_mask)==offsetof(struct r4300_core,pipeline_load_mask)+8 &&
+        offsetof(struct r4300_core,pipeline_fpu_cc)==offsetof(struct r4300_core,pipeline_load_mask)+16 &&
+        offsetof(struct r4300_core,pipeline_cached_store)==offsetof(struct r4300_core,pipeline_load_mask)+20,"contiguous pipeline checkpoint");
+    for(unsigned i=0;i<3;i++) {
+        size_t field=offsetof(struct r4300_core,pipeline_load_mask)+i*8;
+        emit_mem(0x8b,1,RAX,restore?RSP:R12,-1,0,restore?24+i*8:field);
+        emit_mem(0x89,1,RAX,restore?R12:RSP,-1,0,restore?field:24+i*8);
+    }
+    size_t tag=offsetof(struct r4300_core,icache_tags)+((pc>>5)&511)*4;
+    emit_mem(0x8b,0,RAX,restore?RSP:R12,-1,0,restore?48:tag);
+    emit_mem(0x89,0,RAX,restore?R12:RSP,-1,0,restore?tag:48);
+    if((pc&UINT32_C(0xc0000000))!=UINT32_C(0x80000000)) {
+        static_assert(offsetof(struct r4300_core,pipeline_itlb_map)==offsetof(struct r4300_core,pipeline_itlb_vpn)+8 &&
+            offsetof(struct r4300_core,pipeline_itlb_lru)==offsetof(struct r4300_core,pipeline_itlb_vpn)+20,"contiguous instruction TLB checkpoint");
+        for(unsigned i=0;i<3;i++) {
+            size_t field=offsetof(struct r4300_core,pipeline_itlb_vpn)+i*8;
+            emit_mem(0x8b,1,RAX,restore?RSP:R12,-1,0,restore?56+i*8:field);
+            emit_mem(0x89,1,RAX,restore?R12:RSP,-1,0,restore?field:56+i*8);
+        }
+    }
+}
 int ari64_has_native(const uint32_t* ops, unsigned count, uint32_t delay_op, unsigned has_delay, unsigned idle)
 {
     for (unsigned i = 0; i < count; ++i) {
@@ -268,7 +324,7 @@ int ari64_has_native(const uint32_t* ops, unsigned count, uint32_t delay_op, uns
     }
     return count && count < MAX_INSTRUCTIONS && has_delay && !idle &&
         native_branch_opcode(r4300_get_idec(ops[count - 1])->opcode) &&
-        native_opcode(r4300_get_idec(delay_op)->opcode);
+        (native_opcode(r4300_get_idec(delay_op)->opcode) || native_ram_opcode(r4300_get_idec(delay_op)->opcode));
 }
 static unsigned char* emit_step(void* block, unsigned index, unsigned phase, ari64_step step)
 {
@@ -302,6 +358,7 @@ static void emit_transfer_commit(void* block, unsigned index,
     patch_jump(done, out);
 }
 
+#include "../fpu_sequence.inc"
 static ari64_entry compile_block(struct ari64* s, void* block,
     const uint32_t* ops, unsigned count, ari64_step step, int optimized, const struct ari64_config* config)
 {
@@ -309,15 +366,22 @@ static ari64_entry compile_block(struct ari64* s, void* block,
     if (!s || !ops || !step || !count || count > MAX_INSTRUCTIONS) return NULL;
     uint32_t extended_ops[MAX_INSTRUCTIONS];
     unsigned branch_index = MAX_INSTRUCTIONS;
+    bool ram_delay=false;
     if (optimized && config && config->has_delay && !config->idle_end && count < MAX_INSTRUCTIONS &&
-        native_branch_opcode(r4300_get_idec(ops[count - 1])->opcode) && native_opcode(r4300_get_idec(config->delay_op)->opcode)) {
+        native_branch_opcode(r4300_get_idec(ops[count - 1])->opcode) &&
+        (native_opcode(r4300_get_idec(config->delay_op)->opcode) ||
+         (ram_delay=native_ram_delay(ops[count-1],config->delay_op,config->virtual_pc+(count-1)*4)))) {
         memcpy(extended_ops, ops, count * sizeof(*ops));
         branch_index = count - 1; extended_ops[count++] = config->delay_op; ops = extended_ops;
     }
     /* Native RAM guards have a snapshot writeback stub at every fault site.
-     * The maximum encoding is bounded by 2048 bytes per instruction plus
-     * the prologue/epilogue. Compile only while no generated frame is active. */
+     * Mapped fetch-cache probes occur in both the entry and resume guards;
+     * account for them even in a one-instruction block with direct links.
+     * Compile only while no generated frame is active. */
     size_t reserve = (count * 2048 + 512 + 15) & ~(size_t)15;
+    if (optimized && config && config->cache_timing && config->fetch_cache &&
+        config->fetch_generation && (config->virtual_pc & UINT32_C(0xc0000000)) != UINT32_C(0x80000000))
+        reserve += 2048 + count * 1024;
     if (reserve > SEGMENT_BYTES) return NULL;
     if ((s->used % SEGMENT_BYTES) + reserve > SEGMENT_BYTES) {
         s->used = ((s->used / SEGMENT_BYTES + 1) * SEGMENT_BYTES) % CODE_BYTES;
@@ -332,7 +396,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
      * so temporarily making that page writable cannot interrupt native code. */
     if (!code_protect(s->code + page_start, page_end - page_start, 0)) return NULL;
     code_write_scope publication(s->code+page_start,page_end-page_start);
-    unsigned char* exits[MAX_INSTRUCTIONS * 9 + 16];
+    unsigned char* exits[MAX_INSTRUCTIONS * 14 + 16];
     struct memory_exit memory_exits[MAX_INSTRUCTIONS];
     unsigned memory_exit_count = 0;
     unsigned exit_count = 0;
@@ -356,7 +420,15 @@ static ari64_entry compile_block(struct ari64* s, void* block,
 #ifdef _WIN32
     emit_addimm64(RSP, optimized ? -88 : -32, RSP); /* shadow space, FPU scratch, alignment */
 #else
-    if (optimized) emit_addimm64(RSP, -56, RSP);
+    if (optimized) emit_addimm64(RSP, -88, RSP);
+#endif
+#ifndef ARI64_X64_CHAIN_ALIGNMENT
+#define ARI64_X64_CHAIN_ALIGNMENT 32
+#endif
+    static_assert(ARI64_X64_CHAIN_ALIGNMENT && !(ARI64_X64_CHAIN_ALIGNMENT&(ARI64_X64_CHAIN_ALIGNMENT-1)) && ARI64_X64_CHAIN_ALIGNMENT<=64,"bounded power-of-two native entry alignment");
+#if ARI64_X64_CHAIN_ALIGNMENT > 1
+    // Tail links land here directly, skipping the dispatcher-only prologue.
+    JIT(align(ARI64_X64_CHAIN_ALIGNMENT));
 #endif
     unsigned char* chain_entry = out;
     JIT(endbr64());
@@ -367,6 +439,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
             if (optimized) {
                 int memory_region = native_ram_opcode(op);
                 while (end < count) {
+                    if(ram_delay && end==branch_index)break;
                     enum r4300_opcode next = r4300_get_idec(ops[end])->opcode;
                     if (!native_opcode(next) && end != branch_index && !(config && native_ram_opcode(next))) break;
                     memory_region |= native_ram_opcode(next); ++end;
@@ -385,10 +458,12 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                 struct memory_exit prepare = {0};
                 emit_region_guard(config, i, end - i, base, memory_count, &prepare);
                 regcache_begin(ops, i, end);
+                if(ram_delay && i==branch_index)emit_ram_delay_checkpoint(config->virtual_pc+i*4,ops[branch_index],false);
                 emit_mem_imm(0xc7, 0, 0, RSP, -1, 0, 8,0);
                 if (memory_region || likely_region) regcache.allow_dead_store = 0;
                 emit_movimm(0, R13);
                 int pipeline_live = 1;
+                unsigned pending_cycles=0,pending_fetches=0;
                 for (unsigned j = i; j < end; ++j) {
                     regcache.index = j;
                     /* Native RAM does not alter I-cache tags. A precise RAM
@@ -398,6 +473,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                         ((config->virtual_pc + (j - 1) * 4) >> 5);
                     enum r4300_opcode instruction_op = r4300_get_idec(ops[j])->opcode;
                     if (native_ram_opcode(instruction_op)) {
+                        if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                         struct memory_exit* exit = &memory_exits[memory_exit_count++];
                         exit->start = i; exit->index = j; exit->end = end; exit->guard_count = 0;
                         emit_memory_native(ops[j], j, config, exit, check_line,
@@ -405,7 +481,9 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                         pipeline_live = 1;
                         exit->resume = out; exit->resume_registers = regcache;
                     } else {
-                        emit_fetch_native(config, j, i, r4300_base_cycles(ops[j], 0), check_line);
+                        pending_cycles+=r4300_base_cycles(ops[j],0)+r4300_issue_reservation(config->compat_issue_clock);
+                        ++pending_fetches;
+                        emit_fetch_native(config, j, i, r4300_base_cycles(ops[j], 0), check_line,true);
                         unsigned reservation = r4300_issue_reservation(config->compat_issue_clock);
                         if (config->cache_timing && !reservation && pipeline_live) {
                             emit_ldi_native(ops[j], 0, j == i ? 0 : ops[j - 1], j != i);
@@ -413,14 +491,18 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                             pipeline_live = 0;
                         }
                         if (j == branch_index) {
+                            if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                             annul = emit_branch_native(ops[j], config->virtual_pc + j * 4);
                             annul_registers = regcache;
+                            if(ram_delay)emit_mem(0x89,0,R14,RSP,-1,0,16);
                         }
-                        else if (!regcache_fold(ops[j]) && !regcache_direct(ops[j])) emit_native(ops[j], instruction_op);
+                        else if (!regcache_optimize(ops[j])) emit_native(ops[j], instruction_op);
                         if ((!config->cache_timing || reservation) &&
                             (j + 1 == end || native_ram_opcode(r4300_get_idec(ops[j + 1])->opcode))) emit_pipeline_clear();
                     }
                 }
+                emit_pending_clocks(config,pending_cycles,pending_fetches);
+                if(ram_delay && branch_region)emit_mem(0x8b,0,R14,RSP,-1,0,16);
                 regcache_flush();
                 emit_region_commit_native(config, i, end - i, branch_region);
                 if (annul) {
@@ -434,7 +516,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                 /* Unconditional jump over the precise event/mode slow path. */
                 unsigned char* done = emit_b();
                 for (unsigned g = 0; g < prepare.guard_count; ++g) patch_jump(prepare.guards[g], out);
-                exits[exit_count++] = emit_step(block, i, ((end - i) << 8) | 5, step);
+                exits[exit_count++] = emit_step(block, i, ((ram_delay && branch_region ? 1 : end-i) << 8) | 5, step);
                 patch_jump(done, out);
             } else {
                 exits[exit_count++] = emit_step(block, i, 0, step);
@@ -449,7 +531,8 @@ static ari64_entry compile_block(struct ari64* s, void* block,
             emit_transfer_commit(block,i,config,step,exits,&exit_count);
             ++s->native; ++i;
         } else if (optimized && config->fpu_prepare && config->fpu_finish && native_fpu_instruction(ops[i])) {
-            emit_fpu_native(ops[i], i, config, exits, &exit_count); ++s->native; ++i;
+            unsigned end=emit_fpu_sequence(block,ops,i,count,config,step,exits,&exit_count);
+            s->native+=end-i;i=end;
         } else { exits[exit_count++] = emit_step(block, i, 2, step); ++i; }
     }
     if (memory_exit_count) {
@@ -457,6 +540,14 @@ static ari64_entry compile_block(struct ari64* s, void* block,
         for (unsigned n = 0; n < memory_exit_count; ++n) {
             struct memory_exit* exit = &memory_exits[n];
             for (unsigned g = 0; g < exit->guard_count; ++g) patch_jump(exit->guards[g], out);
+            if(ram_delay && exit->index==branch_index+1) {
+                /* Restore the link register and branch fetch/hazard state,
+                 * then execute the branch and delay together precisely. */
+                emit_ram_delay_checkpoint(config->virtual_pc+branch_index*4,ops[branch_index],true);
+                exits[exit_count++]=emit_step(block,branch_index,2,step);
+                exits[exit_count++]=emit_b();
+                continue;
+            }
             regcache = exit->registers;
             regcache_flush();
             emit_region_commit_native(config, exit->start, exit->index - exit->start, 0);
@@ -491,7 +582,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
 #ifdef _WIN32
     emit_addimm64(RSP, optimized ? 88 : 32, RSP);
 #else
-    if (optimized) emit_addimm64(RSP, 56, RSP);
+    if (optimized) emit_addimm64(RSP, 88, RSP);
 #endif
     if (optimized) {
         JIT(pop(Xbyak::Reg64(R15)));
@@ -531,11 +622,11 @@ ari64_entry ari64_compile(struct ari64* s, void* block,
     const uint32_t* ops, unsigned count, ari64_step step)
 {
     try { return compile_block(s, block, ops, count, step, 0, NULL); }
-    catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak emission failed: %s",error.what()); return NULL; }
+    catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak emission failed (%u instructions): %s",count,error.what()); return NULL; }
 }
 ari64_entry ari64_compile_optimized(struct ari64* s, void* block,
     const uint32_t* ops, unsigned count, ari64_step step, const struct ari64_config* config)
 {
     try { return compile_block(s, block, ops, count, step, 1, config); }
-    catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak emission failed: %s",error.what()); return NULL; }
+    catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak emission failed at %08x (%u instructions): %s",config?config->virtual_pc:0,count,error.what()); return NULL; }
 }

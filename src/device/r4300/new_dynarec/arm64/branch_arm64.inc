@@ -27,20 +27,24 @@ static unsigned char* emit_branch_native(uint32_t instruction, uint32_t pc)
      * BGEZAL samples before linking; the other REGIMM link forms sample
      * after linking. Likely branches write the link even when annulled. */
     if (regimm_link && op != R4300_OP_BGEZAL) {
-        emit_movimm64((int64_t)(int32_t)(pc + 8), T0); emit_state_store(gpr_offset(31), T0);
+        regcache_constant(31,uint64_t(int64_t(int32_t(pc+8))));
         link = 0;
     }
     if (op == R4300_OP_J || op == R4300_OP_JAL)
         emit_movimm(((pc + 4) & UINT32_C(0xf0000000)) | ((instruction & UINT32_C(0x03ffffff)) << 2), TARGET);
     else if (op == R4300_OP_JR || op == R4300_OP_JALR) emit_state_load(gpr_offset(rs), TARGET);
+    else if(bool taken=false; folded_branch(op,rs,rt,taken)) {
+        emit_movimm(taken?pc+4+int32_t(int16_t(instruction))*4:pc+8,TARGET);
+        if(likely && !taken)annul=emit_b();
+    }
     else {
         unsigned condition;
-        emit_state_load(gpr_offset(rs), T0);
+        int left=allocated_source(rs,T0);
         if (op == R4300_OP_BEQ || op == R4300_OP_BNE || op == R4300_OP_BEQL || op == R4300_OP_BNEL) {
-            emit_state_load(gpr_offset(rt), T1); emit_reg_op(0x39, T1, T0, 1);
+            int right=allocated_source(rt,T1);emit_reg_op(0x39,right,left,1);
             condition = op == R4300_OP_BEQ || op == R4300_OP_BEQL ? 4 : 5;
         } else {
-            emit_reg_op(0x85, T0, T0, 1);
+            emit_reg_op(0x85,left,left,1);
             condition = op == R4300_OP_BLEZ || op == R4300_OP_BLEZL ? 14 :
                 op == R4300_OP_BGTZ || op == R4300_OP_BGTZL ? 15 :
                 op == R4300_OP_BLTZ || op == R4300_OP_BLTZL ||
@@ -53,7 +57,7 @@ static unsigned char* emit_branch_native(uint32_t instruction, uint32_t pc)
         else patch_jump(not_taken, out);
     }
     if (link) {
-        emit_movimm64((int64_t)(int32_t)(pc + 8), T0); emit_state_store(gpr_offset(link), T0);
+        regcache_constant(link,uint64_t(int64_t(int32_t(pc+8))));
     }
     return annul;
 }

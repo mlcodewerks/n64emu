@@ -166,7 +166,7 @@ ifneq ($(DEBUG_JIT),)
 				   $(RSPDIR_PARALLEL)/rsp.cpp
 	LDFLAGS += -ldl
 else
-	SOURCES_CXX += $(RSPDIR_PARALLEL)/rsp_jit.cpp
+	SOURCES_CXX += $(RSPDIR_PARALLEL)/rsp_jit.cpp $(RSPDIR_PARALLEL)/jit_vector.cpp
 ifneq (,$(filter aarch64 arm64,$(ARCH)))
 	INCFLAGS += -I$(ROOT_DIR)/deps/xbyak_aarch64 -I$(ROOT_DIR)/deps/xbyak_aarch64/xbyak_aarch64
 	SOURCES_CXX += $(filter-out $(ARI64_SOURCE),$(ROOT_DIR)/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp)

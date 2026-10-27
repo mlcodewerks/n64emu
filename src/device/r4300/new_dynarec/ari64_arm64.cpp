@@ -103,9 +103,16 @@ static int code_protect(void* p,size_t size,int execute) {
 #include "arm64/memory_arm64.inc"
 #include "arm64/muldiv_arm64.inc"
 #include "arm64/integer_arm64.inc"
+#include "arm64/alu_arm64.inc"
+#define OPT_TEMP0 T0
+#define OPT_TEMP1 T1
+#define OPT_TEMP2 T2
+#include "optimizer_alu.inc"
+#undef OPT_TEMP0
+#undef OPT_TEMP1
+#undef OPT_TEMP2
 #include "arm64/branch_arm64.inc"
 #include "arm64/timing_arm64.inc"
 #include "arm64/fpu_arm64.inc"
-#include "arm64/alu_arm64.inc"
 #include "arm64/link_arm64.inc"
 #include "arm64/frontend_arm64.inc"

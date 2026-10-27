@@ -1,3 +1,4 @@
+#include "../fpu_flags.h"
 
 static int native_fpu_instruction(uint32_t instruction)
 {
@@ -96,23 +97,32 @@ static void emit_fpu_environment_end(void)
     emit_mem(0x8b,1,T0,SP,-1,0,16); JIT(msr(1,3,4,4,0,XReg(T0)));
     emit_mem(0x8b,1,T1,SP,-1,0,24); JIT(msr(1,3,4,4,1,XReg(T1)));
     /* FPSR IXC/UFC/OFC/DZC/IOC -> guest I/U/O/Z/V. */
-    emit_mov64(ADDRESS,CACHE1); emit_shift_reg(CACHE1,5,4,1); emit_imm_op(4,CACHE1,1,0);
-    const unsigned shifts[4]={2,0,2,4}, masks[4]={2,4,8,16};
-    for(unsigned n=0;n<4;++n) {
-        emit_mov64(ADDRESS,T2); emit_shift_reg(T2,n<2?5:4,shifts[n],1);
-        emit_imm_op(4,T2,masks[n],0); emit_reg_op(0x09,T2,CACHE1,0);
-    }
+    JIT(and_(WReg(ADDRESS),WReg(ADDRESS),31));
+    emit_movimm64((intptr_t)fpu_maps.neon,T2);
+    JIT(ldrb(WReg(CACHE1),ptr(XReg(T2),XReg(ADDRESS))));
 }
+static void emit_fpu_save_fetch_flags() {}
 static void emit_fpu_native(uint32_t instruction,unsigned index,const struct ari64_config* config,
-    unsigned char** exits,unsigned* exit_count)
+    unsigned char** exits,unsigned* exit_count,bool prefetched=false,unsigned fetch_start=0)
 {
     unsigned fmt=(instruction>>21)&31,fn=instruction&63;
     int integer=(fn>=8 && fn<=15)||fn==36||fn==37;
     int single=fn==32 || (fmt==16 && fn!=33);
+    if(prefetched) {
+        emit_movimm(0,CLOCKS);
+        bool line=index==fetch_start || ((config->virtual_pc+index*4)>>5)!=((config->virtual_pc+(index-1)*4)>>5);
+        emit_fetch_native(config,index,fetch_start,0,line,true);
+        emit_pending_clocks(config,0,1);
+        emit_reg_op(0x85,CLOCKS,CLOCKS,0);auto *free_fetch=emit_jump(4);
+        emit_mem_imm(0xc7,0,0,SP,-1,0,8,0);
+        emit_region_commit_native(config,index,0,0);patch_jump(free_fetch,out);
+    }
     emit_state_imm(offsetof(struct r4300_core,interp_PC.addr),config->virtual_pc+index*4,0);
     emit_mov64(STATE,ARG1_REG); emit_movimm(instruction,ARG2_REG);
     emit_mem(0x8d,1,ARG3_REG,SP,-1,0,32); emit_movimm64((intptr_t)config->commits,ARG4_REG);
-    emit_helper_call((const void*)config->fpu_prepare);
+    auto prepare=config->fpu_prepare;
+    if(prefetched)prepare=pure_interp_jit_fpu_prepare_prefetched;
+    emit_helper_call((const void*)prepare);
     emit_reg_op(0x85,T0,T0,0); exits[(*exit_count)++]=emit_jump(4);
     if(fn>=48) {
         emit_mem_imm(0x81,0,7,SP,-1,0,48,0); unsigned char* unordered=emit_jump(5);

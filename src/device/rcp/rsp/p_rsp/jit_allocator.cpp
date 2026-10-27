@@ -3,6 +3,7 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 #include <limits>
 #include <algorithm>
@@ -29,9 +30,25 @@ Allocator::~Allocator()
 #endif
 }
 
+static size_t page_size()
+{
+    static const size_t size=[](){
+#ifdef _WIN32
+        SYSTEM_INFO info;GetSystemInfo(&info);return size_t(info.dwPageSize);
+#else
+        long value=sysconf(_SC_PAGESIZE);return value>0?size_t(value):size_t(4096);
+#endif
+    }();
+    return size;
+}
 static size_t align_page(size_t offset)
 {
-	return (offset + 4095) & ~size_t(4095);
+	return (offset + page_size()-1) & ~(page_size()-1);
+}
+static void page_range(void *&ptr,size_t &size)
+{
+    size_t prefix=uintptr_t(ptr)&(page_size()-1);
+    ptr=static_cast<uint8_t*>(ptr)-prefix;size=align_page(size+prefix);
 }
 
 static bool commit_read_write(void *ptr, size_t size)
@@ -45,9 +62,10 @@ static bool commit_read_write(void *ptr, size_t size)
 
 static bool commit_execute(void *ptr, size_t size)
 {
+    page_range(ptr,size);
 #ifdef _WIN32
 	DWORD old_protect;
-	return VirtualProtect(ptr, align_page(size), PAGE_EXECUTE, &old_protect) != 0;
+	return VirtualProtect(ptr, size, PAGE_EXECUTE, &old_protect) != 0;
 #else
 	return mprotect(ptr, size, PROT_EXEC) == 0;
 #endif
@@ -95,6 +113,28 @@ void *Allocator::allocate_code(size_t size)
 	if (!commit_read_write(ret, size))
 		return nullptr;
 	return ret;
+}
+
+void *Allocator::allocate_leaf_code(size_t size)
+{
+    size_t aligned=(size+15)&~size_t(15);
+    bool reopen=true;
+    if(!leaf_code || leaf_offset+aligned>leaf_size) {
+        leaf_size=align_page(std::max(aligned,page_size()));
+        leaf_code=static_cast<uint8_t*>(allocate_code(leaf_size));
+        leaf_offset=0;reopen=false;
+        if(!leaf_code)return nullptr;
+    }
+    void *result=leaf_code+leaf_offset;
+    if(reopen) {
+        void *page=result;size_t range=size;page_range(page,range);
+#ifdef _WIN32
+        DWORD old_protect;if(!VirtualProtect(page,range,PAGE_READWRITE,&old_protect))return nullptr;
+#else
+        if(mprotect(page,range,PROT_READ|PROT_WRITE)!=0)return nullptr;
+#endif
+    }
+    leaf_offset+=aligned;return result;
 }
 
 Allocator::Block Allocator::reserve_block(size_t size)

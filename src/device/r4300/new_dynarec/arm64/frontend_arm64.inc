@@ -46,6 +46,7 @@ static void emit_transfer_commit(void* block, unsigned index,
     patch_jump(done, out);
 }
 
+#include "../fpu_sequence.inc"
 static ari64_entry compile_block(struct ari64* s, void* block,
     const uint32_t* ops, unsigned count, ari64_step step, int optimized, const struct ari64_config* config)
 {
@@ -80,7 +81,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
      * so temporarily making that page writable cannot interrupt native code. */
     if (!code_protect(s->code + page_start, page_end - page_start, 0)) return NULL;
     code_write_scope publication(s->code+page_start,page_end-page_start);
-    unsigned char* exits[MAX_INSTRUCTIONS * 9 + 16];
+    unsigned char* exits[MAX_INSTRUCTIONS * 14 + 16];
     struct memory_exit memory_exits[MAX_INSTRUCTIONS];
     unsigned memory_exit_count = 0;
     unsigned exit_count = 0;
@@ -122,6 +123,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                 if (memory_region || likely_region) regcache.allow_dead_store = 0;
                 emit_movimm(0, CLOCKS);
                 int pipeline_live = 1;
+                unsigned pending_cycles=0,pending_fetches=0;
                 for (unsigned j = i; j < end; ++j) {
                     regcache.index = j;
                     /* Native RAM does not alter I-cache tags. A precise RAM
@@ -131,6 +133,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                         ((config->virtual_pc + (j - 1) * 4) >> 5);
                     enum r4300_opcode instruction_op = r4300_get_idec(ops[j])->opcode;
                     if (native_ram_opcode(instruction_op)) {
+                        if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                         struct memory_exit* exit = &memory_exits[memory_exit_count++];
                         exit->start = i; exit->index = j; exit->end = end; exit->guard_count = 0;
                         emit_memory_native(ops[j], j, config, exit, check_line,
@@ -138,7 +141,9 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                         pipeline_live = 1;
                         exit->resume = out; exit->resume_registers = regcache;
                     } else {
-                        emit_fetch_native(config, j, i, r4300_base_cycles(ops[j], 0), check_line);
+                        pending_cycles+=r4300_base_cycles(ops[j],0)+r4300_issue_reservation(config->compat_issue_clock);
+                        ++pending_fetches;
+                        emit_fetch_native(config, j, i, r4300_base_cycles(ops[j], 0), check_line,true);
                         unsigned reservation = r4300_issue_reservation(config->compat_issue_clock);
                         if (config->cache_timing && !reservation && pipeline_live) {
                             emit_ldi_native(ops[j], 0, j == i ? 0 : ops[j - 1], j != i);
@@ -146,14 +151,16 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                             pipeline_live = 0;
                         }
                         if (j == branch_index) {
+                            if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                             annul = emit_branch_native(ops[j], config->virtual_pc + j * 4);
                             annul_registers = regcache;
                         }
-                        else if (!regcache_fold(ops[j]) && !regcache_direct(ops[j])) emit_native(ops[j], instruction_op);
+                        else if (!regcache_optimize(ops[j])) emit_native(ops[j], instruction_op);
                         if ((!config->cache_timing || reservation) &&
                             (j + 1 == end || native_ram_opcode(r4300_get_idec(ops[j + 1])->opcode))) emit_pipeline_clear();
                     }
                 }
+                emit_pending_clocks(config,pending_cycles,pending_fetches);
                 regcache_flush();
                 emit_region_commit_native(config, i, end - i, branch_region);
                 if (annul) {
@@ -182,7 +189,8 @@ static ari64_entry compile_block(struct ari64* s, void* block,
             emit_transfer_commit(block,i,config,step,exits,&exit_count);
             ++s->native; ++i;
         } else if (optimized && config->fpu_prepare && config->fpu_finish && native_fpu_instruction(ops[i])) {
-            emit_fpu_native(ops[i], i, config, exits, &exit_count); ++s->native; ++i;
+            unsigned end=emit_fpu_sequence(block,ops,i,count,config,step,exits,&exit_count);
+            s->native+=end-i;i=end;
         } else { exits[exit_count++] = emit_step(block, i, 2, step); ++i; }
     }
     if (memory_exit_count) {
