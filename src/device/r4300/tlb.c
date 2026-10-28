@@ -1,6 +1,7 @@
 
 
 #include "tlb.h"
+#include "fastmem.h"
 #include <core/frontend.h>
 
 #include "core/types.h"
@@ -16,6 +17,7 @@ void poweron_tlb(struct tlb* tlb)
     memset(tlb->entries, 0, 32 * sizeof(tlb->entries[0]));
     memset(tlb->LUT_r, 0, 0x100000 * sizeof(tlb->LUT_r[0]));
     memset(tlb->LUT_w, 0, 0x100000 * sizeof(tlb->LUT_w[0]));
+    if (tlb->fastmem) r4300_fastmem_refresh(tlb->fastmem);
 }
 
 void tlb_unmap(struct tlb* tlb, size_t entry)
@@ -29,19 +31,21 @@ void tlb_unmap(struct tlb* tlb, size_t entry)
     if (e->v_even)
     {
         for (i=e->start_even; i<e->end_even; i += 0x1000)
+        {
             tlb->LUT_r[i>>12] = 0;
-        if (e->d_even)
-            for (i=e->start_even; i<e->end_even; i += 0x1000)
-                tlb->LUT_w[i>>12] = 0;
+            if (e->d_even) tlb->LUT_w[i>>12] = 0;
+            if (tlb->fastmem) r4300_fastmem_tlb_page(tlb, (uint32_t)(i >> 12));
+        }
     }
 
     if (e->v_odd)
     {
         for (i=e->start_odd; i<e->end_odd; i += 0x1000)
+        {
             tlb->LUT_r[i>>12] = 0;
-        if (e->d_odd)
-            for (i=e->start_odd; i<e->end_odd; i += 0x1000)
-                tlb->LUT_w[i>>12] = 0;
+            if (e->d_odd) tlb->LUT_w[i>>12] = 0;
+            if (tlb->fastmem) r4300_fastmem_tlb_page(tlb, (uint32_t)(i >> 12));
+        }
     }
 }
 
@@ -60,10 +64,11 @@ void tlb_map(struct tlb* tlb, size_t entry)
             e->phys_even < 0x20000000)
         {
             for (i=e->start_even;i<e->end_even;i+=0x1000)
+            {
                 tlb->LUT_r[i>>12] = UINT32_C(0x80000000) | (e->phys_even + (i - e->start_even) + 0xFFF);
-            if (e->d_even)
-                for (i=e->start_even;i<e->end_even;i+=0x1000)
-                    tlb->LUT_w[i>>12] = UINT32_C(0x80000000) | (e->phys_even + (i - e->start_even) + 0xFFF);
+                if (e->d_even) tlb->LUT_w[i>>12] = tlb->LUT_r[i>>12];
+                if (tlb->fastmem) r4300_fastmem_tlb_page(tlb, (uint32_t)(i >> 12));
+            }
         }
     }
 
@@ -74,10 +79,11 @@ void tlb_map(struct tlb* tlb, size_t entry)
             e->phys_odd < 0x20000000)
         {
             for (i=e->start_odd;i<e->end_odd;i+=0x1000)
+            {
                 tlb->LUT_r[i>>12] = UINT32_C(0x80000000) | (e->phys_odd + (i - e->start_odd) + 0xFFF);
-            if (e->d_odd)
-                for (i=e->start_odd;i<e->end_odd;i+=0x1000)
-                    tlb->LUT_w[i>>12] = UINT32_C(0x80000000) | (e->phys_odd + (i - e->start_odd) + 0xFFF);
+                if (e->d_odd) tlb->LUT_w[i>>12] = tlb->LUT_r[i>>12];
+                if (tlb->fastmem) r4300_fastmem_tlb_page(tlb, (uint32_t)(i >> 12));
+            }
         }
     }
 }

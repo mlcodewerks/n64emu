@@ -1,6 +1,7 @@
 
 
 #include "memory.h"
+#include "r4300/fastmem.h"
 
 #include "core/log.h"
 #include "core/types.h"
@@ -38,6 +39,7 @@ void init_memory(struct memory* mem,
 
 
     mem->base = base;
+    mem->cpu_fastmem = NULL;
 
     for(m = 0; m < mappings_count; ++m) {
         apply_mem_mapping(mem, &mappings[m]);
@@ -52,6 +54,7 @@ static void map_region(struct memory* mem,
     {
         (void)type;
         mem->handlers[region] = *handler;
+        if (mem->cpu_fastmem) r4300_fastmem_region_changed(mem, region);
     }
 }
 

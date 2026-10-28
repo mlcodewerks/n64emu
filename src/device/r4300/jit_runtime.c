@@ -1,6 +1,7 @@
 
 
 #include "jit_runtime.h"
+#include "fastmem.h"
 #include "timing.h"
 #include "interp_memory.h"
 #include "interp_branch.h"
@@ -182,6 +183,7 @@ struct cached_set
 
 struct r4300_jit_state
 {
+    struct r4300_fastmem* fastmem;
 #ifdef HAVE_ARI64
     struct ari64* jit;
     /* Linked entries are derived from direct/indirect edge counts, so a hot
@@ -212,6 +214,7 @@ struct r4300_jit_state
     struct cached_block* previous_block;
 };
 
+static void fastmem_unprotect_page(struct r4300_fastmem*, uint32_t page);
 static CI_FORCE_INLINE int ci_page_is_cached(const struct r4300_jit_state* state, uint32_t page)
 {
     return (int)((state->page_cached[page >> 6] >> (page & 63)) & UINT64_C(1));
@@ -220,11 +223,14 @@ static CI_FORCE_INLINE int ci_page_is_cached(const struct r4300_jit_state* state
 static CI_FORCE_INLINE void ci_page_set_cached(struct r4300_jit_state* state, uint32_t page)
 {
     state->page_cached[page >> 6] |= UINT64_C(1) << (page & 63);
+    if (state->fastmem && page < 2048) state->fastmem->physical_write[page] = state->fastmem->guard;
 }
 
 static CI_FORCE_INLINE void ci_page_clear_cached(struct r4300_jit_state* state, uint32_t page)
 {
     state->page_cached[page >> 6] &= ~(UINT64_C(1) << (page & 63));
+    if (state->fastmem && ((size_t)page + 1) * 4096 <= state->fastmem->ram_size)
+        fastmem_unprotect_page(state->fastmem, page);
 }
 
 static CI_FORCE_INLINE uint32_t ci_hash_pc(uint32_t pc)
@@ -1092,6 +1098,7 @@ static void ci_bump_page(struct r4300_jit_state* state, uint32_t physical_page)
         memset(state->sets, 0, (state->set_mask + 1) * sizeof(*state->sets));
         memset(state->page_generation, 0, sizeof(state->page_generation));
         memset(state->page_cached, 0, sizeof(state->page_cached));
+        if (state->fastmem) r4300_fastmem_refresh(state->fastmem);
         ++state->epoch;
         if (state->epoch == 0)
             state->epoch = 1;
@@ -1122,6 +1129,69 @@ static int ci_virtual_to_physical_page_noexcept(struct r4300_core* r4300, uint32
 
     *physical_page = physical >> CI_PAGE_SHIFT;
     return 1;
+}
+
+static int fastmem_ram_page(struct r4300_fastmem* f, uint32_t physical, int write)
+{
+    if ((uint64_t)physical + 4096 > f->ram_size) return 0;
+    const struct mem_handler* h = &f->owner->mem->handlers[physical >> 16];
+    return h->opaque == f->owner->rdram &&
+        (write ? h->write32 == write_rdram_dram : h->read32 == read_rdram_dram);
+}
+static void fastmem_unprotect_page(struct r4300_fastmem* f, uint32_t page)
+{
+    f->physical_write[page] = fastmem_ram_page(f, page << 12, 1) ? f->ram + (uintptr_t)page * 4096 : f->guard;
+}
+void r4300_fastmem_region_changed(struct memory* mem, uint16_t region)
+{
+    struct r4300_fastmem* f = mem->cpu_fastmem;
+    if (!f || region >= 128) return;
+    for (unsigned page = (unsigned)region * 16; page < ((unsigned)region + 1) * 16; ++page) {
+        uint32_t physical = page << 12;
+        f->physical_read[page] = fastmem_ram_page(f, physical, 0) ? f->ram + physical : f->guard;
+        f->physical_write[page] = fastmem_ram_page(f, physical, 1) &&
+            !(f->owner->cached_code_pages && ((f->owner->cached_code_pages[page >> 6] >> (page & 63)) & 1)) ?
+            f->ram + physical : f->guard;
+    }
+}
+
+void r4300_fastmem_tlb_page(struct tlb* tlb, uint32_t page)
+{
+    struct r4300_fastmem* f = tlb->fastmem;
+    uint32_t address = page << 12;
+    int direct = (address & UINT32_C(0xc0000000)) == UINT32_C(0x80000000);
+    uint32_t r = direct ? address : tlb->LUT_r[page];
+    uint32_t w = direct ? address : tlb->LUT_w[page];
+    uint32_t rp = r & UINT32_C(0x1ffff000), wp = w & UINT32_C(0x1ffff000);
+    f->read[page] = r && (uint64_t)rp + 4096 <= f->ram_size ? &f->physical_read[rp >> 12] : &f->guard;
+    f->write[page] = w && (uint64_t)wp + 4096 <= f->ram_size ? &f->physical_write[wp >> 12] : &f->guard;
+}
+
+void r4300_fastmem_refresh(struct r4300_fastmem* f)
+{
+    for (unsigned region = 0; region < 128; ++region) r4300_fastmem_region_changed(f->owner->mem, region);
+    for (unsigned p = 0; p < 0x100000; ++p) r4300_fastmem_tlb_page(&f->owner->cp0.tlb, p);
+}
+
+struct r4300_fastmem* r4300_fastmem_create(struct r4300_core* r, void* guard)
+{
+    if (!guard || !r->rdram || !r->rdram->dram || r->rdram->dram_size > 8 * 1024 * 1024) return NULL;
+    struct r4300_fastmem* f = calloc(1, sizeof(*f));
+    if (!f) return NULL;
+    f->owner = r; f->guard = (uintptr_t)guard;
+    f->ram = (uintptr_t)r->rdram->dram; f->ram_size = r->rdram->dram_size;
+    r->cp0.tlb.fastmem = f;
+    r->mem->cpu_fastmem = f;
+    r4300_fastmem_refresh(f);
+    return f;
+}
+void r4300_fastmem_destroy(struct r4300_fastmem* f)
+{
+    if (f) {
+        f->owner->cp0.tlb.fastmem = NULL;
+        if (f->owner->mem->cpu_fastmem == f) f->owner->mem->cpu_fastmem = NULL;
+    }
+    free(f);
 }
 
 int r4300_jit_init(struct r4300_core* r4300)
@@ -1155,6 +1225,7 @@ int r4300_jit_init(struct r4300_core* r4300)
             r4300_jit_destroy(r4300);
             return 0;
         }
+        r4300->jit->fastmem = r4300_fastmem_create(r4300, ari64_fault_guard(r4300->jit->jit));
     }
 #endif
     return 1;
@@ -1162,6 +1233,7 @@ int r4300_jit_init(struct r4300_core* r4300)
 
 void r4300_jit_destroy(struct r4300_core* r4300)
 {
+    if (r4300->jit) r4300_fastmem_destroy(r4300->jit->fastmem);
 #ifdef HAVE_ARI64
     if (r4300->jit) ari64_destroy(r4300->jit->jit);
 #endif
@@ -1177,6 +1249,11 @@ void r4300_jit_cache_stats(struct r4300_core* r, uint64_t stats[2])
 {
     stats[0] = r->jit ? r->jit->decoded_blocks : 0;
     stats[1] = r->jit ? r->jit->restored_blocks : 0;
+}
+void r4300_jit_host_fault_stats(struct r4300_core* r, uint64_t stats[2])
+{
+    stats[0] = r->jit && r->jit->fastmem != NULL;
+    stats[1] = r->jit ? ari64_fault_count(r->jit->jit) : 0;
 }
 
 void r4300_jit_tlb_changed(struct r4300_core* r4300)
@@ -1206,6 +1283,7 @@ void r4300_jit_invalidate(struct r4300_core* r4300, uint32_t address, size_t siz
         r4300_jit_tlb_changed(r4300);
         ++state->epoch;
         memset(state->page_cached, 0, sizeof(state->page_cached));
+        if (state->fastmem) r4300_fastmem_refresh(state->fastmem);
         if (state->epoch == 0)
         {
             memset(state->sets, 0, (state->set_mask + 1) * sizeof(*state->sets));
@@ -1343,6 +1421,7 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
     struct cached_block* block = opaque;
     struct r4300_jit_state* state = r->jit;
     uint32_t pc = block->virtual_pc + i * 4;
+    if (state->fastmem) ari64_fault_resolve(state->jit);
 
     unsigned count = (phase >> 8) & 63;
     if ((phase & 255) == 5) {
@@ -1499,6 +1578,7 @@ static void ci_execute_jit(struct r4300_core* r, int one)
             block->delay_op, !one && block->has_delay, block->idle_end, &r->retired_ops, &state->jit_fast_commits,
             ci_jit_fpu_prepare, ci_jit_fpu_finish, one ? NULL : &block->native_chain_entry};
         config.compat_issue_clock = r->compat_issue_clock;
+        config.fastmem = state->fastmem;
         config.links = one ? NULL : block->native_links;
         config.previous_block = &state->previous_block; config.epoch = &state->epoch;
         config.fetch_generation=&state->fetch_generation;
@@ -1520,7 +1600,11 @@ static void ci_execute_jit(struct r4300_core* r, int one)
 #ifdef ARI64_PROFILE
     ++block->profile_entries;
 #endif
-    (*entry)(r);
+    if (state->fastmem) {
+        void* previous_faults = ari64_fault_enter(state->jit);
+        (*entry)(r);
+        ari64_fault_leave(previous_faults);
+    } else (*entry)(r);
 }
 
 void r4300_jit_execute_one(struct r4300_core* r) { ci_execute_jit(r, 1); }
@@ -1535,6 +1619,7 @@ void r4300_jit_stats(struct r4300_core* r, uint64_t stats[4])
         (unsigned long long)s->jit_compile_misses[0], (unsigned long long)s->jit_compile_misses[1],
         (unsigned long long)s->jit_verifications[0], (unsigned long long)s->jit_verifications[1], (unsigned long long)s->jit_replacements);
     if (s) core_log(CORE_LOG_INFO,"Ari64 links: direct=%llu",(unsigned long long)s->jit_direct_links);
+    if (s && s->fastmem) core_log(CORE_LOG_INFO,"Ari64 host faults: %llu",(unsigned long long)ari64_fault_count(s->jit));
 #ifdef ARI64_PROFILE
     if (s) {
         for (unsigned i = 0; i < 64; ++i)

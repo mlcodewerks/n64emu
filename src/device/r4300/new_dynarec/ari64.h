@@ -14,6 +14,7 @@
 extern "C" {
 #endif
 struct r4300_core;
+struct r4300_fastmem;
 struct ari64;
 typedef void (*ari64_entry)(struct r4300_core*);
 /* 0: begin native instruction, 1: commit native instruction,
@@ -63,9 +64,15 @@ struct ari64_config {
     unsigned compat_issue_clock;
     struct ari64_fetch_cache* fetch_cache;
     const uint64_t* fetch_generation;
+    struct r4300_fastmem* fastmem;
 };
 struct ari64* ari64_create(void);
 void ari64_destroy(struct ari64*);
+void* ari64_fault_guard(const struct ari64*);
+void* ari64_fault_enter(struct ari64*);
+void ari64_fault_leave(void* previous);
+uint64_t ari64_fault_count(const struct ari64*);
+void ari64_fault_resolve(struct ari64*);
 uint64_t ari64_generation(const struct ari64*);
 int ari64_entry_valid(const struct ari64*, ari64_entry, uint64_t generation);
 const uint64_t* ari64_entry_generation_ptr(const struct ari64*, ari64_entry);

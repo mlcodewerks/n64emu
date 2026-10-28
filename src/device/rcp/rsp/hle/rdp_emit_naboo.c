@@ -27,8 +27,8 @@
  *     masked 0x7070, the Rogue Squadron outcode model.
  *
  * This walker is intentionally incremental: commands it does not yet
- * implement return NABOO_R_FALLBACK. Accurate timing uses native RSP;
- * production Fast timing reports unsupported work and stops the task.
+ * implement return NABOO_R_FALLBACK. Disabling RSP HLE uses native RSP;
+ * unsupported work reached after HLE dispatch reports an error and stops.
  * Unknown overlay IDs must not be skipped or guessed. */
 
 #include <stdint.h>

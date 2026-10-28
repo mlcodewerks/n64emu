@@ -18,6 +18,7 @@ struct memory_exit {
     struct regcache_state registers;
     struct regcache_state resume_registers;
     unsigned char* resume;
+    unsigned char* fault_pc;
     unsigned index, start, end, guard_count;
     unsigned char* guards[16];
 };
@@ -353,6 +354,28 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_mov(R11, RAX); emit_imm_op(4, RAX, size - 1, 0);
         emit_reg_op(0x85, RAX, RAX, 0); memory_guard(exit, 5);
     }
+    if (config->fastmem) {
+        /* The read probe precedes every cache/timing/guest side effect. Invalid
+         * translations and protected code writes point at a private no-access
+         * page; the host handler redirects this exact PC to the precise exit. */
+        emit_movimm64((intptr_t)config->fastmem, R14);
+        emit_mov(R11, RAX); emit_shift_reg(RAX, 5, 12, 0);
+        emit_mem(0x8b, 1, R14, R14, RAX, 3, write ?
+            offsetof(struct r4300_fastmem, write) : offsetof(struct r4300_fastmem, read));
+        emit_mem(0x8b, 1, R14, R14, -1, 0, 0);
+        /* A five-byte, non-crossing probe can become JMP precise_exit after
+         * repeated faults. Keep it entirely within one protection page. */
+        while (((uintptr_t)out & 4095) > 4091) JIT(nop());
+        exit->fault_pc = out;
+        JIT(test(Xbyak::util::byte[Xbyak::Reg64(R14)], 0));
+        JIT(nop());
+        assert(out - exit->fault_pc == 5);
+        emit_mov(R11, RAX); emit_imm_op(4, RAX, 4092, 0);
+        emit_reg_op(0x01, RAX, R14, 1);
+        emit_mov64(R14, RDX);
+        emit_movimm64(config->fastmem->ram, RAX);
+        emit_reg_op(0x29, RAX, RDX, 1);
+    } else {
     // Only architectural KSEG translation is folded. Handlers, backing RAM,
     // bounds and code-page invalidation are still checked on every access.
     if(fixed_direct)emit_movimm(physical,RDX);
@@ -399,6 +422,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
     emit_mem(0x8b, 1, R14, R14, -1, 0, offsetof(struct rdram, dram));
     if(fixed_direct)emit_addimm64(R14,physical&UINT32_C(0x00fffffc),R14);
     else {emit_mov(RDX, RAX); emit_imm_op(4, RAX, UINT32_C(0x00fffffc), 0);emit_reg_op(0x01, RAX, R14, 1);}
+    }
     if (config->cache_timing) {
         unsigned char *uncached=nullptr,*config_uncached=nullptr,*mapped_uncached=nullptr,*data_ready=nullptr;
         if(!fixed_direct || !(address&UINT32_C(0x20000000))) {

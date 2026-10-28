@@ -36,6 +36,12 @@ struct ari64 {
     size_t used, page;
     uint64_t generation, stamps[SEGMENTS], blocks, native, bytes, calls;
 };
+/* The fault-assisted memory emitter is currently x86-64 only. */
+void* ari64_fault_guard(const struct ari64*) { return NULL; }
+void* ari64_fault_enter(struct ari64*) { return NULL; }
+void ari64_fault_leave(void*) {}
+uint64_t ari64_fault_count(const struct ari64*) { return 0; }
+void ari64_fault_resolve(struct ari64*) {}
 
 struct ari64* ari64_create(void)
 {

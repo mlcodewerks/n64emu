@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 struct r4300_core;
+struct r4300_fastmem;
 
 struct tlb_entry
 {
@@ -35,6 +36,7 @@ struct tlb_entry
 
 struct tlb
 {
+    struct r4300_fastmem* fastmem;
     struct tlb_entry entries[32];
     uint32_t LUT_r[0x100000];
     uint32_t LUT_w[0x100000];

@@ -34,6 +34,7 @@ struct mem_mapping
 
 struct memory
 {
+    struct r4300_fastmem* cpu_fastmem;
     struct mem_handler handlers[0x10000];
     void* base;
 

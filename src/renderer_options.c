@@ -38,7 +38,8 @@ static const struct retro_variable options[] = {
     {"wtfn64_glrdp_vi_gamma", "GLRDP VI gamma correction (restart required); enabled|disabled"},
     {"wtfn64_glrdp_vi_gamma_dither", "GLRDP VI gamma dithering (restart required); enabled|disabled"},
 #endif
-    {"wtfn64_timing", "Timing accuracy (restart required); fast|accurate"},
+    {"wtfn64_timing", "CPU cache timing (restart required); fast|off|accurate"},
+    {"wtfn64_rsp_hle", "RSP HLE (restart required); enabled|disabled"},
     {"wtfn64_angrylion_threads", "SoftRDP rendering threads (restart required); 6|2|4|8|10|auto"},
     {"wtfn64_performance_cores", "Performance cores only (restart required); enabled|disabled"},
     {"wtfn64_angrylion_upscale", "SoftRDP upscaling (restart required); 1|2|4"},
@@ -144,7 +145,9 @@ void renderer_register_options(retro_environment_t environment)
             if (!strcmp(d->key, "wtfn64_glrdp_vi_gamma_dither"))
                 d->info = "Allow gamma dithering when requested by the game. Independent of gamma correction. Restart content to apply.";
             if (!strcmp(d->key, "wtfn64_timing"))
-                d->info = "Accurate uses native RSP execution and full CPU cache contents. Fast uses supported graphics, audio and task HLE, native RSP for unsupported microcodes, and cache tags. Both retain instruction interlocks, bus delays and work-based RDP timing. Restart content to apply.";
+                d->info = "Off disables CPU cache timing. Fast models cache tags and hit/miss timing. Accurate models full CPU cache contents. RSP HLE is selected separately. All settings retain component clocks and work-based RDP timing. Restart content to apply.";
+            if (!strcmp(d->key, "wtfn64_rsp_hle"))
+                d->info = "Use supported graphics, audio and task HLE, with native RSP fallback for unsupported microcodes. Disable to execute all RSP programs natively. Works with every CPU cache timing setting, including Accurate. Restart content to apply.";
             if (strstr(d->key, "-pak")) {
                 d->category_key = "input";
                 d->info = "Choose the accessory attached to this controller. A Memory Pak allows games to save progress.";
@@ -154,6 +157,9 @@ void renderer_register_options(retro_environment_t environment)
                 next = strchr(p, '|');
                 if (next) *next++ = 0;
                 d->values[j++].value = p;
+                if (!strcmp(d->key, "wtfn64_timing"))
+                    d->values[j - 1].label = !strcmp(p, "off") ? "Off" :
+                        !strcmp(p, "accurate") ? "Accurate" : "Fast";
                 if (strstr(d->key, "-pak"))
                     d->values[j - 1].label = !strcmp(p, "memory") ? "Memory Pak" :
                         !strcmp(p, "rumble") ? "Rumble Pak" :
@@ -222,12 +228,10 @@ void renderer_read_options(retro_environment_t env)
     memset(s, 0, sizeof(*s));
     v = value(env, "wtfn64_timing", "fast");
     s->per_cycle_timing = strcmp(v, "accurate") == 0;
-      /* The timing mode owns RSP routing. Fast prefers supported HLE and
-       * uses native RSP for unsupported programs; Accurate always uses native. */
-    s->rsp_hle = !s->per_cycle_timing;
-    s->lle_graphics = s->lle_audio = s->per_cycle_timing;
+    s->fast_cpu_timing = strcmp(v, "off") != 0 && strcmp(v, "no-cache") != 0;
+    s->rsp_hle = toggle(env, "wtfn64_rsp_hle", true);
+    s->lle_graphics = s->lle_audio = !s->rsp_hle;
     s->component_timing = true;
-    s->fast_cpu_timing = true;
 #ifdef HAVE_PARALLEL_RDP
     if (strcmp(value(env, "wtfn64_renderer", "softrdp"), "parallel-rdp") == 0)
         s->renderer = RENDERER_PARALLEL;

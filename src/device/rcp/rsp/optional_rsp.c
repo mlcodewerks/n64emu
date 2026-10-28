@@ -1,6 +1,6 @@
 #include "core/file.h"
-/* Accurate executes native RSP instructions. Fast prefers validated task HLE
- * and streaming walkers, and executes unsupported programs natively. */
+/* RSP HLE prefers validated tasks/walkers with native fallback. Disabling HLE
+ * executes every program natively, independently of CPU cache timing. */
 #include "optional_rsp.h"
 #include "renderer_options.h"
 #include "device/device.h"

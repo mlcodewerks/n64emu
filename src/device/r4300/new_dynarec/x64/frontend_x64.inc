@@ -10,6 +10,7 @@ enum { CODE_BYTES = ARI64_X64_ARENA_BYTES, MAX_INSTRUCTIONS = 32 };
 enum { CODE_SEGMENTS = ARI64_X64_SEGMENTS,
     SEGMENT_BYTES = CODE_BYTES / CODE_SEGMENTS };
 struct ari64 {
+    host_fault_domain* faults;
     unsigned char* code;
     size_t used, page_size;
     uint64_t generation, blocks, native;
@@ -62,12 +63,14 @@ struct ari64* ari64_create(void)
     if (!s->code) { free(s); return NULL; }
     s->generation = 1;
     s->segment_generation[0] = 1;
+    s->faults = host_fault_create(s->code, CODE_BYTES, SEGMENT_BYTES, s->page_size);
     return s;
 }
 
 void ari64_destroy(struct ari64* s)
 {
     if (!s) return;
+    host_fault_destroy(s->faults);
 #ifdef _WIN32
     VirtualFree(s->code, 0, MEM_RELEASE);
 #else
@@ -77,6 +80,36 @@ void ari64_destroy(struct ari64* s)
 }
 
 uint64_t ari64_generation(const struct ari64* s) { return s->generation; }
+void* ari64_fault_guard(const struct ari64* s) { return s && s->faults ? (void*)s->faults->guard : NULL; }
+void* ari64_fault_enter(struct ari64* s)
+{
+    void* previous = active_fault_domain;
+    active_fault_domain = s ? s->faults : NULL;
+    return previous;
+}
+void ari64_fault_leave(void* previous) { active_fault_domain = (host_fault_domain*)previous; }
+uint64_t ari64_fault_count(const struct ari64* s) { return s && s->faults ? (uint64_t)s->faults->faults : 0; }
+void ari64_fault_resolve(struct ari64* s)
+{
+    host_fault_domain* d = s ? s->faults : NULL;
+    if (!d || !d->pending_site) return;
+    host_fault_site* site = &d->segments[d->pending_segment].sites[d->pending_site - 1];
+    d->pending_site = 0;
+    /* Repeated MMIO/SMC/missing-TLB accesses use the precise exit directly.
+     * Patch only from normal C code, with the generated frame suspended. */
+    if (++site->hits != 2) return;
+    uintptr_t page = site->pc & ~(uintptr_t)(s->page_size - 1);
+    if (!code_protect((void*)page, s->page_size, 0)) return;
+    unsigned char* probe = (unsigned char*)site->pc;
+    int32_t delta = (int32_t)(site->resume - site->pc - 5);
+    probe[0] = 0xe9; memcpy(probe + 1, &delta, sizeof(delta));
+#ifdef _WIN32
+    FlushInstructionCache(GetCurrentProcess(), probe, 5);
+#else
+    __builtin___clear_cache((char*)probe, (char*)probe + 5);
+#endif
+    if (!code_protect((void*)page, s->page_size, 1)) abort();
+}
 int ari64_entry_valid(const struct ari64* s, ari64_entry entry, uint64_t generation)
 {
     uintptr_t offset = (uintptr_t)entry - (uintptr_t)s->code;
@@ -387,6 +420,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
         s->used = ((s->used / SEGMENT_BYTES + 1) * SEGMENT_BYTES) % CODE_BYTES;
         if (!code_protect(s->code + s->used, SEGMENT_BYTES, 0)) return NULL;
         s->segment_generation[s->used / SEGMENT_BYTES] = ++s->generation;
+        if (s->faults) s->faults->segments[s->used / SEGMENT_BYTES].count = 0;
     }
     unsigned char* start = s->code + s->used;
     size_t page_start = s->used & ~(s->page_size - 1);
@@ -488,7 +522,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                     if (native_ram_opcode(instruction_op)) {
                         if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                         struct memory_exit* exit = &memory_exits[memory_exit_count++];
-                        exit->start = i; exit->index = j; exit->end = end; exit->guard_count = 0;
+                        exit->start = i; exit->index = j; exit->end = end; exit->guard_count = 0; exit->fault_pc = NULL;
                         if(ram_delay&&j==branch_index+1&&branch_prefetch_miss)exit->guards[exit->guard_count++]=branch_prefetch_miss;
                         emit_memory_native(ops[j], j, config, exit, check_line,
                             j == i ? 0 : ops[j - 1], j != i);
@@ -555,6 +589,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
         exits[exit_count++] = emit_b();
         for (unsigned n = 0; n < memory_exit_count; ++n) {
             struct memory_exit* exit = &memory_exits[n];
+            if (exit->fault_pc && !host_fault_publish(s->faults, exit->fault_pc, out)) return NULL;
             for (unsigned g = 0; g < exit->guard_count; ++g) patch_jump(exit->guards[g], out);
             if(ram_delay && exit->index==branch_index+1) {
                 /* Restore the link register and branch fetch/hazard state,

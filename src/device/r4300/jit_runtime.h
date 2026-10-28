@@ -14,6 +14,7 @@ void r4300_jit_destroy(struct r4300_core* r4300);
 void r4300_jit_invalidate(struct r4300_core* r4300, uint32_t address, size_t size);
 void r4300_jit_tlb_changed(struct r4300_core* r4300);
 void r4300_jit_cache_stats(struct r4300_core*, uint64_t stats[2]);
+void r4300_jit_host_fault_stats(struct r4300_core*, uint64_t stats[2]);
 #ifdef HAVE_ARI64
 void r4300_jit_execute_one(struct r4300_core* r4300);
 void r4300_jit_run(struct r4300_core* r4300);

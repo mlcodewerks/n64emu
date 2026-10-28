@@ -14,6 +14,7 @@ extern "C" {
 #include "device/r4300/cpu_ops.h"
 #include "device/memory.h"
 #include "device/rdram.h"
+#include "device/r4300/fastmem.h"
 }
 #include <assert.h>
 #include <stdlib.h>
@@ -28,5 +29,6 @@ extern "C" {
 #include <unistd.h>
 #endif
 #include "x64/assem_x64.h"
+#include "host_fault.h"
 #include "x64/xbyak_emit.h"
 #include "x64/frontend_x64.inc"

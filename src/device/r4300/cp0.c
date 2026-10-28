@@ -11,6 +11,7 @@
 /* global functions */
 void init_cp0(struct cp0* cp0, const struct interrupt_handler* interrupt_handlers)
 {
+    cp0->tlb.fastmem = NULL;
     memcpy(cp0->interrupt_handlers, interrupt_handlers, CP0_INTERRUPT_HANDLERS_COUNT*sizeof(*interrupt_handlers));
 }
 
