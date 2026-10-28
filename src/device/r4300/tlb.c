@@ -20,7 +20,7 @@ void poweron_tlb(struct tlb* tlb)
 
 void tlb_unmap(struct tlb* tlb, size_t entry)
 {
-    unsigned int i;
+    uint64_t i; /* The last 4 KiB page ends at UINT32_MAX; do not wrap to zero. */
     const struct tlb_entry* e;
 
     assert(entry < 32);
@@ -47,7 +47,7 @@ void tlb_unmap(struct tlb* tlb, size_t entry)
 
 void tlb_map(struct tlb* tlb, size_t entry)
 {
-    unsigned int i;
+    uint64_t i;
     const struct tlb_entry* e;
 
     assert(entry < 32);

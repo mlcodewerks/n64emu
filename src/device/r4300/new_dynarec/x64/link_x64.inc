@@ -1,7 +1,8 @@
 
 static void emit_direct_links(void* block, const struct ari64_config* config)
 {
-    unsigned char* misses[15]; unsigned miss_count = 0;
+    unsigned char* misses[17]; unsigned miss_count = 0;
+    if(!config->compat_issue_clock){emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,irq_writeback_pending),0);misses[miss_count++]=emit_jump(5);}
     emit_movimm64((intptr_t)&breakloop,RAX);
     emit_mem_imm(0x80,0,7,RAX,-1,0,0,0); misses[miss_count++] = emit_jump(5);
     emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,delay_slot),0); misses[miss_count++] = emit_jump(5);

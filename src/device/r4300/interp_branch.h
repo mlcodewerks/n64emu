@@ -17,6 +17,7 @@ static osal_force_inline int interp_direct_nop_delay(struct r4300_core* r)
         return 0;
     /* The delay-slot interrupt remains deferred until the branch resolves. */
     cp0_step_cycles(&r->cp0, 1 + (r->compat_issue_clock != 0));
+    ++r->retired_ops;
     r->instruction_pc.addr = pc + 4;
     r->regs[0] = 0;
     return 1;
@@ -25,13 +26,27 @@ static osal_force_inline int interp_direct_nop_delay(struct r4300_core* r)
 static osal_force_inline void interp_branch_finish_step(struct r4300_core* r,
     int taken, uint32_t target, int likely, void (*execute_one)(struct r4300_core*), int direct_nop)
 {
+    unsigned saved_delay=r->delay_slot;
+    uint32_t saved_target=r->branch_target,pc=r->instruction_pc.addr;
+    if(saved_delay) {
+        const uint32_t *word=fast_mem_access(r,pc);
+        unsigned major=word?*word>>26:0;
+        if(major==1||(major>=4&&major<=7)||(major>=20&&major<=23)||major==17)
+            target+=saved_target-(pc+4);
+    }
+    uint32_t slot_pc=saved_delay?saved_target:pc+4;
+    uint32_t sequence=++r->branch_sequence;
+    r->branch_target=taken?target:slot_pc+4;
     if (!likely || taken) {
-        r->instruction_pc.addr += 4;
+        if(taken&&r->cache_timing&&!r->compat_issue_clock&&
+           ((target^r->instruction_pc.addr)&~UINT32_C(0xfff))==0&&r4300_access_cached(r,target))
+            r4300_prefetch_access_cycles(r,target);
+        r->instruction_pc.addr = slot_pc;
         r->delay_slot = 1;
         if (!direct_nop || !interp_direct_nop_delay(r)) execute_one(r);
         cp0_update_count(r);
-        r->delay_slot = 0;
-        unsigned jump = (unsigned)taken & (unsigned)(r->skip_jump == 0);
+        r->delay_slot = saved_delay;
+        unsigned jump = (unsigned)taken & (unsigned)(r->skip_jump == 0)&(r->branch_sequence==sequence);
 #if defined(PARALLAX_INTERP_BRANCHLESS) && PARALLAX_INTERP_BRANCHLESS
         uint32_t mask = 0u - jump;
         r->instruction_pc.addr = (target & mask) | (r->instruction_pc.addr & ~mask);
@@ -39,11 +54,17 @@ static osal_force_inline void interp_branch_finish_step(struct r4300_core* r,
         if (jump) r->instruction_pc.addr = target;
 #endif
     } else {
-        r->instruction_pc.addr += 8;
+        /* An annulled likely slot still occupies one pipeline clock; its
+         * instruction and exceptions are suppressed. Fast's reserved issue
+         * clock already supplies this bubble. */
+        if (!r->compat_issue_clock) cp0_step_cycles(&r->cp0, 1);
+        r->instruction_pc.addr = slot_pc+4;
         cp0_update_count(r);
     }
+    r->branch_target=saved_target;
+    if(!saved_delay)r->branch_sequence=0;
     r->cp0.last_addr = r->instruction_pc.addr;
-    if (r->cp0.cycle_count >= 0) gen_interrupt(r);
+    if (!r->delay_slot&&r->cp0.cycle_count >= 0) gen_interrupt(r);
 }
 
 static osal_force_inline void interp_branch_finish(struct r4300_core* r,
@@ -59,6 +80,8 @@ static osal_force_inline void interp_idle_advance(struct r4300_core* r)
 {
     cp0_update_count(r);
     if (r->cp0.cycle_count < 0) {
+        uint64_t clocks=(uint64_t)(-r->cp0.cycle_count)*2-r->cp0.count_phase;
+        r->retired_ops+=clocks/(1+(r->compat_issue_clock!=0));
         r->cp0.regs[CP0_COUNT_REG] += (uint32_t)(-r->cp0.cycle_count);
         r->cp0.count_clock += -r->cp0.cycle_count;
         r->cp0.count_phase = 0;

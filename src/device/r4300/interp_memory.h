@@ -186,6 +186,8 @@ static osal_force_inline int interp_write_aligned_dword(struct r4300_core* r4300
     address &= UINT32_C(0x1ffffffc);
     const struct mem_handler* handler = &r4300->mem->handlers[address >> 16];
     interp_mem_write32(handler, address + 0, (uint32_t)(value >> 32), (uint32_t)(mask >> 32));
+    /* SP memory accepts only the first word of a CPU doubleword store. */
+    if((address&UINT32_C(0xffffe000))==UINT32_C(0x04000000))return 1;
     interp_mem_write32(handler, address + 4, (uint32_t)value, (uint32_t)mask);
     return 1;
 }
@@ -193,8 +195,7 @@ static osal_force_inline int interp_write_aligned_dword(struct r4300_core* r4300
 static osal_force_inline int check_alignment(struct r4300_core* r4300, uint32_t address, unsigned int mask, int store)
 {
     if ((address & mask) == 0) return 0;
-    r4300->cp0.regs[CP0_BADVADDR_REG] = address;
-    r4300->cp0.regs_hi[CP0_BADVADDR_REG] = (int32_t)address < 0 ? UINT32_MAX : 0;
+    cp0_set_fault_address(r4300,(uint64_t)(int64_t)(int32_t)address);
     r4300->cp0.regs[CP0_CAUSE_REG] =
         (r4300->cp0.regs[CP0_CAUSE_REG] & ~UINT32_C(0x3000007c)) |
         (store ? CP0_CAUSE_EXCCODE_ADES : CP0_CAUSE_EXCCODE_ADEL);

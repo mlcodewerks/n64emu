@@ -532,10 +532,12 @@ static void dma_pi_write(struct pi_controller* pi)
     uint32_t available = dram_addr < pi->ri->rdram->dram_size
         ? (uint32_t)pi->ri->rdram->dram_size - dram_addr : 0;
     if (available > length) available = length;
-    if (available) handler->dma_write(opaque, dram, dram_addr, cart_addr, available);
-
     if (available) {
         invalidate_r4300_cached_code(pi->mi->r4300, dram_addr, available);
+        handler->dma_write(opaque, dram, dram_addr, cart_addr, available);
+    }
+
+    if (available) {
         post_framebuffer_write(&pi->dp->fb, dram_addr, available);
     }
 
@@ -735,6 +737,9 @@ static void copy_pif_rdram(struct si_controller* si)
     uint32_t* pif_ram = (uint32_t*)si->pif->ram;
     struct rdram* ram = si->ri->rdram;
 
+    if (si->dma_dir == SI_DMA_READ)
+        invalidate_r4300_cached_code(si->mi->r4300, dram_addr, PIF_RAM_SIZE);
+
     for (i = 0; i < PIF_RAM_SIZE / 4; ++i) {
         uint32_t address = (dram_addr + (uint32_t)i*4) & 0xffffff;
         if (si->dma_dir == SI_DMA_WRITE)
@@ -742,8 +747,6 @@ static void copy_pif_rdram(struct si_controller* si)
         else if (address < ram->dram_size)
             ram->dram[address/4] = tohl(pif_ram[i]);
     }
-    if (si->dma_dir == SI_DMA_READ)
-        invalidate_r4300_cached_code(si->mi->r4300, dram_addr, PIF_RAM_SIZE);
 }
 
 static unsigned int si_duration(struct si_controller* si, int read)
@@ -1023,7 +1026,7 @@ void vi_schedule_vertical_interrupt(struct vi_controller* vi)
 void set_vi_vertical_interrupt(struct vi_controller* vi)
 {
     if (!get_event(&vi->mi->r4300->cp0.q, VI_INT)
-        && (vi->regs[VI_V_INTR_REG] < vi->regs[VI_V_SYNC_REG]))
+        && vi->regs[VI_V_SYNC_REG])
     {
         vi_schedule_vertical_interrupt(vi);
     }
@@ -1151,6 +1154,8 @@ void vi_vertical_interrupt_event(void* opaque)
     add_interrupt_event_count(cp0, VI_INT, cp0->regs[CP0_COUNT_REG] +
         (uint32_t)(boundary + ticks - cp0->count_clock));
 
-    /* trigger interrupt */
-    raise_rcp_interrupt(vi->mi, MI_INTR_VI);
+    /* Disabling the line comparator must not stop the video oscillator or
+     * VI_CURRENT polling (libdragon polls it before enabling interrupts). */
+    if ((vi->regs[VI_V_INTR_REG]&0x3ffu) < vi_v_total(vi))
+        raise_rcp_interrupt(vi->mi, MI_INTR_VI);
 }

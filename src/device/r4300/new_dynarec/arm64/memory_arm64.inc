@@ -20,6 +20,68 @@ static void memory_guard(struct memory_exit* exit, unsigned condition)
     assert(exit->guard_count < 16);
     exit->guards[exit->guard_count++] = emit_jump(condition);
 }
+static void emit_write_buffer_drain_native(const struct ari64_config* config,unsigned unissued=0)
+{
+    if(config->compat_issue_clock)return;
+    JIT(sub(assembler->sp,assembler->sp,16));
+    emit_mem(0x89,1,T0,SP,-1,0,0);emit_mem(0x89,1,T2,SP,-1,0,8);
+    emit_mem(0x8b,0,T0,STATE,-1,0,offsetof(struct r4300_core,write_buffer_count));
+    emit_reg_op(0x85,T0,T0,0);auto *empty=emit_jump(4);
+    emit_addimm(T0,-1,T0);
+    emit_mem(0x8b,1,T2,STATE,T0,3,offsetof(struct r4300_core,write_buffer_end));
+    emit_mem(0x8b,1,T0,STATE,-1,0,offsetof(struct r4300_core,cp0.count_clock));
+    emit_shift_reg(T0,4,1,1);emit_reg_op(0x29,T0,T2,1);
+    emit_mem(0x8b,0,T0,STATE,-1,0,offsetof(struct r4300_core,cp0.count_phase));
+    emit_reg_op(0x29,T0,T2,1);emit_reg_op(0x29,CLOCKS,T2,1);
+    if(unissued)emit_addimm64(T2,unissued,T2);
+    emit_reg_op(0x85,T2,T2,1);auto *retired=emit_jump(14);
+    emit_reg_op(0x01,T2,CLOCKS,1);patch_jump(retired,out);
+    emit_state_imm(offsetof(struct r4300_core,write_buffer_count),0,0);
+    patch_jump(empty,out);emit_mem(0x8b,1,T0,SP,-1,0,0);emit_mem(0x8b,1,T2,SP,-1,0,8);
+    JIT(add(assembler->sp,assembler->sp,16));
+}
+static void emit_icache_fill_wait_native(const struct ari64_config* config,unsigned unissued=0,unsigned index=UINT32_MAX)
+{
+    if(config->compat_issue_clock)return;
+    JIT(sub(assembler->sp,assembler->sp,32));
+    emit_mem(0x89,1,T0,SP,-1,0,0);emit_mem(0x89,1,T2,SP,-1,0,8);emit_mem(0x89,1,T1,SP,-1,0,16);
+    emit_mem_imm(0x81,0,7,STATE,-1,0,offsetof(struct r4300_core,icache_fill_index),index==UINT32_MAX?0:index+1);
+    auto *skip=emit_jump(index==UINT32_MAX?4:5);
+    emit_mem(0x8b,1,T2,STATE,-1,0,offsetof(struct r4300_core,icache_fill_end));
+    emit_mem(0x8b,1,T0,STATE,-1,0,offsetof(struct r4300_core,cp0.count_clock));
+    emit_shift_reg(T0,4,1,1);emit_reg_op(0x29,T0,T2,1);
+    emit_mem(0x8b,0,T0,STATE,-1,0,offsetof(struct r4300_core,cp0.count_phase));
+    emit_reg_op(0x29,T0,T2,1);emit_reg_op(0x29,CLOCKS,T2,1);
+    if(unissued)emit_addimm64(T2,unissued,T2);
+    emit_reg_op(0x85,T2,T2,1);auto *ready=emit_jump(14);
+    emit_reg_op(0x01,T2,CLOCKS,1);patch_jump(ready,out);
+    emit_state_imm(offsetof(struct r4300_core,icache_fill_index),0,0);
+    patch_jump(skip,out);emit_mem(0x8b,1,T0,SP,-1,0,0);emit_mem(0x8b,1,T2,SP,-1,0,8);emit_mem(0x8b,1,T1,SP,-1,0,16);
+    JIT(add(assembler->sp,assembler->sp,32));
+}
+static void emit_icache_prefetch_native(const struct ari64_config* config,unsigned unissued,unsigned index)
+{
+    JIT(sub(assembler->sp,assembler->sp,32));
+    emit_mem(0x89,1,T0,SP,-1,0,0);emit_mem(0x89,1,T2,SP,-1,0,8);emit_mem(0x89,1,T1,SP,-1,0,16);
+    emit_mem(0x8b,1,T0,STATE,-1,0,offsetof(struct r4300_core,cp0.count_clock));
+    emit_shift_reg(T0,4,1,1);
+    emit_mem(0x8b,0,T2,STATE,-1,0,offsetof(struct r4300_core,cp0.count_phase));
+    emit_reg_op(0x01,T2,T0,1);emit_reg_op(0x01,CLOCKS,T0,1);
+    if(unissued)emit_addimm64(T0,-int(unissued),T0);
+    emit_mem(0x8b,0,T1,STATE,-1,0,offsetof(struct r4300_core,write_buffer_count));
+    emit_reg_op(0x85,T1,T1,0);auto *empty=emit_jump(4);
+    emit_addimm(T1,-1,T1);
+    emit_mem(0x8b,1,T2,STATE,T1,3,offsetof(struct r4300_core,write_buffer_end));
+    emit_reg_op(0x39,T2,T0,1);auto *later=emit_jump(3);
+    emit_mov64(T2,T0);patch_jump(later,out);patch_jump(empty,out);
+    emit_addimm64(T0,48,T0);emit_mem(0x89,1,T0,STATE,-1,0,offsetof(struct r4300_core,icache_fill_end));
+    if(index==UINT32_MAX){
+        emit_mov(TARGET,T2);emit_shift_reg(T2,5,5,0);emit_imm_op(4,T2,511,0);emit_addimm(T2,1,T2);
+        emit_mem(0x89,0,T2,STATE,-1,0,offsetof(struct r4300_core,icache_fill_index));
+    }else emit_state_imm(offsetof(struct r4300_core,icache_fill_index),index+1,0);
+    emit_mem(0x8b,1,T0,SP,-1,0,0);emit_mem(0x8b,1,T2,SP,-1,0,8);emit_mem(0x8b,1,T1,SP,-1,0,16);
+    JIT(add(assembler->sp,assembler->sp,32));
+}
 static void emit_itlb_native(uint32_t pc)
 {
     uint32_t vpn = pc >> 12;
@@ -57,6 +119,31 @@ static void emit_itlb_native(uint32_t pc)
     emit_addimm(CLOCKS, 3, CLOCKS);
     patch_jump(hits[0], out); patch_jump(hits[1], out);
 }
+static void emit_branch_prefetch(const struct ari64_config* config)
+{
+    if(!config->cache_timing||config->compat_issue_clock)return;
+    emit_mem_imm(0xf7,0,0,SP,-1,0,4,2);auto *uncached=emit_jump(4);
+    JIT(sub(assembler->sp,assembler->sp,32));
+    emit_mem(0x89,1,T0,SP,-1,0,0);emit_mem(0x89,1,T1,SP,-1,0,8);emit_mem(0x89,1,T2,SP,-1,0,16);
+    emit_mov(TARGET,T0);emit_imm_op(4,T0,UINT32_C(0xfffff000),0);
+    emit_imm_op(7,T0,config->virtual_pc&UINT32_C(0xfffff000),0);auto *different_page=emit_jump(5);
+    emit_mov(TARGET,T1);emit_shift_reg(T1,5,5,0);emit_imm_op(4,T1,511,0);
+    uint32_t key=(config->physical_page<<12)|1;
+    emit_mem_imm(0x81,0,7,STATE,T1,2,offsetof(struct r4300_core,icache_tags),key);auto *hit=emit_jump(4);
+    emit_icache_fill_wait_native(config);
+    emit_mem(0x8b,0,T0,STATE,T1,2,offsetof(struct r4300_core,icache_shadow_tags));
+    emit_reg_op(0x85,T0,T0,0);auto *plain=emit_jump(4);
+    emit_mem(0x8b,1,T2,STATE,-1,0,offsetof(struct r4300_core,code_page_generation));
+    emit_reg_op(0x85,T2,T2,1);auto *no_generation=emit_jump(4);
+    emit_imm_op(4,T0,0x1ffff000,0);emit_shift_reg(T0,5,12,0);
+    emit_mem_imm(0x81,0,0,T2,T0,2,0,1);patch_jump(no_generation,out);
+    emit_mem_imm(0xc7,0,0,STATE,T1,2,offsetof(struct r4300_core,icache_shadow_tags),0);
+    patch_jump(plain,out);
+    emit_mem_imm(0xc7,0,0,STATE,T1,2,offsetof(struct r4300_core,icache_tags),key);
+    emit_icache_prefetch_native(config,0,UINT32_MAX);patch_jump(hit,out);patch_jump(different_page,out);
+    emit_mem(0x8b,1,T0,SP,-1,0,0);emit_mem(0x8b,1,T1,SP,-1,0,8);emit_mem(0x8b,1,T2,SP,-1,0,16);
+    JIT(add(assembler->sp,assembler->sp,32));patch_jump(uncached,out);
+}
 /* Fetch state changes happen only after the current instruction's guards.
  * A region stays on one code page, so its first fetch establishes the exact
  * two-entry instruction micro-TLB hit/replacement state for later fetches. */
@@ -67,21 +154,49 @@ static void emit_fetch_native(const struct ari64_config* config, unsigned index,
     if (!config->cache_timing) return;
     uint32_t pc = config->virtual_pc + index * 4;
     if ((pc & UINT32_C(0xc0000000)) != UINT32_C(0x80000000) && index == start) emit_itlb_native(pc);
-    if(defer_base && !check_line)return;
+    bool lookahead=!config->compat_issue_clock&&(pc&31)>=24&&(pc&0xfff)<0xff8;
+    if(defer_base && !check_line&&!lookahead)return;
     emit_mem_imm(0xf7, 0, 0, SP, -1, 0, fetch_flag,2);
     unsigned char* uncached = emit_jump(4);
-    if (check_line) {
-        size_t tag = offsetof(struct r4300_core, icache_tags) + ((pc >> 5) & 511) * 4;
+    for(unsigned future=0;future<2;++future) {
+        if(future?!lookahead:!check_line)continue;
+        uint32_t fetch_pc=pc+(future?8:0);
+        if(!future)emit_icache_fill_wait_native(config,defer_base?0:cycles,(fetch_pc>>5)&511);
+        size_t tag = offsetof(struct r4300_core, icache_tags) + ((fetch_pc >> 5) & 511) * 4;
         uint32_t key = (config->physical_page << 12) | 1;
         emit_mem_imm(0x81, 0, 7, STATE, -1, 0, tag,key);
         unsigned char* hit = emit_jump(4);
+        emit_icache_fill_wait_native(config,defer_base?0:cycles);
+        if(!future||config->compat_issue_clock)emit_write_buffer_drain_native(config,defer_base?0:cycles);
+        size_t shadow=offsetof(struct r4300_core,icache_shadow_tags)+((fetch_pc>>5)&511)*4;
+        emit_mem_imm(0x81,0,7,STATE,-1,0,shadow,0);
+        unsigned char *plain=emit_jump(4);
+        JIT(sub(assembler->sp,assembler->sp,16));
+        emit_mem(0x89,1,T0,SP,-1,0,0);emit_mem(0x89,1,T1,SP,-1,0,8);
+        emit_mem(0x8b,1,T1,STATE,-1,0,offsetof(struct r4300_core,code_page_generation));
+        emit_reg_op(0x85,T1,T1,1);unsigned char *no_generation=emit_jump(4);
+        emit_mem(0x8b,0,T0,STATE,-1,0,shadow);
+        emit_imm_op(4,T0,0x1ffff000,0);emit_shift_reg(T0,5,12,0);
+        emit_mem(0x8d,1,T1,T1,T0,2,0);
+        emit_mem(0x8b,0,T0,T1,-1,0,0);emit_addimm(T0,1,T0);
+        emit_mem(0x89,0,T0,T1,-1,0,0);
+        patch_jump(no_generation,out);emit_state_imm(shadow,0,0);
+        emit_mem(0x8b,1,T0,SP,-1,0,0);emit_mem(0x8b,1,T1,SP,-1,0,8);
+        JIT(add(assembler->sp,assembler->sp,16));patch_jump(plain,out);
         emit_state_imm(tag, key, 0);
-        emit_addimm(CLOCKS, 48, CLOCKS);
+        if(future&&!config->compat_issue_clock)emit_icache_prefetch_native(config,defer_base?0:cycles,(fetch_pc>>5)&511);
+        else emit_addimm(CLOCKS, 48, CLOCKS);
         patch_jump(hit, out);
     }
-    if(defer_base){patch_jump(uncached,out);return;}
+    if(defer_base){
+        if(config->compat_issue_clock)patch_jump(uncached,out);
+        else {auto *done=emit_b();patch_jump(uncached,out);emit_icache_fill_wait_native(config);patch_jump(done,out);}
+        return;
+    }
     unsigned char* done = emit_b();
     patch_jump(uncached, out);
+    emit_icache_fill_wait_native(config,cycles);
+    emit_write_buffer_drain_native(config,cycles);
     emit_addimm(CLOCKS, 40, CLOCKS);
     patch_jump(done, out);
 }
@@ -98,8 +213,9 @@ static void emit_ldi_native(uint32_t instruction, int fp, uint32_t previous, int
 {
     if (known) {
         unsigned major = previous >> 26, load = (previous >> 16) & 31;
-        if ((major >= 0x20 && major <= 0x25) || major == 0x27 || major == 0x37) {
-            if (!fp && load && (load == ((instruction >> 21) & 31) || load == ((instruction >> 16) & 31)))
+        if ((major >= 0x20 && major <= 0x25) || major == 0x27 || major == 0x37 ||
+            (major==0x10 && ((previous>>21)&31)<=1)) {
+            if (load && (r4300_pipeline_ldi_gprs(instruction)&(UINT32_C(1)<<load)))
                 emit_addimm(CLOCKS, 1, CLOCKS);
         } else if (fp && (major == 0x31 || major == 0x35)) {
             unsigned consumer = (instruction >> 16) & 31;
@@ -113,7 +229,7 @@ static void emit_ldi_native(uint32_t instruction, int fp, uint32_t previous, int
         return;
     }
     unsigned rs = (instruction >> 21) & 31, rt = (instruction >> 16) & 31;
-    uint32_t candidates = (rs ? UINT32_C(1) << rs : 0) | (rt ? UINT32_C(1) << rt : 0);
+    uint32_t candidates = r4300_pipeline_ldi_gprs(instruction);
     if (!fp && !candidates) return;
     emit_mem(0x8b, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, pipeline_load_mask));
     unsigned char* fpr_history = NULL;
@@ -124,6 +240,7 @@ static void emit_ldi_native(uint32_t instruction, int fp, uint32_t previous, int
             unsigned char* fr = emit_jump(5);
             emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)), T2); patch_jump(fr, out);
         }
+        if(rs)JIT(orr(XReg(T2),XReg(T2),UINT64_C(1)<<rs));
         emit_reg_op(0x21, T2, T0, 1);
     } else {
         emit_mov64(T0, T2); emit_shift_reg(T2, 5, 32, 1);
@@ -300,13 +417,25 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
             if(constant_address)emit_mem(0x8d,1,TARGET,STATE,-1,0,offsetof(struct r4300_core,dcache_words)+(address&UINT32_C(0x1ffc)));
             else {emit_mov(ADDRESS, TARGET); emit_imm_op(4, TARGET, UINT32_C(0x1ffc), 0);emit_mem(0x8d, 1, TARGET, STATE, TARGET, 0, offsetof(struct r4300_core, dcache_words));}
         }
-        emit_movimm(1, T1); emit_movimm(1, T2);
+        emit_movimm(1, T1); emit_movimm(r4300_dcache_hit_cycles(config->compat_issue_clock), T2);
         data_ready = emit_b();
         }
         if(uncached)patch_jump(uncached,out);
         if(config_uncached)patch_jump(config_uncached,out);
         if(mapped_uncached)patch_jump(mapped_uncached,out);
         emit_movimm(0, T1);
+        if(!config->compat_issue_clock) {
+            if(write) {assert(exit->guard_count<16);exit->guards[exit->guard_count++]=emit_b();}
+            else {
+                emit_mem_imm(0x81,0,7,STATE,-1,0,offsetof(struct r4300_core,write_buffer_count),0);memory_guard(exit,5);
+                emit_mem_imm(0x81,0,7,STATE,-1,0,offsetof(struct r4300_core,icache_fill_index),0);memory_guard(exit,5);
+                emit_mem(0x8b,1,T0,STATE,-1,0,offsetof(struct r4300_core,vi));
+                emit_reg_op(0x85,T0,T0,1);auto *no_vi=emit_jump(4);
+                emit_mem(0x8b,0,T0,T0,-1,0,offsetof(struct vi_controller,regs)+VI_STATUS_REG*4);
+                emit_imm_op(4,T0,3,0);emit_imm_op(7,T0,2,0);memory_guard(exit,3);
+                patch_jump(no_vi,out);
+            }
+        }
         if (!write) {
             emit_imm_op(7, T2, UINT32_C(0x00800000), 0);
             unsigned char* larger = emit_jump(3);

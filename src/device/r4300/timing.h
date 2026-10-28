@@ -12,6 +12,11 @@ static osal_force_inline unsigned int r4300_base_cycles(uint32_t op, uint32_t st
 {
     unsigned int fmt = (op >> 21) & 31;
     unsigned int fn = op & 63;
+    /* MTC0/DMTC0 occupy two CPU clocks (Nemu's hardware timing table). */
+    if ((op >> 26) == 0x10 && (fmt == 4 || fmt == 5)) return 2;
+    if ((op >> 26) == 0x10 && fmt>=16 && fn==24) return 2; /* ERET */
+    /* Data Index Load Tag serializes the cache/tag path (six CPU clocks). */
+    if ((op >> 26) == 0x2f && ((op >> 16) & 31) == 5) return 6;
     if ((op >> 26) == 0) {
         switch (fn) {
         case 0x18: case 0x19: return 5;  /* MULT/U */
@@ -74,8 +79,13 @@ static osal_force_inline int r4300_begin_prefetched_instruction_cycles(struct r4
 {
     /* Compatibility timing absorbs interlocks in its reserved clock. Native
      * timing charges the actual interlock, with no unconditional second issue.
-     * Keep explicit compatibility profiles, including DK64's vine sequence. */
+     * Fast retains its compatibility issue envelope. */
     unsigned int issue = r4300_issue_reservation(r4300->compat_issue_clock);
+    /* IF is two instructions ahead of the committing store. Capture the next
+     * line now, but let older instructions retire while its fill is pending.
+     * Stay within this translation; speculative fetch must not raise faults. */
+    if(cache_timing&&!issue&&(pc&31)>=24&&(pc&0xfff)<0xff8&&r4300_access_cached(r4300,pc))
+        r4300_prefetch_access_cycles(r4300,pc+8);
     uint32_t status = r4300->cp0.regs[CP0_STATUS_REG];
     if ((status & CP0_STATUS_MODE_MASK) && !(status & (CP0_STATUS_EXL | CP0_STATUS_ERL))) {
         r4300->instruction_pc.addr = pc;

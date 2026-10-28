@@ -49,7 +49,7 @@ void pif_bootrom_hle_execute(struct r4300_core* r4300)
 
     /* setup CP0 registers */
     cp0_regs[CP0_STATUS_REG] = 0x34000000;
-    cp0_regs[CP0_CONFIG_REG] = 0x0006e463;
+    cp0_regs[CP0_CONFIG_REG] = 0x7006e463;
 
     /* XXX: wait for SP to finish last operation (poll halt) */
 
@@ -83,6 +83,12 @@ void pif_bootrom_hle_execute(struct r4300_core* r4300)
     s7         = (pif24 >> 18) & 0x01;
     reset_type = (pif24 >> 17) & 0x01;
     seed       = (pif24 >>  8) & 0xff;
+    /* RDRAM is already allocated/calibrated by the HLE boot environment.
+     * Advertise that state to IPL3 instead of running its analog calibration
+     * against synthetic RDRAM-device registers. Supply both IPL3 size slots. */
+    r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_RI_REGS + 4*RI_SELECT_REG, 0x14, ~UINT32_C(0));
+    r4300_write_aligned_word(r4300, R4300_KSEG1 + 0x318, (uint32_t)r4300->rdram->dram_size, ~UINT32_C(0));
+    r4300_write_aligned_word(r4300, R4300_KSEG1 + 0x3f0, (uint32_t)r4300->rdram->dram_size, ~UINT32_C(0));
     /* setup s3-s7 registers (needed by OS) */
     r4300_gpregs[19] = rom_type;    /* s3 */
     r4300_gpregs[20] = tv_type;     /* s4 */
@@ -475,7 +481,8 @@ void write_pif_mem(void* opaque, uint32_t address, uint32_t value, uint32_t mask
 
     if ((pif->si->regs[SI_STATUS_REG] & (SI_STATUS_DMA_BUSY | SI_STATUS_IO_BUSY)) == SI_STATUS_DMA_BUSY)
         return;
-    masked_write((uint32_t*)(&pif->base[addr]), fromhl(value), fromhl(mask));
+    /* PIF RAM receives the complete shifted CPU bus word, including SB/SH. */
+    *(uint32_t*)(&pif->base[addr]) = fromhl(value);
 
     /* CPU word writes share one outstanding PIF processing event. Keep every
      * word of a command while avoiding duplicate SI completion events. */

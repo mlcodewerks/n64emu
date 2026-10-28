@@ -21,7 +21,6 @@ struct rdp_counters {
     struct rdp_counter_clear *clears;
     size_t work_count, work_capacity, clear_count, clear_capacity;
 };
-
 static inline void *rdp_counter_reserve(void *p, size_t *capacity, size_t count, size_t stride)
 {
     if (count <= *capacity) return p;

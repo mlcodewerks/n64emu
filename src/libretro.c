@@ -740,7 +740,7 @@ bool retro_unserialize(const void *data, size_t size)
     const unsigned char* header = data;
     unsigned version = ((unsigned)header[8] << 24) | ((unsigned)header[9] << 16) |
                        ((unsigned)header[10] << 8) | header[11];
-    size_t extra = version >= 0x00011b00 ? RDP_TOTAL_EXTRA_STATE_BYTES : version >= 0x00011a00 ? RDP_EXTRA_STATE_BYTES : version >= 0x00010e00 ? 151552 : version >= 0x00010d00 ? 20480 : version >= 0x00010c00 ? 16384 :
+    size_t extra = version >= 0x00012100 ? RDP_TOTAL_EXTRA_STATE_BYTES : version >= 0x00012000 ? RDP_LEGACY_TOTAL_EXTRA_STATE_BYTES + RDP_CPU_V132_STATE_BYTES : version >= 0x00011f00 ? RDP_LEGACY_TOTAL_EXTRA_STATE_BYTES + RDP_CPU_V131_STATE_BYTES : version >= 0x00011b00 ? RDP_LEGACY_TOTAL_EXTRA_STATE_BYTES : version >= 0x00011a00 ? RDP_EXTRA_STATE_BYTES : version >= 0x00010e00 ? 151552 : version >= 0x00010d00 ? 20480 : version >= 0x00010c00 ? 16384 :
                    version >= 0x00010b00 ? 8192 : version >= 0x00010200 ? 4096 : 0;
     if (size < 16788288 + 1024 + 4 + extra) return false;
     return main_stateload(data) != 0;

@@ -454,9 +454,19 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                 int likely_region = branch_region && ((branch_major >= 20 && branch_major <= 23) ||
                     (branch_major == 1 && ((ops[branch_index] >> 16) & 2)));
                 unsigned char* annul = NULL;
+                unsigned char* branch_prefetch_miss = NULL;
                 struct regcache_state annul_registers;
                 struct memory_exit prepare = {0};
                 emit_region_guard(config, i, end - i, base, memory_count, &prepare);
+                if(ram_delay&&i==branch_index&&config->cache_timing&&!config->compat_issue_clock) {
+                    uint32_t pc=config->virtual_pc+i*4,key=(config->physical_page<<12)|1;
+                    emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,icache_tags)+((pc>>5)&511)*4,key);memory_guard(&prepare,5);
+                    if((pc&31)>=24&&(pc&0xfff)<0xff8) {
+                        emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,icache_tags)+(((pc+8)>>5)&511)*4,key);memory_guard(&prepare,5);
+                    }
+                    emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,write_buffer_count),0);memory_guard(&prepare,5);
+                    emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,icache_fill_index),0);memory_guard(&prepare,5);
+                }
                 regcache_begin(ops, i, end);
                 if(ram_delay && i==branch_index)emit_ram_delay_checkpoint(config->virtual_pc+i*4,ops[branch_index],false);
                 emit_mem_imm(0xc7, 0, 0, RSP, -1, 0, 8,0);
@@ -472,10 +482,14 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                     int check_line = j == i || ((config->virtual_pc + j * 4) >> 5) !=
                         ((config->virtual_pc + (j - 1) * 4) >> 5);
                     enum r4300_opcode instruction_op = r4300_get_idec(ops[j])->opcode;
+                    if((check_line||((config->virtual_pc+j*4)&31)>=24)&&!config->compat_issue_clock&&(pending_cycles||pending_fetches)) {
+                        emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;
+                    }
                     if (native_ram_opcode(instruction_op)) {
                         if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                         struct memory_exit* exit = &memory_exits[memory_exit_count++];
                         exit->start = i; exit->index = j; exit->end = end; exit->guard_count = 0;
+                        if(ram_delay&&j==branch_index+1&&branch_prefetch_miss)exit->guards[exit->guard_count++]=branch_prefetch_miss;
                         emit_memory_native(ops[j], j, config, exit, check_line,
                             j == i ? 0 : ops[j - 1], j != i);
                         pipeline_live = 1;
@@ -493,6 +507,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                         if (j == branch_index) {
                             if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                             annul = emit_branch_native(ops[j], config->virtual_pc + j * 4);
+                            emit_branch_prefetch(config,ram_delay?&branch_prefetch_miss:nullptr);
                             annul_registers = regcache;
                             if(ram_delay)emit_mem(0x89,0,R14,RSP,-1,0,16);
                         }
@@ -510,6 +525,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                     patch_jump(annul, out);
                     regcache = annul_registers; regcache_flush();
                     emit_pipeline_clear();
+                      if (!config->compat_issue_clock) emit_addimm(R13, 1, R13);
                     emit_region_commit_native(config, i, end - i - 1, 1);
                     patch_jump(taken, out);
                 }

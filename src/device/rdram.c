@@ -68,6 +68,7 @@ static void read_rdram_dram_corrupted(void* opaque, uint32_t address, uint32_t* 
     uint32_t addr = rdram_dram_address(address);
     size_t module;
 
+    if ((size_t)addr >= rdram->dram_size / 4) { *value = 0; return; }
     *value = rdram->dram[addr];
 
     module = get_module(rdram, address);
@@ -121,7 +122,7 @@ void poweron_rdram(struct rdram* rdram)
         (uint32_t) modules, (uint32_t) rdram->dram_size / (1024*1024));
 
     for (module = 0; module < modules; ++module) {
-        rdram->regs[module][RDRAM_CONFIG_REG] = UINT32_C(0xb5190010);
+        rdram->regs[module][RDRAM_CONFIG_REG] = UINT32_C(0xb4190010);
         rdram->regs[module][RDRAM_DEVICE_ID_REG] = UINT32_C(0x00000000);
         rdram->regs[module][RDRAM_DELAY_REG] = UINT32_C(0x230b0223);
         rdram->regs[module][RDRAM_MODE_REG] = UINT32_C(0xc4c0c0c0);
@@ -208,7 +209,7 @@ void read_rdram_dram(void* opaque, uint32_t address, uint32_t* value)
     struct rdram* rdram = (struct rdram*)opaque;
     uint32_t addr = rdram_dram_address(address);
 
-    *value = rdram->dram[addr];
+    *value = (size_t)addr < rdram->dram_size / 4 ? rdram->dram[addr] : 0;
 }
 
 void write_rdram_dram(void* opaque, uint32_t address, uint32_t value, uint32_t mask)
@@ -216,5 +217,6 @@ void write_rdram_dram(void* opaque, uint32_t address, uint32_t value, uint32_t m
     struct rdram* rdram = (struct rdram*)opaque;
     uint32_t addr = rdram_dram_address(address);
 
-    masked_write(&rdram->dram[addr], value, mask);
+    if ((size_t)addr < rdram->dram_size / 4)
+        masked_write(&rdram->dram[addr], value, mask);
 }

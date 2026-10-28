@@ -19,6 +19,7 @@
 
 static void read_open_bus(void* opaque, uint32_t address, uint32_t* value)
 {
+    if (address < 0x03f00000u) { *value = 0; return; }
     *value = (address & 0xffff);
     *value |= (*value << 16);
 }
@@ -158,6 +159,7 @@ void init_device(struct device* dev,
 
     init_r4300(&dev->r4300, &dev->mem, &dev->mi, &dev->rdram, interrupt_handlers,
             emumode, no_compiled_jump, randomize_interrupt, start_address);
+    dev->r4300.vi=&dev->vi;
     init_rdp(&dev->dp, &dev->sp, &dev->mi, &dev->mem, &dev->rdram, &dev->r4300);
     init_rsp(&dev->sp, mem_base_u32(base, MM_RSP_MEM), &dev->mi, &dev->dp, &dev->ri);
     init_ai(&dev->ai, &dev->mi, &dev->ri, &dev->vi, aout, iaout);

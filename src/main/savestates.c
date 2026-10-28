@@ -42,7 +42,7 @@ _Static_assert(RDP_RASTER_STATE_OFFSET + 192 <= 20480,
     "RDP raster state overlaps optional HLE state");
 
 static const char* savestate_magic = "M64+SAVE";
-static const int savestate_latest_version = 0x00011e00;  /* 1.30: Fast3D walker/projection state */
+static const int savestate_latest_version = 0x00012100; /* 1.33: native pipeline and pending fetch deadlines */
 
 struct savestate_work {
     char *data;
@@ -918,6 +918,53 @@ int core_state_load(struct device* dev, const void *data)
     }
     rsp_rebase_dma(&dev->sp);
 
+    dev->r4300.cp2_latch=0;
+    memset(dev->r4300.icache_shadow_tags,0,sizeof(dev->r4300.icache_shadow_tags));
+    memset(dev->r4300.icache_shadow_words,0,sizeof(dev->r4300.icache_shadow_words));
+    memset(dev->r4300.write_buffer_end,0,sizeof(dev->r4300.write_buffer_end));
+    dev->r4300.write_buffer_count=0;
+    dev->r4300.count_write_clock=0;dev->r4300.count_write_value=dev->r4300.count_write_valid=0;
+    dev->r4300.prefetch_pc=dev->r4300.prefetch_op=dev->r4300.prefetch_valid=0;
+    dev->r4300.retired_ops=dev->r4300.random_epoch=0;
+    dev->r4300.random_value=dev->r4300.cp0.regs[CP0_RANDOM_REG]&63;
+    dev->r4300.random_bound=dev->r4300.cp0.regs[CP0_WIRED_REG]&63;dev->r4300.random_wired_count=0;
+    dev->r4300.irq_writeback_pending=0;dev->r4300.irq_writeback_deadline=0;
+    dev->r4300.icache_fill_end=0;dev->r4300.icache_fill_index=0;
+    dev->r4300.branch_target=dev->r4300.branch_sequence=0;
+    memset(dev->r4300.random_wired_deadline,0,sizeof(dev->r4300.random_wired_deadline));memset(dev->r4300.random_wired_value,0,sizeof(dev->r4300.random_wired_value));
+    if(version>=0x00011f00) {
+        curr=(unsigned char *)data+16788288+sizeof(queue)+4+RDP_CPU_EXTRA_STATE_OFFSET;
+        dev->r4300.cp2_latch=GETDATA(curr,uint64_t);
+        COPYARRAY(dev->r4300.icache_shadow_tags,curr,uint32_t,512);
+        COPYARRAY(dev->r4300.icache_shadow_words,curr,uint32_t,4096);
+        if(version>=0x00012000) {
+            COPYARRAY(dev->r4300.write_buffer_end,curr,uint64_t,4);
+            dev->r4300.write_buffer_count=GETDATA(curr,uint32_t);
+            dev->r4300.count_write_clock=GETDATA(curr,uint64_t);
+            dev->r4300.count_write_value=GETDATA(curr,uint32_t);
+            dev->r4300.count_write_valid=GETDATA(curr,uint32_t)&1;
+            dev->r4300.prefetch_pc=GETDATA(curr,uint32_t);
+            dev->r4300.prefetch_op=GETDATA(curr,uint32_t);
+            dev->r4300.prefetch_valid=GETDATA(curr,uint32_t)&1;
+            dev->r4300.retired_ops=GETDATA(curr,uint64_t);
+            dev->r4300.random_epoch=GETDATA(curr,uint64_t);
+            COPYARRAY(dev->r4300.random_wired_deadline,curr,uint64_t,2);
+            dev->r4300.random_value=GETDATA(curr,uint32_t)&63;
+            dev->r4300.random_bound=GETDATA(curr,uint32_t)&63;
+            COPYARRAY(dev->r4300.random_wired_value,curr,uint32_t,2);
+            dev->r4300.random_wired_count=GETDATA(curr,uint32_t);
+            dev->r4300.irq_writeback_deadline=GETDATA(curr,uint64_t);
+            dev->r4300.irq_writeback_pending=GETDATA(curr,uint32_t)&1;
+            if(dev->r4300.random_wired_count>2){free(savestateData);return 0;}
+            if(dev->r4300.write_buffer_count>4){free(savestateData);return 0;}
+        }
+        if(version>=0x00012100){
+            dev->r4300.icache_fill_end=GETDATA(curr,uint64_t);
+            dev->r4300.icache_fill_index=GETDATA(curr,uint32_t);
+            if(dev->r4300.icache_fill_index>512){free(savestateData);return 0;}
+        }
+    }
+
     free(savestateData);
     return 1;
 }
@@ -1401,6 +1448,29 @@ int core_state_save(const struct device* dev, void *data)
     if (!rdp_hle_frozen_save(&dev->dp,
             save->data + 16788288 + sizeof(queue) + 4 + RDP_HLE_FROZEN_STATE_OFFSET,
             RDP_HLE_FROZEN_STATE_BYTES)) { free(save->data); free(save); return 0; }
+    curr=save->data+16788288+sizeof(queue)+4+RDP_CPU_EXTRA_STATE_OFFSET;
+    PUTDATA(curr,uint64_t,dev->r4300.cp2_latch);
+    PUTARRAY(dev->r4300.icache_shadow_tags,curr,uint32_t,512);
+    PUTARRAY(dev->r4300.icache_shadow_words,curr,uint32_t,4096);
+    PUTARRAY(dev->r4300.write_buffer_end,curr,uint64_t,4);
+    PUTDATA(curr,uint32_t,dev->r4300.write_buffer_count);
+    PUTDATA(curr,uint64_t,dev->r4300.count_write_clock);
+    PUTDATA(curr,uint32_t,dev->r4300.count_write_value);
+    PUTDATA(curr,uint32_t,dev->r4300.count_write_valid);
+    PUTDATA(curr,uint32_t,dev->r4300.prefetch_pc);
+    PUTDATA(curr,uint32_t,dev->r4300.prefetch_op);
+    PUTDATA(curr,uint32_t,dev->r4300.prefetch_valid);
+    PUTDATA(curr,uint64_t,dev->r4300.retired_ops);
+    PUTDATA(curr,uint64_t,dev->r4300.random_epoch);
+    PUTARRAY(dev->r4300.random_wired_deadline,curr,uint64_t,2);
+    PUTDATA(curr,uint32_t,dev->r4300.random_value);
+    PUTDATA(curr,uint32_t,dev->r4300.random_bound);
+    PUTARRAY(dev->r4300.random_wired_value,curr,uint32_t,2);
+    PUTDATA(curr,uint32_t,dev->r4300.random_wired_count);
+    PUTDATA(curr,uint64_t,dev->r4300.irq_writeback_deadline);
+    PUTDATA(curr,uint32_t,dev->r4300.irq_writeback_pending);
+    PUTDATA(curr,uint64_t,dev->r4300.icache_fill_end);
+    PUTDATA(curr,uint32_t,dev->r4300.icache_fill_index);
     memcpy(save->mempointer, save->data, save->size);
     free(save->data);
     free(save);

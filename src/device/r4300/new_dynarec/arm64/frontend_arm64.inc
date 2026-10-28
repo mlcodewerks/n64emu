@@ -132,6 +132,9 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                     int check_line = j == i || ((config->virtual_pc + j * 4) >> 5) !=
                         ((config->virtual_pc + (j - 1) * 4) >> 5);
                     enum r4300_opcode instruction_op = r4300_get_idec(ops[j])->opcode;
+                    if((check_line||((config->virtual_pc+j*4)&31)>=24)&&!config->compat_issue_clock&&(pending_cycles||pending_fetches)) {
+                        emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;
+                    }
                     if (native_ram_opcode(instruction_op)) {
                         if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                         struct memory_exit* exit = &memory_exits[memory_exit_count++];
@@ -153,6 +156,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                         if (j == branch_index) {
                             if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                             annul = emit_branch_native(ops[j], config->virtual_pc + j * 4);
+                            emit_branch_prefetch(config);
                             annul_registers = regcache;
                         }
                         else if (!regcache_optimize(ops[j])) emit_native(ops[j], instruction_op);
@@ -168,6 +172,7 @@ static ari64_entry compile_block(struct ari64* s, void* block,
                     patch_jump(annul, out);
                     regcache = annul_registers; regcache_flush();
                     emit_pipeline_clear();
+                      if (!config->compat_issue_clock) emit_addimm(CLOCKS, 1, CLOCKS);
                     emit_region_commit_native(config, i, end - i - 1, 1);
                     patch_jump(taken, out);
                 }

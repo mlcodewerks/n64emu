@@ -186,7 +186,7 @@ struct r4300_jit_state
     struct ari64* jit;
     /* Linked entries are derived from direct/indirect edge counts, so a hot
      * native tail updates one counter instead of three. Public totals agree. */
-    uint64_t jit_dispatch_entries, jit_commits;
+    uint64_t jit_dispatch_entries;
     uint64_t jit_fast_commits, jit_indirect_links;
     uint64_t jit_direct_links;
     uint64_t fetch_generation;
@@ -799,12 +799,31 @@ static CI_COLD_NOINLINE void ci_execute_fast_op(struct r4300_core* r4300, uint8_
     }
 }
 
+/* Decode a complete page image when any of its I-cache lines have diverged
+ * from RAM. This also keeps cross-line lookahead and polling recognition safe. */
+static const uint32_t *ci_instruction_source(struct r4300_core *r,uint32_t pc,
+    uint32_t physical_page,uint32_t image[1024])
+{
+    const uint32_t *ram=mem_base_u32(r->mem->base,physical_page<<12);
+    unsigned copied=0;
+    if(r->cache_timing && r4300_access_cached(r,pc)) {
+        unsigned first=((pc>>12)&3)*128;
+        uint32_t key=(physical_page<<12)|1;
+        for(unsigned i=first;i<first+128;i++)
+            if(r->icache_tags[i]==key && r->icache_shadow_tags[i]==key) {
+                if(!copied){memcpy(image,ram,4096);copied=1;}
+                memcpy(image+(i&127)*8,r->icache_shadow_words[i],32);
+            }
+    }
+    return (copied?image:ram)+((pc&4095)>>2);
+}
 static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r4300, uint32_t pc, uint32_t physical_page)
 {
     struct r4300_jit_state* state = r4300->jit;
     struct cached_set* set = &state->sets[ci_hash_pc(pc) & state->set_mask];
     struct cached_block* block = &set->ways[set->next_replace];
-    uint32_t* op_ptr;
+    const uint32_t* op_ptr;
+    uint32_t instruction_image[1024];
     unsigned int max_count, page_count;
     unsigned int i;
 
@@ -833,6 +852,7 @@ static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r
     op_ptr = fast_mem_access(r4300, pc);
     if (CI_UNLIKELY(op_ptr == NULL))
         return NULL;
+    op_ptr=ci_instruction_source(r4300,pc,physical_page,instruction_image);
 
     page_count = (CI_PAGE_SIZE - (pc & (CI_PAGE_SIZE - 1))) >> 2;
     max_count = page_count;
@@ -952,7 +972,7 @@ static CI_FORCE_INLINE int ci_mapping_matches(struct r4300_core* r4300, const st
     return mapped != 0 && ((mapped & UINT32_C(0x1fffffff)) >> CI_PAGE_SHIFT) == block->physical_page;
 }
 
-static int ci_verify_dirty_block(struct r4300_core* r, struct cached_block* block,
+static CI_COLD_NOINLINE int ci_verify_dirty_block(struct r4300_core* r, struct cached_block* block,
     uint32_t pc, uint32_t physical_page)
 {
     if (!block->valid || block->ram_poll ||
@@ -960,6 +980,8 @@ static int ci_verify_dirty_block(struct r4300_core* r, struct cached_block* bloc
     if (block->epoch == r->jit->epoch &&
         block->page_generation == r->jit->page_generation[physical_page]) return 1;
     const uint32_t* source = fast_mem_access(r, pc);
+    uint32_t instruction_image[1024];
+    if(source)source=ci_instruction_source(r,pc,physical_page,instruction_image);
     if (!source || memcmp(source, block->source_words, block->source_count * sizeof(uint32_t))) {
 #ifdef HAVE_ARI64
         ++r->jit->jit_verifications[1];
@@ -1125,6 +1147,7 @@ int r4300_jit_init(struct r4300_core* r4300)
 
     r4300->jit->epoch = 1;
     r4300->cached_code_pages = r4300->jit->page_cached;
+    r4300->code_page_generation = r4300->jit->page_generation;
 #ifdef HAVE_ARI64
     if (r4300->emumode == EMUMODE_DYNAREC) {
         r4300->jit->jit = ari64_create();
@@ -1147,6 +1170,7 @@ void r4300_jit_destroy(struct r4300_core* r4300)
     free(r4300->jit);
     r4300->jit = NULL;
     r4300->cached_code_pages = NULL;
+    r4300->code_page_generation = NULL;
     r4300->execute_one = NULL;
 }
 void r4300_jit_cache_stats(struct r4300_core* r, uint64_t stats[2])
@@ -1200,8 +1224,18 @@ void r4300_jit_invalidate(struct r4300_core* r4300, uint32_t address, size_t siz
     for (page_address = first; page_address <= last; page_address += CI_PAGE_SIZE)
     {
         uint32_t physical_page;
-        if (ci_virtual_to_physical_page_noexcept(r4300, (uint32_t)page_address, &physical_page))
+        if (ci_virtual_to_physical_page_noexcept(r4300, (uint32_t)page_address, &physical_page)) {
+            if(r4300->cache_timing && ci_page_is_cached(state,physical_page)) {
+                uint32_t key=(physical_page<<12)|1;
+                for(unsigned i=0;i<512;i++)
+                    if(r4300->icache_tags[i]==key && r4300->icache_shadow_tags[i]!=key) {
+                        const uint32_t *source=mem_base_u32(r4300->mem->base,(physical_page<<12)|((i&127)*32));
+                        memcpy(r4300->icache_shadow_words[i],source,32);
+                        r4300->icache_shadow_tags[i]=key;
+                    }
+            }
             ci_bump_page(state, physical_page);
+        }
 
         if (page_address + CI_PAGE_SIZE > UINT32_MAX)
             break;
@@ -1264,6 +1298,7 @@ static CI_FORCE_INLINE void ci_execute_cached_instruction(struct r4300_core* r43
                                                           uint8_t fast_op,
                                                           uint32_t pc)
 {
+    ++r4300->retired_ops;
     if (!r4300_begin_instruction(r4300, op, pc)) return;
     if (CI_LIKELY(fast_op != CI_FAST_NONE))
     {
@@ -1335,32 +1370,34 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
         if (phase == 11) {
             r->instruction_pc.addr = pc;
             if (!check_cop1_unusable(r)) return 1;
-            r->regs[0] = 0; ++state->jit_commits;
+            r->regs[0] = 0; ++r->retired_ops;
             if (r->cp0.cycle_count >= 0) gen_interrupt(r);
             return 0;
         }
         r->instruction_pc.addr = pc;
         if (block->has_delay && i + 1 == block->count) {
+            /* The branch itself precedes the precisely executed slot. */
             state->pending_delay_handler = block->delay_handler;
             state->pending_delay_op = block->delay_op;
             state->pending_delay_fast_op = block->delay_fast_op;
             state->pending_delay_pc = pc + 4;
             state->pending_delay_valid = 1;
         }
+        ++r->retired_ops;
         if (block->instructions[i].fp_kind == 1) r4300_ops_fpu_arithmetic(r, op);
         else if (block->instructions[i].fp_kind == 2) r4300_ops_fpu_compare(r, op);
         else if (block->instructions[i].fp_kind == 3) interp_fpu_move(r, op);
         else if (!interp_word_memory(r, op) && !interp_equal_branch(r, op, block->idle_end, ci_execute_one))
             block->handlers[i](r, op);
         state->pending_delay_valid = 0;
-    } else r->instruction_pc.addr = pc + 4;
+    } else {++r->retired_ops;r->instruction_pc.addr = pc + 4;}
     r->regs[0] = 0;
-    ++state->jit_commits;
+    r4300_finish_irq_writeback(r);
     if (!r->delay_slot && r->cp0.cycle_count >= 0) {
         gen_interrupt(r);
         return 0;
     }
-    if (breakloop || r->instruction_pc.addr != pc + 4) return 0;
+    if (breakloop || r->prefetch_valid || r->irq_writeback_pending || r->instruction_pc.addr != pc + 4) return 0;
     return block->epoch == state->epoch &&
            block->page_generation == state->page_generation[block->physical_page] &&
            ci_mapping_matches(r, block);
@@ -1368,7 +1405,7 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
 
 static ari64_entry ci_jit_link(struct r4300_core* r)
 {
-    if (breakloop || r->delay_slot || r->stop || (r->instruction_pc.addr & 3)) return NULL;
+    if (breakloop || r->prefetch_valid || r->irq_writeback_pending || r->delay_slot || r->stop || (r->instruction_pc.addr & 3)) return NULL;
     struct r4300_jit_state* state = r->jit;
     uint32_t pc = r->instruction_pc.addr;
     /* Do not fetch, compile, run a polling shortcut or recycle an arena from
@@ -1423,7 +1460,7 @@ static int ci_jit_fpu_finish(struct r4300_core* r, uint32_t op, uint64_t bits, u
     if ((op & 63) >= 48) r4300_ops_fpu_compare_finish(r, (int)(bits & 1));
     else r4300_ops_fpu_finish(r, op, bits, flags);
     r->regs[0] = 0;
-    ++r->jit->jit_commits;
+    ++r->retired_ops;
     ++r->jit->jit_fast_commits;
     if (r->cp0.cycle_count >= 0) { gen_interrupt(r); return 0; }
     return !breakloop && r->instruction_pc.addr == pc + 4;
@@ -1431,6 +1468,7 @@ static int ci_jit_fpu_finish(struct r4300_core* r, uint32_t op, uint64_t bits, u
 
 static void ci_execute_jit(struct r4300_core* r, int one)
 {
+    if(r->prefetch_valid||r->irq_writeback_pending){r4300_ops_execute_one(r);return;}
     /* A delay slot remains one precise instruction, never a nested native
      * compilation that could recycle the caller's executable arena. */
     if (r->delay_slot) { ci_execute_one(r); return; }
@@ -1458,7 +1496,7 @@ static void ci_execute_jit(struct r4300_core* r, int one)
         unsigned count = one ? 1 : block->count;
         for (unsigned i = 0; i < count; ++i) ops[i] = block->instructions[i].op;
         struct ari64_config config = {block->virtual_pc, block->physical_page, r->cache_timing, one ? NULL : ci_jit_link,
-            block->delay_op, !one && block->has_delay, block->idle_end, &state->jit_commits, &state->jit_fast_commits,
+            block->delay_op, !one && block->has_delay, block->idle_end, &r->retired_ops, &state->jit_fast_commits,
             ci_jit_fpu_prepare, ci_jit_fpu_finish, one ? NULL : &block->native_chain_entry};
         config.compat_issue_clock = r->compat_issue_clock;
         config.links = one ? NULL : block->native_links;
@@ -1492,7 +1530,7 @@ void r4300_jit_stats(struct r4300_core* r, uint64_t stats[4])
     struct r4300_jit_state* s = r->jit;
     ari64_stats(s ? s->jit : NULL, &stats[0], &stats[1]);
     stats[2] = s ? s->jit_dispatch_entries + s->jit_indirect_links + s->jit_direct_links : 0;
-    stats[3] = s ? s->jit_commits : 0;
+    stats[3] = s ? r->retired_ops : 0;
     if (s) core_log(CORE_LOG_INFO, "Ari64 cache: new=%llu recycled=%llu verified=%llu changed=%llu replaced=%llu",
         (unsigned long long)s->jit_compile_misses[0], (unsigned long long)s->jit_compile_misses[1],
         (unsigned long long)s->jit_verifications[0], (unsigned long long)s->jit_verifications[1], (unsigned long long)s->jit_replacements);

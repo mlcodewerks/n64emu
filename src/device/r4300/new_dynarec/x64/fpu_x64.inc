@@ -65,8 +65,11 @@ static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
         }
     }
     unsigned latency = fn >= 48 || fn == 6 ? 0 : r4300_base_cycles(instruction,CP0_STATUS_CU1) - 1;
+    bool dynamic_latency=!config->compat_issue_clock && fn<48 && fn!=6;
+    if(dynamic_latency)emit_mem(0x8b,0,R13,RSP,-1,0,52);
     emit_mem(0x8b,0,RAX,R12,-1,0,offsetof(struct r4300_core,cp0.count_phase));
-    emit_addimm(RAX,latency,RAX); emit_shift_reg(RAX,5,1,0);
+    if(dynamic_latency)emit_reg_op(0x01,R13,RAX,0);else emit_addimm(RAX,latency,RAX);
+    emit_shift_reg(RAX,5,1,0);
     emit_mem(0x8b,1,RDX,R12,-1,0,offsetof(struct r4300_core,cp0.cycle_count));
     emit_reg_op(0x01,RAX,RDX,1); emit_reg_op(0x85,RDX,RDX,1); slow[slow_count++] = emit_jump(9);
     if (fn >= 48) {
@@ -81,7 +84,7 @@ static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
         }
         emit_mem(0x89,1,R8,R12,-1,0,offsetof(struct r4300_core,cp1.regs) + ((instruction >> 6) & 31) * sizeof(cp1_reg));
     }
-    emit_movimm(latency,R13);
+    if(!dynamic_latency)emit_movimm(latency,R13);
     emit_mem_imm(0xc7,0,0,RSP,-1,0,8,0);
     emit_region_commit_native(config,index,1,0);
     emit_movimm64((intptr_t)&breakloop,R11);

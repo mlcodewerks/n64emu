@@ -63,6 +63,14 @@ static osal_force_inline uint64_t r4300_pipeline_fpr_operand(uint32_t op,
     return r4300_pipeline_fpr(r4300_pipeline_fpr_index(reg, fr));
 }
 
+static osal_force_inline uint32_t r4300_pipeline_ldi_gprs(uint32_t op)
+{
+    unsigned rs=(op>>21)&31,rt=(op>>16)&31,major=op>>26;
+    if(major==0x11)return rs<=6 ? (uint32_t)r4300_pipeline_gpr(rt) : 0;
+    if(r4300_pipeline_is_float_instruction(op))return (uint32_t)r4300_pipeline_gpr(rs);
+    return (uint32_t)(r4300_pipeline_gpr(rs)|r4300_pipeline_gpr(rt));
+}
+
 /* The hardware LDI detector is intentionally imprecise.  For integer loads it
  * compares the load's rt against the following non-COP1 instruction's raw
  * rs/rt fields, even when a field is not actually a source (e.g. LUI, or a
@@ -76,8 +84,7 @@ static osal_force_inline uint64_t r4300_pipeline_ldi_candidates(uint32_t op,
     unsigned int major = op >> 26;
 
     if ((load_mask & UINT64_C(0xffffffff00000000)) == 0) {
-        if (r4300_pipeline_is_float_instruction(op)) return 0;
-        return r4300_pipeline_gpr(rs) | r4300_pipeline_gpr(rt);
+        return r4300_pipeline_ldi_gprs(op);
     }
 
     if (!r4300_pipeline_is_float_instruction(op)) return 0;
@@ -88,7 +95,9 @@ static osal_force_inline uint64_t r4300_pipeline_ldi_candidates(uint32_t op,
         if (rs == 8) return 0;
         if (rs >= 16)
             return r4300_pipeline_fpr(r4300_pipeline_fpr_index((op >> 11) & 31, fr)) |
-                   r4300_pipeline_fpr(r4300_pipeline_fpr_index(rt, fr));
+                   /* The divider reads its ft divisor one clock later, so
+                    * a preceding MTC1/DMTC1 load needs no extra ft LDI. */
+                   ((op&63)==3 ? 0 : r4300_pipeline_fpr(r4300_pipeline_fpr_index(rt, fr)));
         if (rs <= 6)
             return r4300_pipeline_fpr(r4300_pipeline_fpr_index((op >> 11) & 31, fr));
         return 0;
@@ -106,8 +115,10 @@ static osal_force_inline uint64_t r4300_pipeline_fpu_reads(uint32_t op,
 {
     unsigned int rs = (op >> 21) & 31;
     if ((op >> 26) != 0x11 || rs < 16) return 0;
+    /* The forwarding detector also compares raw ft for unary operations. */
     return r4300_pipeline_fpr_operand(op, d->u53[1], fr) |
-           r4300_pipeline_fpr_operand(op, d->u53[2], fr);
+           r4300_pipeline_fpr_operand(op, d->u53[2], fr) |
+           r4300_pipeline_fpr(r4300_pipeline_fpr_index((op>>16)&31,fr));
 }
 
 static osal_force_inline uint64_t r4300_pipeline_fpu_result(uint32_t op,
@@ -139,6 +150,9 @@ static osal_force_inline unsigned int r4300_pipeline_cycles(struct r4300_core* r
     unsigned int stalls = 0;
 
     switch (d->opcode) {
+    case R4300_OP_MFC0: case R4300_OP_DMFC0:
+        load = r4300_pipeline_gpr(rt);
+        break;
     case R4300_OP_LB: case R4300_OP_LBU: case R4300_OP_LH: case R4300_OP_LHU:
     case R4300_OP_LW: case R4300_OP_LWU: case R4300_OP_LD:
     case R4300_OP_LL: case R4300_OP_LLD:

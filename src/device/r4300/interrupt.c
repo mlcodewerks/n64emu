@@ -319,6 +319,7 @@ void r4300_check_interrupt(struct r4300_core* r4300, uint32_t cause_ip, int set_
     else {
         cp0_regs[CP0_CAUSE_REG] &= ~cause_ip;
     }
+    if(r4300->irq_writeback_pending)return;
 
     if ((cp0_regs[CP0_STATUS_REG] & (CP0_STATUS_IE | CP0_STATUS_EXL | CP0_STATUS_ERL)) != CP0_STATUS_IE) {
         return;
@@ -350,6 +351,7 @@ void raise_maskable_interrupt(struct r4300_core* r4300, uint32_t cause_ip)
 {
     uint32_t* cp0_regs = r4300_cp0_regs(&r4300->cp0);
     cp0_regs[CP0_CAUSE_REG] |= cause_ip;
+    if(r4300->irq_writeback_pending)return;
 
     if (!(cp0_regs[CP0_STATUS_REG] & cp0_regs[CP0_CAUSE_REG] & UINT32_C(0xff00))) {
         return;
@@ -361,6 +363,13 @@ void raise_maskable_interrupt(struct r4300_core* r4300, uint32_t cause_ip)
 
     cp0_regs[CP0_CAUSE_REG] &= ~UINT32_C(0x3000007c);
     exception_general(r4300);
+}
+
+void r4300_finish_irq_writeback(struct r4300_core* r)
+{
+    if(!r->irq_writeback_pending||r->delay_slot||r->retired_ops<r->irq_writeback_deadline)return;
+    r->irq_writeback_pending=0;
+    raise_maskable_interrupt(r,0);
 }
 
 void compare_int_handler(void* opaque)

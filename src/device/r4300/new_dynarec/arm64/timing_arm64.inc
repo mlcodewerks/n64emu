@@ -5,10 +5,12 @@ static void emit_pending_clocks(const struct ari64_config* config,unsigned base,
     if(base)emit_addimm(CLOCKS,base,CLOCKS);
     if(!config->cache_timing || !fetches)return;
     if((config->virtual_pc&UINT32_C(0xe0000000))==UINT32_C(0xa0000000)) {
+        emit_write_buffer_drain_native(config,base);
         emit_addimm(CLOCKS,40*fetches,CLOCKS);return;
     }
     emit_mem_imm(0xf7,0,0,SP,-1,0,fetch_flag,2);
     auto *cached=emit_jump(5);
+    emit_write_buffer_drain_native(config,base);
     emit_addimm(CLOCKS,40*fetches,CLOCKS);patch_jump(cached,out);
 }
 

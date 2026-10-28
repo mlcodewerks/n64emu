@@ -3,12 +3,14 @@
 #include "r4300_core.h"
 #ifdef __LIBRETRO__
 #include "renderer_options.h"
+#include "main/rom.h"
 #endif
 #include "jit_runtime.h"
 #if defined(COUNT_INSTR)
 #include "instr_counters.h"
 #endif
 #include "cpu_ops.h"
+#include "timing.h"
 
 #include "core/log.h"
 #include "core/types.h"
@@ -29,6 +31,7 @@ void init_r4300(struct r4300_core* r4300, struct memory* mem, struct mi_controll
 
     r4300->mem = mem;
     r4300->mi = mi;
+    r4300->vi = NULL;
     r4300->rdram = rdram;
     r4300->randomize_interrupt = randomize_interrupt;
     r4300->start_address = start_address;
@@ -45,6 +48,7 @@ void poweron_r4300(struct r4300_core* r4300)
     *r4300_mult_hi(r4300) = 0;
     *r4300_mult_lo(r4300) = 0;
     r4300->llbit = 0;
+    r4300->cp2_latch = 0;
 
     *r4300_pc_struct(r4300) = NULL;
     r4300->delay_slot = 0;
@@ -55,13 +59,29 @@ void poweron_r4300(struct r4300_core* r4300)
     r4300_pipeline_reset(r4300);
     r4300_itlb_reset(r4300);
     memset(r4300->icache_tags, 0, sizeof(r4300->icache_tags));
+    memset(r4300->icache_shadow_tags, 0, sizeof(r4300->icache_shadow_tags));
+    memset(r4300->icache_shadow_words, 0, sizeof(r4300->icache_shadow_words));
     memset(r4300->dcache_tags, 0, sizeof(r4300->dcache_tags));
     memset(r4300->dcache_words, 0, sizeof(r4300->dcache_words));
+    memset(r4300->write_buffer_end,0,sizeof(r4300->write_buffer_end));
+    r4300->write_buffer_count=0;
+    r4300->count_write_valid=0;r4300->count_write_clock=0;r4300->count_write_value=0;
+    r4300->prefetch_pc=r4300->prefetch_op=r4300->prefetch_valid=0;
+    r4300->retired_ops=r4300->random_epoch=0;r4300->random_value=31;r4300->random_bound=0;r4300->random_wired_count=0;
+    r4300->branch_target=r4300->branch_sequence=0;
+    r4300->irq_writeback_deadline=0;r4300->irq_writeback_pending=0;
+    r4300->icache_fill_end=0;r4300->icache_fill_index=0;
+    memset(r4300->random_wired_deadline,0,sizeof(r4300->random_wired_deadline));memset(r4300->random_wired_value,0,sizeof(r4300->random_wired_value));
     r4300->cache_timing = 1;
     r4300->compat_issue_clock = 1;
 #ifdef __LIBRETRO__
     r4300->cache_timing = renderer_settings.per_cycle_timing ? 1 :
         renderer_settings.fast_cpu_timing ? 2 : 0;
+    /* DK64's opening vine needs the compatibility issue envelope until the
+     * missing shared timing behavior is understood. Keep other ROMs on the
+     * measured rules, and preserve Fast's existing envelope. */
+    r4300->compat_issue_clock = !renderer_settings.per_cycle_timing ||
+        strcmp(ROM_PARAMS.headername, "DONKEY KONG 64") == 0;
 #endif
 
     r4300_jit_invalidate(r4300, 0, 0);
@@ -119,6 +139,7 @@ uint32_t *fast_mem_access(struct r4300_core* r4300, uint32_t address)
     /* This code is performance critical for precise instruction helpers.
      * Removing error checking saves some time, but the emulator may crash. */
 
+    uint32_t virtual_address = address;
     if ((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)) {
         address = virtual_to_physical_address(r4300, address, 2);
         if (address == 0) // TLB exception
@@ -126,6 +147,13 @@ uint32_t *fast_mem_access(struct r4300_core* r4300, uint32_t address)
     }
 
     address &= UINT32_C(0x1ffffffc);
+
+    if (r4300->cache_timing && r4300_access_cached(r4300,virtual_address)) {
+        unsigned index=(virtual_address>>5)&511;
+        uint32_t key=(address&0x1ffff000u)|1;
+        if(r4300->icache_tags[index]==key && r4300->icache_shadow_tags[index]==key)
+            return &r4300->icache_shadow_words[index][(address>>2)&7];
+    }
 
     return mem_base_u32(r4300->mem->base, address);
 }

@@ -42,13 +42,15 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma, int64_t sta
     if (dma->dir == SP_DMA_READ)
     {
         for(j=0; j<count; j++) {
+            rsp_dma_write_memory(sp, dramaddr, length);
             for(i=0; i<length; i++) {
-                dram[(dramaddr^S8) & 0x7fffff] = spmem[(memaddr^S8) & 0xfff];
+                unsigned address = (dramaddr ^ S8) & 0xffffff;
+                if (address < sp->ri->rdram->dram_size)
+                    dram[address] = spmem[(memaddr^S8) & 0xfff];
                 memaddr++;
                 dramaddr++;
             }
 
-            rsp_dma_write_memory(sp, dramaddr - length, length);
             if (j + 1 < count) dramaddr+=skip;
         }
 
@@ -62,7 +64,8 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma, int64_t sta
             rsp_dma_read_memory(sp, dramaddr, length);
 
             for(i=0; i<length; i++) {
-                spmem[(memaddr^S8) & 0xfff] = dram[(dramaddr^S8) & 0x7fffff];
+                unsigned address = (dramaddr ^ S8) & 0xffffff;
+                spmem[(memaddr^S8) & 0xfff] = address < sp->ri->rdram->dram_size ? dram[address] : 0;
                 memaddr++;
                 dramaddr++;
             }
@@ -229,7 +232,8 @@ void write_rsp_mem(void* opaque, uint32_t address, uint32_t value, uint32_t mask
     struct rsp_core* sp = (struct rsp_core*)opaque;
     uint32_t addr = rsp_mem_address(address);
 
-    masked_write(&sp->mem[addr], value, mask);
+    /* The SP memory bus ignores CPU byte enables. */
+    sp->mem[addr] = value;
 }
 
 
@@ -364,7 +368,7 @@ static void do_SP_Task_at(struct rsp_core* sp, int64_t start_clock, uint32_t ove
     if (sp->cycle_timing) sp->rsp_completion_status = 0;
     sp->rsp_task_locked = 0;
     sp->mi->r4300->cp0.interrupt_unsafe_state &= ~INTR_UNSAFE_RSP;
-    if ((sp->regs[SP_STATUS_REG] & (SP_STATUS_HALT | SP_STATUS_BROKE)) == 0)
+    if ((sp->regs[SP_STATUS_REG] & SP_STATUS_HALT) == 0)
     {
         sp->rsp_task_locked = 1;
         sp->mi->r4300->cp0.interrupt_unsafe_state |= INTR_UNSAFE_RSP;
@@ -399,7 +403,10 @@ static void do_SP_Task_at(struct rsp_core* sp, int64_t start_clock, uint32_t ove
             signal_rcp_interrupt(sp->mi, MI_INTR_SP);
         }
     }
-    sp->regs[SP_STATUS_REG] &= ~(SP_STATUS_BROKE | SP_STATUS_HALT);
+    /* BROKE is sticky and does not prevent CLR_HALT from restarting the SP.
+     * Hide only newly produced completion bits until their guest deadline. */
+    sp->regs[SP_STATUS_REG] = (sp->regs[SP_STATUS_REG] & ~(SP_STATUS_BROKE | SP_STATUS_HALT)) |
+        (previous_status & SP_STATUS_BROKE);
 
     struct cp0* cp0 = &sp->mi->r4300->cp0;
     sp->clock_overhang = sp->cycle_timing ? rsp_count_overhang(executed_cycles, overhang) : 0;

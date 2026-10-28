@@ -33,6 +33,7 @@ void reset_hard_handler(void* opaque);
 
 void compare_int_handler(void* opaque);
 void check_int_handler(void* opaque);
+void r4300_finish_irq_writeback(struct r4300_core*);
 void nmi_int_handler(void* opaque);
 
 #define VI_INT      0x001

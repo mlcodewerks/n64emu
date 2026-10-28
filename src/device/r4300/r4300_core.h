@@ -59,6 +59,7 @@ struct precomp_instr
 
 struct memory;
 struct mi_controller;
+struct vi_controller;
 struct rdram;
 
 struct jump_table;
@@ -131,6 +132,28 @@ struct r4300_core
     unsigned int pipeline_itlb_valid;
     unsigned int pipeline_itlb_lru;
     uint32_t dcache_words[512][4];
+    uint64_t cp2_latch;
+    /* Copy-on-write I-cache contents. Untouched lines still equal backing
+     * memory; only code writes/CACHE operations materialize their old bytes. */
+    uint32_t icache_shadow_tags[512];
+    uint32_t icache_shadow_words[512][8];
+    uint32_t *code_page_generation;
+    /* Native uncached RAM writes retire into the four-entry external FIFO.
+     * Deadlines use CPU clocks, independently of software writes to COUNT. */
+    uint64_t write_buffer_end[4];
+    unsigned int write_buffer_count;
+    uint64_t count_write_clock;
+    uint32_t count_write_value,count_write_valid;
+    uint32_t prefetch_pc,prefetch_op,prefetch_valid;
+    uint64_t retired_ops,random_epoch,random_wired_deadline[2];
+    uint32_t random_value,random_bound,random_wired_value[2],random_wired_count;
+    /* Transient branch pipeline context, unwound before an issue boundary. */
+    uint32_t branch_target,branch_sequence;
+    uint64_t irq_writeback_deadline;
+    uint32_t irq_writeback_pending;
+    uint64_t icache_fill_end;
+    uint32_t icache_fill_index; /* Cache index plus one; zero means no fill. */
+    struct vi_controller* vi;
 };
 
 static osal_force_inline void r4300_pipeline_reset(struct r4300_core* r)

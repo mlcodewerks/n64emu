@@ -7,6 +7,10 @@
 
 #include "interrupt.h"
 #include "tlb.h"
+struct r4300_core;
+void cp0_set_fault_address(struct r4300_core*,uint64_t address);
+uint32_t r4300_random(struct r4300_core*);
+void r4300_write_wired(struct r4300_core*,uint32_t);
 
 /* Status register definitions */
 #define CP0_STATUS_IE   UINT32_C(0x00000001)

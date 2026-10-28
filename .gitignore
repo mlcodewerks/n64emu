@@ -125,3 +125,29 @@ benchmarks/hle-sse2/*
 !benchmarks/hle-sse2/tests/legacy/
 !benchmarks/hle-sse2/tests/legacy/*.h
 benchmarks/hle-sse2/resolve-import.py
+
+# Conformance harnesses and compact evidence, without third-party checkouts,
+# ROMs, toolchains, binaries or generated run directories.
+!benchmarks/conformance/
+benchmarks/conformance/*
+!benchmarks/conformance/*.c
+!benchmarks/conformance/*.cpp
+!benchmarks/conformance/*.h
+!benchmarks/conformance/*.inc
+!benchmarks/conformance/*.mk
+!benchmarks/conformance/*.py
+!benchmarks/conformance/*.md
+!benchmarks/conformance/validation.json
+!benchmarks/conformance/shims/
+!benchmarks/conformance/shims/*.h
+
+!benchmarks/dk64-timing/
+benchmarks/dk64-timing/*
+!benchmarks/dk64-timing/*.c
+!benchmarks/dk64-timing/*.py
+!benchmarks/dk64-timing/*.mk
+!benchmarks/dk64-timing/*.md
+!benchmarks/dk64-timing/validation.json
+!benchmarks/dk64-timing/refined-validation.json
+!benchmarks/dk64-timing/vine-bootstrap.csv
+!benchmarks/dk64-timing/vine-neutral.csv

@@ -80,7 +80,7 @@ static PARALLAX_FORCE_INLINE uint32_t interp_select_u32(unsigned int condition,
         if (cop1) r4300->cp1.fcr31 &= ~UINT32_C(0x3f000); \
         if (link_register != &r4300->regs[0]) \
         { \
-            *link_register = SE32(r4300->instruction_pc.addr + 8); \
+            *link_register = SE32(r4300->delay_slot?r4300->branch_target+4:r4300->instruction_pc.addr+8); \
             if ((op >> 26) == 1 && ((op >> 16) & 31) != 17) take_jump = (condition); \
         } \
         interp_branch_finish(r4300, take_jump, jump_target, likely); \
@@ -219,6 +219,10 @@ static PARALLAX_FORCE_INLINE int interp_idle_delay_nop(struct r4300_core* r4300,
  * Keep the generic helper for TLB-mapped addresses and exceptions. */
 static PARALLAX_FORCE_INLINE uint32_t* interp_fast_mem_access(struct r4300_core* r4300, uint32_t address)
 {
+    /* A materialized instruction line remains authoritative after RAM is
+     * modified. Precise exits must see the same code as native blocks. */
+    if(PARALLAX_UNLIKELY(r4300->cache_timing&&r4300->icache_shadow_tags[(address>>5)&511]))
+        return fast_mem_access(r4300,address);
     if (PARALLAX_LIKELY((address & UINT32_C(0xc0000000)) == UINT32_C(0x80000000)))
     {
         address &= UINT32_C(0x1ffffffc);
@@ -303,6 +307,12 @@ DECLARE_INSTRUCTION(NI)
 {
     if ((op >> 26) == 0x11) {
         if (check_cop1_unusable(r4300)) return;
+        /* Recognized arithmetic/conversion functions still enter the FPU
+         * pipeline when W/L is an unsupported source format. Reserved
+         * function encodings trap one clock earlier. */
+        unsigned fmt=(op>>21)&31,fn=op&63;
+        if(!r4300->compat_issue_clock&&(fmt==20||fmt==21)&&
+           (fn<16||fn==36||fn==37))cp0_step_cycles(&r4300->cp0,1);
         r4300->cp1.fcr31 = (r4300->cp1.fcr31 & ~UINT32_C(0x3f000)) | UINT32_C(0x20000);
         r4300->cp0.regs[CP0_CAUSE_REG] =
             (r4300->cp0.regs[CP0_CAUSE_REG] & ~UINT32_C(0x3000007c)) | CP0_CAUSE_EXCCODE_FPE;
@@ -1261,8 +1271,16 @@ DECLARE_JUMP(BC1TL, PCADDR + (iimmediate + 1) * 4, ((r4300->cp1.fcr31) & FCR31_C
 DECLARE_INSTRUCTION(CACHE)
 {
     DECLARE_R4300
+    if(r4300->cache_timing&&!r4300->compat_issue_clock&&(r4300->instruction_pc.addr&0xfff)!=0xffc) {
+        /* Invalidating I-cache does not withdraw an instruction already in
+         * the fetch buffer. Preserve the next instruction across this op. */
+        uint32_t next=r4300->instruction_pc.addr+4;
+        uint32_t *word=fast_mem_access(r4300,next);
+        if(word){r4300->prefetch_pc=next;r4300->prefetch_op=*word;r4300->prefetch_valid=1;}
+    }
     if (r4300->cache_timing) {
         uint32_t va = (uint32_t)irs + iimmediate;
+        if(check_alignment(r4300,va,3,0))return;
         uint32_t pa = va;
         if ((va & 0xc0000000) != 0x80000000) {
             pa = interp_translate_address(r4300, va, 0);
@@ -1351,7 +1369,7 @@ DECLARE_INSTRUCTION(TLBP)
     int i;
     uint32_t* cp0_regs = r4300->cp0.regs;
 
-    cp0_regs[CP0_INDEX_REG] |= UINT32_C(0x80000000);
+    cp0_regs[CP0_INDEX_REG] = UINT32_C(0x80000000);
     for (i = 0; i < 32; ++i)
     {
         if (r4300->cp0.tlb_entryhi_hi[i] == r4300->cp0.regs_hi[CP0_ENTRYHI_REG] &&
@@ -1396,8 +1414,8 @@ static void TLBWrite(struct r4300_core* r4300, unsigned int idx)
     tlb_unmap(&r4300->cp0.tlb, idx);
 
     r4300->cp0.tlb.entries[idx].g = (cp0_regs[CP0_ENTRYLO0_REG] & cp0_regs[CP0_ENTRYLO1_REG] & 1);
-    r4300->cp0.tlb.entries[idx].pfn_even = (cp0_regs[CP0_ENTRYLO0_REG] & UINT32_C(0x3FFFFFC0)) >> 6;
-    r4300->cp0.tlb.entries[idx].pfn_odd = (cp0_regs[CP0_ENTRYLO1_REG] & UINT32_C(0x3FFFFFC0)) >> 6;
+    r4300->cp0.tlb.entries[idx].pfn_even = (cp0_regs[CP0_ENTRYLO0_REG] & UINT32_C(0x03FFFFC0)) >> 6;
+    r4300->cp0.tlb.entries[idx].pfn_odd = (cp0_regs[CP0_ENTRYLO1_REG] & UINT32_C(0x03FFFFC0)) >> 6;
     r4300->cp0.tlb.entries[idx].c_even = (cp0_regs[CP0_ENTRYLO0_REG] & UINT32_C(0x38)) >> 3;
     r4300->cp0.tlb.entries[idx].c_odd = (cp0_regs[CP0_ENTRYLO1_REG] & UINT32_C(0x38)) >> 3;
     r4300->cp0.tlb.entries[idx].d_even = (cp0_regs[CP0_ENTRYLO0_REG] & UINT32_C(0x4)) >> 2;
@@ -1408,6 +1426,9 @@ static void TLBWrite(struct r4300_core* r4300, unsigned int idx)
     r4300->cp0.tlb.entries[idx].vpn2 = (cp0_regs[CP0_ENTRYHI_REG] & UINT32_C(0xFFFFE000)) >> 13;
     //r4300->cp0.tlb.entries[idx].r = (cp0_regs[CP0_ENTRYHI_REG] & 0xC000000000000000LL) >> 62;
     r4300->cp0.tlb.entries[idx].mask = (cp0_regs[CP0_PAGEMASK_REG] & UINT32_C(0x1FFE000)) >> 13;
+    unsigned mask=(unsigned)r4300->cp0.tlb.entries[idx].mask;
+    r4300->cp0.tlb.entries[idx].mask=((mask>>1)&0x555u)*3u;
+    r4300->cp0.tlb.entries[idx].vpn2 &= ~(unsigned)r4300->cp0.tlb.entries[idx].mask;
 
     r4300->cp0.tlb.entries[idx].start_even = r4300->cp0.tlb.entries[idx].vpn2 << 13;
     r4300->cp0.tlb.entries[idx].end_even = r4300->cp0.tlb.entries[idx].start_even+
@@ -1431,7 +1452,7 @@ DECLARE_INSTRUCTION(TLBWR)
     DECLARE_R4300
     uint32_t* cp0_regs = r4300->cp0.regs;
     cp0_update_count(r4300);
-    cp0_regs[CP0_RANDOM_REG] = cp0_random(&r4300->cp0);
+    cp0_regs[CP0_RANDOM_REG] = r4300->compat_issue_clock?cp0_random(&r4300->cp0):r4300_random(r4300);
     TLBWrite(r4300, cp0_regs[CP0_RANDOM_REG]);
     ADD_TO_PC(1);
 }
@@ -1448,7 +1469,13 @@ DECLARE_INSTRUCTION(TLBWI)
 
 DECLARE_INSTRUCTION(MFC0)
 {
-    uint64_t value = cp0_get_control(&r4300->cp0, rfs);
+    uint64_t value = rfs==CP0_RANDOM_REG&&!r4300->compat_issue_clock?r4300_random(r4300):cp0_get_control(&r4300->cp0, rfs);
+    if(rfs==CP0_COUNT_REG&&!r4300->compat_issue_clock) {
+        /* MFC0 samples COUNT before this instruction's retirement boundary.
+         * The last MTC0 value forwards across its write-back window. */
+        if(r4300->count_write_valid&&r4300_cpu_clock(r4300)-r4300->count_write_clock<=2)
+            value=r4300->count_write_value;
+    }
     rrt = RS_OF(op) == 1 ? (int64_t)value : SE32(value);
     ADD_TO_PC(1);
 }
@@ -1467,12 +1494,16 @@ DECLARE_INSTRUCTION(MTC0)
         data = (data & ~UINT64_C(0x7fffff)) | (old & 0x7ffff0);
         goto wide;
     case 5: regs[5] = data & 0x01ffe000; break;
-    case 6: regs[6] = data & 63; break;
+    case 6: regs[6] = data & 63;if(!r4300->compat_issue_clock)r4300_write_wired(r4300,(uint32_t)data);break;
     case 9:
         cp0->interrupt_unsafe_state |= INTR_UNSAFE_R4300;
         if (cp0->cycle_count >= 0) gen_interrupt(r4300);
         cp0->interrupt_unsafe_state &= ~INTR_UNSAFE_R4300;
-        translate_event_queue(cp0, (uint32_t)data);
+          /* COUNT's reset reaches the counter two PClocks after issue.
+           * Forward the written value until that write-back boundary. */
+          translate_event_queue(cp0, (uint32_t)data-(!r4300->compat_issue_clock));
+          r4300->count_write_clock=r4300_cpu_clock(r4300);
+          r4300->count_write_value=(uint32_t)data;r4300->count_write_valid=1;
         break;
     case 10: data &= UINT64_C(0xc00000ffffffe0ff); goto wide;
     case 11:
@@ -1503,6 +1534,12 @@ wide:
 done:
     ADD_TO_PC(1);
     if (rfs == 12 || rfs == 13 || rfs == 11) {
+        if(!r4300->compat_issue_clock&&(rfs==12||rfs==13)) {
+            /* Interrupt sampling sees a CP0 write after the following
+             * instruction. A consecutive clearing write can cancel it. */
+            r4300->irq_writeback_pending=1;
+            r4300->irq_writeback_deadline=r4300->retired_ops+1;
+        }
         r4300_check_interrupt(r4300, CP0_CAUSE_IP2,
             r4300->mi->regs[MI_INTR_REG] & r4300->mi->regs[MI_INTR_MASK_REG]);
     }
@@ -1522,9 +1559,57 @@ DECLARE_INSTRUCTION(COP0)
         case 8: TLBP(r4300, op); return;
         case 24: ERET(r4300, op); return;
         }
+        /* VR4300 reserved CO=1 functions are no-ops. Homebrew uses these
+         * encodings for optional emulator extensions and probes them before
+         * installing exception vectors. Reserved rs sub-opcodes still trap. */
+        ADD_TO_PC(1);
+        return;
     }
     NI(r4300, op);
 }
+DECLARE_INSTRUCTION(COP2)
+{
+    unsigned rs = RS_OF(op);
+    if (!(r4300->cp0.regs[CP0_STATUS_REG] & UINT32_C(0x40000000))) {
+        r4300->cp0.regs[CP0_CAUSE_REG] =
+            (r4300->cp0.regs[CP0_CAUSE_REG] & ~UINT32_C(0x3000007c)) |
+            CP0_CAUSE_EXCCODE_CPU | UINT32_C(0x20000000);
+        exception_general(r4300);
+        return;
+    }
+    if ((op >> 26) == 0x12) {
+        switch (rs) {
+        case 0: case 2: r4300->regs[RT_OF(op)] = SE32(r4300->cp2_latch); break;
+        case 1: r4300->regs[RT_OF(op)] = (int64_t)r4300->cp2_latch; break;
+        case 4: case 5: case 6: r4300->cp2_latch = r4300->regs[RT_OF(op)]; break;
+        default:
+            if (rs < 16) {
+                r4300->cp0.regs[CP0_CAUSE_REG] =
+                    (r4300->cp0.regs[CP0_CAUSE_REG] & ~UINT32_C(0x3000007c)) |
+                    CP0_CAUSE_EXCCODE_RI | UINT32_C(0x20000000);
+                exception_general(r4300); return;
+            }
+        }
+        ADD_TO_PC(1);
+        return;
+    }
+    /* Nemu's hardware observations: LWC2 exposes the complete aligned
+     * doubleword on the transfer latch, including when bit 2 is set.
+     * Cross-register memory-transfer behavior remains undocumented. */
+    unsigned major=op>>26;
+    if(major==0x32||major==0x36||major==0x3a||major==0x3e){
+        uint32_t address=(uint32_t)r4300->regs[RS_OF(op)]+(int16_t)op;
+        int write=major==0x3a||major==0x3e;
+        if(check_alignment(r4300,address,(major&4)?7:3,write))return;
+        ADD_TO_PC(1);
+        if(!write)interp_read_aligned_dword(r4300,address&~7u,&r4300->cp2_latch);
+        else if(major==0x3a)interp_write_aligned_word(r4300,address,(uint32_t)r4300->cp2_latch,~UINT32_C(0));
+        else interp_write_aligned_dword(r4300,address,r4300->cp2_latch,~UINT64_C(0));
+        return;
+    }
+    NI(r4300, op);
+}
+
 /* CP1 load/store instructions */
 
 DECLARE_INSTRUCTION(LWC1)
@@ -1673,6 +1758,8 @@ int r4300_ops_jit_fpu_prepare_prefetched(struct r4300_core* r,uint32_t op,uint64
 r4300_op_handler r4300_ops_decode(uint32_t op, int idle)
 {
     if ((op >> 26) == 16) return COP0;
+    if ((op >> 26) == 0x12 || (op >> 26) == 0x32 || (op >> 26) == 0x36 ||
+        (op >> 26) == 0x3a || (op >> 26) == 0x3e) return COP2;
     const struct r4300_idec* idec = r4300_get_idec(op);
     const unsigned int fmt = (op >> 21) & 0x1f;
     if ((op >> 26) == 17 && fmt == 8 && RT_OF(op) >= 4) return NI;
@@ -1937,16 +2024,21 @@ void new_vi(void)
  * faults, delay slots and instructions without an inline native lowering. */
 void r4300_ops_execute_one(struct r4300_core* r)
 {
+    ++r->retired_ops;
     const uint32_t pc=r->instruction_pc.addr;
+    const int buffered=r->prefetch_valid&&r->prefetch_pc==pc;
+    const uint32_t buffered_op=r->prefetch_op;r->prefetch_valid=0;
     if (pc&3) {
         cp0_step_cycles(&r->cp0,1);
         check_alignment(r,pc,3,0);
     } else {
-        uint32_t *address=interp_fast_mem_access(r,pc);
+        const uint32_t *address=buffered?&buffered_op:interp_fast_mem_access(r,pc);
         if (!address) cp0_step_cycles(&r->cp0,1);
         else {
             const uint32_t op=*address;
-            if (r4300_begin_instruction(r,op,pc)) {
+            unsigned cycles=(op>>26)==17?1:r4300_base_cycles(op,0);
+            int issued=buffered?r4300_begin_prefetched_instruction_cycles(r,op,pc,cycles,r->cache_timing):r4300_begin_instruction(r,op,pc);
+            if (issued) {
                 r4300_op_handler handler=r4300_ops_decode(op,0);
                 if (handler) handler(r,op);
                 else if ((op>>26)!=17 || !check_cop1_unusable(r)) NI(r,op);
@@ -1954,5 +2046,6 @@ void r4300_ops_execute_one(struct r4300_core* r)
         }
     }
     r->regs[0]=0;
+    r4300_finish_irq_writeback(r);
     if (!r->delay_slot && r->cp0.cycle_count>=0) gen_interrupt(r);
 }

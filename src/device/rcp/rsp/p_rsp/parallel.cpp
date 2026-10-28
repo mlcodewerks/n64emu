@@ -126,7 +126,7 @@ extern "C"
 
 	unsigned int native_rsp_execute(unsigned int cycles)
 	{
-		if (*RSP::rsp.SP_STATUS_REG & (SP_STATUS_HALT | SP_STATUS_BROKE))
+        if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_HALT)
 			return 0;
 
 		// We don't know if Mupen from the outside invalidated our IMEM.
@@ -162,7 +162,7 @@ extern "C"
 		cycles = RSP::cpu.get_state().cycles;
 
 		// From CXD4.
-		if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_BROKE)
+        if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_HALT)
 			return cycles;
 		else if (*RSP::cpu.get_state().cp0.irq & 1)
 			RSP::rsp.CheckInterrupts();
@@ -171,7 +171,6 @@ extern "C"
 		RSP::SP_STATUS_TIMEOUT = 16;
 
 		// CPU restarts with the correct SIGs.
-		*RSP::rsp.SP_STATUS_REG &= ~SP_STATUS_HALT;
 
 		return cycles;
 	}

@@ -87,8 +87,9 @@ extern "C"
 			    ? 1 : RSP::SP_STATUS_TIMEOUT;
 			if (RSP::MFC0_count[rt] >= poll_limit)
 			{
-				*RSP::rsp.SP_STATUS_REG |= SP_STATUS_HALT;
-				return MODE_CHECK_FLAGS;
+                /* Waiting for the CPU is a scheduler yield, not a hardware
+                 * HALT. BROKE can remain set while a restarted SP runs. */
+                return MODE_TIMESLICE;
 			}
 		}
 #endif
@@ -204,9 +205,9 @@ extern "C"
 			unsigned j = 0;
 			do
 			{
-				uint32_t source_addr = (source + j) & 0x7FFFFC;
+                uint32_t source_addr = (source + j) & 0xFFFFFC;
 				uint32_t dest_addr = (dest & 0x1000) | ((dest + j) & 0xFFC);
-				uint32_t word = rsp->rdram[source_addr >> 2];
+                uint32_t word = source_addr < 0x800000 ? rsp->rdram[source_addr >> 2] : 0;
 
 				if (dest_addr & 0x1000)
 				{
@@ -267,20 +268,20 @@ extern "C"
 		unsigned i = 0;
 		do
 		{
+            notify_dma(dma_write, dest, length);
 			unsigned j = 0;
 
 			do
 			{
 				uint32_t source_addr = (source & 0x1000) | ((source + j) & 0xFFC);
-				uint32_t dest_addr = (dest + j) & 0x7FFFFC;
+                uint32_t dest_addr = (dest + j) & 0xFFFFFC;
 
-				rsp->rdram[dest_addr >> 2] =
+                if(dest_addr < 0x800000)rsp->rdram[dest_addr >> 2] =
 				    (source_addr & 0x1000) ? rsp->imem[(source_addr & 0xfff) >> 2] : rsp->dmem[source_addr >> 2];
 
 				j += 4;
 			} while (j < length);
 
-			notify_dma(dma_write, dest, length);
 			source = (source & 0x1000) | ((source + length) & 0xFFF);
 			dest += length + (i < count ? skip : 0);
 		} while (++i <= count);

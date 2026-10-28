@@ -118,6 +118,7 @@ static int interp_thread_poll_advance(struct r4300_core* r, uint32_t pc)
     if (iterations > UINT32_MAX / cycles) iterations = UINT32_MAX / cycles;
     if (!iterations) return 0;
     cp0_step_cycles(&r->cp0, (unsigned)iterations * cycles);
+    r->retired_ops+=iterations*36;
     return 1;
 }
 #endif

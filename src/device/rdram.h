@@ -45,7 +45,7 @@ static osal_inline uint32_t rdram_reg(uint32_t address)
 
 static osal_inline uint32_t rdram_dram_address(uint32_t address)
 {
-    return (address & 0xffffff) >> 2;
+    return (address & 0x03fffffc) >> 2;
 }
 
 void init_rdram(struct rdram* rdram,
