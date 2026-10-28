@@ -36,6 +36,12 @@ struct rdp_timing {
     void (*observe_busy)(void *, int64_t, int64_t, unsigned);
     void *busy_context;
     uint32_t rdram_bytes, validate_uniform_ram;
+    /* Derived bindings and submission-local progress; never serialized.
+     * Reattached from the VI controller after reset/load and before feeding. */
+    const uint32_t *vi_regs;
+    int64_t vi_field_start;
+    uint32_t vi_field_ticks;
+    uint64_t vi_elapsed;
 };
 
 /* Command-derived uniform regions are proofs, not samples from GPU-stale
@@ -133,23 +139,140 @@ static int rdp_timing_keeps_row(const struct rdp_timing* t, int y)
     return !(t->scissor_field & 2) || ((y & 1) == (int)(t->scissor_field & 1));
 }
 
+static int rdp_timing_row_conflict(uint64_t a, uint64_t b)
+{
+    return (a >> 23) == (b >> 23) && (a >> 14) != (b >> 14);
+}
+
+/* Coarse priority reservation by VI, expressed in RCP clocks per scanline.
+ * Registers use the VI MMIO word order (STATUS, ORIGIN, WIDTH, ..., X/Y_SCALE).
+ * This shares the span model's aggregate 16-byte request, five-clock setup
+ * and three-clock handoff estimates; these are not measured VI burst sizes.
+ * Arbitration stretches memory service, leaving pixel work free to overlap.
+ * Coverage-dependent extra-line fetches and horizontal burst phase are not
+ * simulated. Vertical phase and source-row banking follow programmed VI. */
+static uint64_t rdp_timing_vi_bus(const struct rdp_timing *t, uint64_t bus,
+    uint64_t color, uint64_t depth, unsigned color_stream, unsigned depth_stream,
+    unsigned depth_write)
+{
+    const uint32_t *v = t->vi_regs;
+    if (!bus || !v || (v[0] & 3) < 2 || !t->vi_field_ticks) return bus;
+    unsigned hs = (v[9] >> 16) & 1023, he = v[9] & 1023;
+    unsigned vs = (v[10] >> 16) & 1023, ve = v[10] & 1023;
+    unsigned total = (v[6] & 1023) + 1, stride = v[2] & 4095;
+    unsigned scale = v[12] & 4095;
+    if (he <= hs || ve <= vs || vs >= total || !stride || !scale || total < 2) return bus;
+    uint64_t ticks = t->vi_field_ticks, period = ticks * 4;
+    int64_t start = t->deadline % (int64_t)ticks;
+    int64_t origin = t->vi_field_start % (int64_t)ticks;
+    if (start < 0) start += ticks;
+    if (origin < 0) origin += ticks;
+    uint64_t phase = ((uint64_t)start * 4 + period * 2 - (uint64_t)origin * 4 -
+        t->clock_overhang + (t->vi_elapsed % period) * 3) % period;
+    unsigned bpp = (v[0] & 3) == 3 ? 4 : 2;
+    uint64_t width = ((uint64_t)(he - hs) * scale + 1023) >> 10;
+    uint64_t bytes = width * bpp;
+    uint64_t requests = (bytes + 15) / 16;
+    uint64_t line = ticks * 8 / ((uint64_t)total * 3);
+    if (line < 2) return bus;
+    uint64_t remaining = bus, elapsed = 0, credit = 0;
+    while (remaining) {
+        unsigned halfline = (unsigned)(phase * total / period);
+        unsigned active = halfline >= vs && halfline < ve;
+        uint64_t boundary;
+        if (active) boundary = ((uint64_t)(halfline + 1) * period + total - 1) / total;
+        else if (halfline < vs) boundary = ((uint64_t)vs * period + total - 1) / total;
+        else boundary = period;
+        uint64_t window = (boundary - phase + 2) / 3;
+        uint64_t budget = 0;
+        if (active) {
+            uint64_t source_y = (((uint64_t)(halfline - vs) / 2) * (v[13] & 4095) +
+                ((v[13] >> 16) & 4095)) >> 10;
+            uint64_t address = ((v[1] & 0xffffffu) + source_y * stride * bpp +
+                (((v[12] >> 16) & 4095) >> 10) * bpp) & 0xffffffu;
+            unsigned shared = (color_stream && rdp_timing_row_conflict(color, address * 8)) ||
+                (depth_stream && rdp_timing_row_conflict(depth, address * 8));
+            budget = (bytes + 7) / 8 + requests * (5u + 3u * depth_write + 3u * shared);
+            if (budget >= line) budget = line - 1;
+        }
+        uint64_t stretched = (remaining * line - credit + (line - budget) / 2) / (line - budget);
+        if (stretched <= window) return elapsed + stretched;
+        /* Retire service up to the next phase boundary, then reevaluate VI
+         * activity and source banking. Long loads and spans can cross blank
+         * intervals or wrap a field; they must not inherit their start phase. */
+        uint64_t service = window * (line - budget) + credit;
+        remaining -= service / line;
+        credit = service % line;
+        elapsed += window;
+        phase = (phase + window * 3) % period;
+    }
+    return elapsed;
+}
+
+/* Preserve the calibrated buffered row-switch estimate, but classify each
+ * eight-pixel buffer at its own address. A span can cross a 2 KiB row or a
+ * 1 MiB bank, so its first pixel cannot classify every buffer. The common
+ * case stays constant-time; only boundary-crossing spans need a buffer walk.
+ * This still estimates transactions from buffer entry addresses, rather
+ * than modeling individual RDRAM requests or keeping rows open across spans. */
+static uint64_t rdp_timing_row_clocks(uint64_t color, uint64_t depth,
+    unsigned bpp, unsigned left, unsigned right, unsigned color_read,
+    unsigned depth_read, unsigned color_write, unsigned depth_write)
+{
+    if (right <= left || !(depth_read || depth_write)) return 0;
+    unsigned segments = (right + 7) / 8 - left / 8;
+    unsigned switches = (color_read && depth_read) + depth_write;
+    /* These paths leave a row switch between buffers that is not covered
+     * by the existing read/write turnaround estimate: read-only color/Z,
+     * write-only color/Z, or compare-only Z followed by a color store. */
+    unsigned return_color = (!color_write && !depth_write && color_read && depth_read) ||
+        (color_write && depth_write && !color_read && !depth_read);
+    unsigned return_depth = color_write && depth_read && !color_read && !depth_write;
+    uint64_t color_last = color + (uint64_t)(right - left - 1) * bpp;
+    uint64_t depth_last = depth + (uint64_t)(right - left - 1) * 16;
+    if ((color >> 14) == (color_last >> 14) && (depth >> 14) == (depth_last >> 14))
+        return rdp_timing_row_conflict(color, depth) ?
+            3u * ((uint64_t)segments * switches +
+                (uint64_t)(segments - 1) * (return_color || return_depth)) : 0;
+
+    uint64_t clocks = 0, previous_color = 0, previous_depth = 0;
+    for (unsigned x = left; x < right;) {
+        uint64_t c = color + (uint64_t)(x - left) * bpp;
+        uint64_t d = depth + (uint64_t)(x - left) * 16;
+        if (rdp_timing_row_conflict(c, d)) clocks += 3u * switches;
+        if (x != left) {
+            if (return_color && rdp_timing_row_conflict(previous_depth, c)) clocks += 3;
+            if (return_depth && rdp_timing_row_conflict(previous_color, d)) clocks += 3;
+        }
+        previous_color = c;
+        previous_depth = d;
+        x = (x | 7u) + 1;
+    }
+    return clocks;
+}
+
 /* RDRAM transfers are buffered in eight-pixel (RGBA16) span segments. Charge bus
  * traffic independently of pixel throughput, allowing the two to overlap.
  * The 15-clock span startup, 5-clock transaction and 3-clock turnaround
  * overheads are estimates checked against Thar0/RDP-Timing-Tests, not
  * constants fitted to a game.
- * Other RCP clients and read-response buffering remain unmodeled. Uniform
+ * VI reserves memory service through the coarse model above; other RCP
+ * clients and individual memory requests remain unmodeled. Uniform
  * command-derived rejection suppresses stores while retaining earlier reads. */
-static uint64_t rdp_timing_span(const struct rdp_timing* t, int y, int left, int right)
+static uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, int right)
 {
     if (right <= left || !rdp_timing_keeps_row(t, y)) return 0;
     uint64_t pixels = (unsigned)(right - left);
-    if (t->cycle_type == 2) return (pixels + 3) / 4;
     uint64_t bits_per_pixel = 4u << (t->fb_size & 3);
     uint64_t first = (uint64_t)t->fb_address * 8 +
         ((uint64_t)y * t->fb_width + (unsigned)left) * bits_per_pixel;
     uint64_t color = rdp_timing_bus_words(first, pixels * bits_per_pixel);
-    if (t->cycle_type == 3) return color;
+    if (t->cycle_type >= 2) {
+        uint64_t work = t->cycle_type == 2 ? (pixels + 3) / 4 : color;
+        work = rdp_timing_vi_bus(t, work, first, 0, 1, 0, 0);
+        t->vi_elapsed += work;
+        return work;
+    }
     unsigned op = (t->words[0] >> 24) & 63;
     unsigned z = (op >= 8 && op <= 15 && (op & 1)) || (t->modes & 4);
     unsigned color_read = (t->modes >> 6) & 1;
@@ -169,30 +292,11 @@ static uint64_t rdp_timing_span(const struct rdp_timing* t, int y, int left, int
      * count that boundary once rather than adding two turnaround penalties.
      * The three-clock estimate comes from console color read/write tests. */
     unsigned turnarounds = color_write && (color_read || depth_read);
-    /* Alternating color/depth in the same 1 MiB bank closes its open
-     * 2 KiB row. Account for the remaining boundaries in each segment. */
-    if ((depth_read || depth_write) && (first >> 23) == (depth >> 23) &&
-        (first >> 14) != (depth >> 14)) {
-        unsigned switches = (color_read && depth_read) + depth_read + depth_write;
-        turnarounds += switches - depth_read;
-        /* With both stores suppressed, the final Z read switches back to
-         * the color row for the following segment. The old read/write
-         * boundary formula omitted these read-to-read row changes. */
-        if (!color_write && !depth_write && color_read && depth_read && segments > 1)
-            bus += (segments - 1) * 3;
-        /* A compare-only Z read followed by a color store also returns to
-         * the Z row for the next buffer. There is no color prefetch or Z
-         * store to have already accounted for that inter-buffer boundary. */
-        if (color_write && depth_read && !color_read && !depth_write && segments > 1)
-            bus += (segments - 1) * 3;
-        /* Write-only color/Z buffers end on the Z row too. The next
-         * buffer starts with a color store, so it must reopen that row.
-         * There is no read turnaround to cover this store-to-store
-         * boundary. A single buffer has no return transition. */
-        if (color_write && depth_write && !color_read && !depth_read && segments > 1)
-            bus += (segments - 1) * 3;
-    }
+    bus += rdp_timing_row_clocks(first, depth, (unsigned)bits_per_pixel,
+        (unsigned)left, (unsigned)right, color_read, depth_read, color_write, depth_write);
     bus += segments * 3 * turnarounds;
+    bus = rdp_timing_vi_bus(t, bus, first, depth, color_write || color_read,
+        depth_read || depth_write, depth_write);
     uint64_t raster = pixels * (t->cycle_type + 1);
     /* Effective buffered-read floor calibrated against Thar0's 320x240
      * RGBA16 rejection cases with VI off. At eight pixels per buffer the
@@ -210,6 +314,15 @@ static uint64_t rdp_timing_span(const struct rdp_timing* t, int y, int left, int
             segments * (4u * reads + 5u);
         if (response < raster) response = raster;
         if (t->cycle_type && depth_read) response += segments * 2;
+        /* Interleaved color/Z reads expose one stream's VI queue delay
+         * after buffered pixel work. A single read stream retains its
+         * existing overlap. Take the maximum against stretched bus work
+         * below, so the same contention is never added to both paths. */
+        if (reads > 1) {
+            uint64_t stream = depth_words + segments * 5;
+            response += rdp_timing_vi_bus(t, stream, first, depth,
+                color_write || color_read, depth_read || depth_write, depth_write) - stream;
+        }
     }
     /* The bus estimate already contains read transfers and row switches.
      * Expose only the floor beyond both occupied paths, avoiding a second
@@ -227,16 +340,19 @@ static uint64_t rdp_timing_span(const struct rdp_timing* t, int y, int left, int
     if (transient > uncovered) uncovered = transient;
     RDP_TIMING_OBSERVE_RESPONSE(t, uncovered);
     unsigned startup = t->reject ? 4u + 2u * t->cycle_type : 15u;
-    return startup + occupied + uncovered;
+    uint64_t work = startup + occupied + uncovered;
+    t->vi_elapsed += work;
+    return work;
 }
 
 /* Fill spans repeat their bus alignment within 16 rows even for 4-bit
  * images. Other render modes also depend on color/depth bank addresses. */
-static uint64_t rdp_timing_rectangle(const struct rdp_timing* t,
+static uint64_t rdp_timing_rectangle(struct rdp_timing* t,
     unsigned x0, unsigned y0, unsigned x1, unsigned y1)
 {
     if (x1 <= x0 || y1 <= y0) return 0;
-    if (t->cycle_type == 2) {
+    unsigned scanout = t->vi_regs && (t->vi_regs[0] & 3) >= 2 && t->vi_field_ticks;
+    if (t->cycle_type == 2 && !scanout) {
         unsigned rows = y1 - y0;
         if (t->scissor_field & 2) {
             if (!rdp_timing_keeps_row(t, y0)) ++y0;
@@ -244,7 +360,7 @@ static uint64_t rdp_timing_rectangle(const struct rdp_timing* t,
         }
         return (uint64_t)((x1 - x0 + 3) / 4) * rows;
     }
-    if (t->cycle_type < 2) {
+    if (t->cycle_type < 2 || scanout) {
         uint64_t work = 0;
         for (unsigned y = y0; y < y1; ++y)
             work += rdp_timing_span(t, y, x0, x1);
@@ -294,6 +410,7 @@ static uint64_t rdp_timing_clocks(struct rdp_timing* t)
     const uint32_t* w = t->words;
     unsigned op = (w[0] >> 24) & 63;
     uint64_t work = 0;
+    t->vi_elapsed = t->length / 2;
     t->reject = 0;
     if (op == 0x3a) t->primitive_color = w[1];
     if (op == 0x3b) t->environment_color = w[1];
@@ -445,6 +562,8 @@ static uint64_t rdp_timing_clocks(struct rdp_timing* t)
             }
         }
     }
+    if (work && (op == 0x30 || op == 0x33 || op == 0x34))
+        work = rdp_timing_vi_bus(t, work, (uint64_t)t->tex_address * 8, 0, 1, 0, 0);
     /* No-memory alpha failure: 4/6 clocks per span plus eleven drain clocks.
      * Including the rectangle delivery clock gives the measured twelve-clock
      * primitive overhead, independently of width, height or ROM identity. */
@@ -459,8 +578,8 @@ static uint64_t rdp_timing_clocks(struct rdp_timing* t)
     uint64_t clocks = t->length / 2 + work;
     RDP_TIMING_OBSERVE_COMMAND(t, op, work);
     /* Raster/transfer work is serialized with packet delivery here. Pipeline
-     * overlap between commands and contention with other RCP clients remain
-     * unmodeled; span memory traffic overlaps its pixel pipeline above. */
+     * overlap between commands and contention with clients other than VI
+     * remain unmodeled; span memory traffic overlaps its pixel pipeline. */
     return clocks;
 }
 

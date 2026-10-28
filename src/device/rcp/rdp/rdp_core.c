@@ -41,6 +41,10 @@ static void attach_timing(struct rdp_core *dp)
     dp->timing.observe_busy = observe_busy;
     dp->timing.busy_context = dp;
     dp->timing.rdram_bytes = dp->fb.rdram ? dp->fb.rdram->dram_size : 0;
+    const struct vi_controller *vi = dp->mi->r4300->vi;
+    dp->timing.vi_regs = dp->vi_regs;
+    dp->timing.vi_field_start = vi ? vi->field_start_count_clock : 0;
+    dp->timing.vi_field_ticks = vi ? vi->field_ticks : 0;
     if (dp->timing.validate_uniform_ram) {
         /* Restoring clears frontend framebuffer protection. Verify every
          * saved proof against synchronized RDRAM before its first use, so

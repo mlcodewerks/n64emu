@@ -138,6 +138,8 @@ benchmarks/conformance/*
 !benchmarks/conformance/*.py
 !benchmarks/conformance/*.md
 !benchmarks/conformance/validation.json
+!benchmarks/conformance/rdp-validation.json
+!benchmarks/conformance/rdp-vi-validation.json
 !benchmarks/conformance/shims/
 !benchmarks/conformance/shims/*.h
 
