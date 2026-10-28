@@ -87,9 +87,9 @@ static void emit_region_commit_native(const struct ari64_config* config,
     emit_mem(0x01, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, cp0.count_clock));
     emit_state_imm(gpr_offset(0), 0, 1);
     if (branch) {
-        emit_mem(0x89, 0, TARGET, STATE, -1, 0, offsetof(struct r4300_core, interp_PC.addr));
+        emit_mem(0x89, 0, TARGET, STATE, -1, 0, offsetof(struct r4300_core, instruction_pc.addr));
         emit_mem(0x89, 0, TARGET, STATE, -1, 0, offsetof(struct r4300_core, cp0.last_addr));
-    } else emit_state_imm(offsetof(struct r4300_core, interp_PC.addr), config->virtual_pc + (start + count) * 4, 0);
+    } else emit_state_imm(offsetof(struct r4300_core, instruction_pc.addr), config->virtual_pc + (start + count) * 4, 0);
     emit_mem(0x8b, 0, T0, SP, -1, 0, 8);
     emit_movimm(count, T2); emit_reg_op(0x29, T0, T2, 0);
     uint64_t* counters[2] = {config->commits, config->fast_commits};

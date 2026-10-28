@@ -16,7 +16,7 @@
 #include "rom_database_ares.h"
 #include "core/types.h"
 #include "device/device.h"
-#include "device/r4300/cached_interp.h"
+#include "device/r4300/jit_runtime.h"
 #include "main.h"
 #include "md5.h"
 #include "osal/preproc.h"
@@ -164,28 +164,28 @@ core_result open_rom(const unsigned char* romimage, unsigned int size)
 
 core_result close_rom(void)
 {
-    if (g_dev.r4300.cached_interp) {
+    if (g_dev.r4300.jit) {
         uint64_t cache[2];
-        cached_interp_cache_stats(&g_dev.r4300, cache);
+        r4300_jit_cache_stats(&g_dev.r4300, cache);
         core_log(CORE_LOG_INFO, "Cached CPU blocks: decoded=%" PRIu64 " restored=%" PRIu64,
             cache[0], cache[1]);
     }
 #ifdef HAVE_ARI64
     if (g_dev.r4300.emumode == EMUMODE_DYNAREC) {
         uint64_t stats[4], optimized[2], code[3];
-        cached_dynarec_stats(&g_dev.r4300, stats);
-        cached_dynarec_optimization_stats(&g_dev.r4300, optimized);
+        r4300_jit_stats(&g_dev.r4300, stats);
+        r4300_jit_optimization_stats(&g_dev.r4300, optimized);
         core_log(CORE_LOG_INFO, "Ari64: blocks=%" PRIu64 " native=%" PRIu64
             " entries=%" PRIu64 " commits=%" PRIu64,
             stats[0], stats[1], stats[2], stats[3]);
         core_log(CORE_LOG_INFO, "Ari64 optimization: fast=%" PRIu64 " links=%" PRIu64 " direct=%" PRIu64,
-            optimized[0], optimized[1], cached_dynarec_direct_links(&g_dev.r4300));
-        cached_dynarec_code_stats(&g_dev.r4300, code);
+            optimized[0], optimized[1], r4300_jit_direct_links(&g_dev.r4300));
+        r4300_jit_code_stats(&g_dev.r4300, code);
         core_log(CORE_LOG_INFO, "Ari64 linkage: bytes=%" PRIu64 " relative_calls=%" PRIu64 " absolute_calls=%" PRIu64,
             code[0], code[1], code[2]);
     }
 #endif
-    cached_interp_destroy(&g_dev.r4300);
+    r4300_jit_destroy(&g_dev.r4300);
 
     /* Clear Byte-swapped flag, since ROM is now deleted. */
     g_RomWordsLittleEndian = 0;

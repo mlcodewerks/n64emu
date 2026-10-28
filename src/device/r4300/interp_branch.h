@@ -8,7 +8,7 @@
 
 static osal_force_inline int interp_direct_nop_delay(struct r4300_core* r)
 {
-    uint32_t pc = r->interp_PC.addr;
+    uint32_t pc = r->instruction_pc.addr;
     uint32_t status = r->cp0.regs[CP0_STATUS_REG];
     if (r->cache_timing || (pc & UINT32_C(0xc0000000)) != UINT32_C(0x80000000) ||
         ((status & CP0_STATUS_MODE_MASK) && !(status & (CP0_STATUS_EXL | CP0_STATUS_ERL))))
@@ -17,7 +17,7 @@ static osal_force_inline int interp_direct_nop_delay(struct r4300_core* r)
         return 0;
     /* The delay-slot interrupt remains deferred until the branch resolves. */
     cp0_step_cycles(&r->cp0, 1 + (r->compat_issue_clock != 0));
-    r->interp_PC.addr = pc + 4;
+    r->instruction_pc.addr = pc + 4;
     r->regs[0] = 0;
     return 1;
 }
@@ -26,7 +26,7 @@ static osal_force_inline void interp_branch_finish_step(struct r4300_core* r,
     int taken, uint32_t target, int likely, void (*execute_one)(struct r4300_core*), int direct_nop)
 {
     if (!likely || taken) {
-        r->interp_PC.addr += 4;
+        r->instruction_pc.addr += 4;
         r->delay_slot = 1;
         if (!direct_nop || !interp_direct_nop_delay(r)) execute_one(r);
         cp0_update_count(r);
@@ -34,15 +34,15 @@ static osal_force_inline void interp_branch_finish_step(struct r4300_core* r,
         unsigned jump = (unsigned)taken & (unsigned)(r->skip_jump == 0);
 #if defined(PARALLAX_INTERP_BRANCHLESS) && PARALLAX_INTERP_BRANCHLESS
         uint32_t mask = 0u - jump;
-        r->interp_PC.addr = (target & mask) | (r->interp_PC.addr & ~mask);
+        r->instruction_pc.addr = (target & mask) | (r->instruction_pc.addr & ~mask);
 #else
-        if (jump) r->interp_PC.addr = target;
+        if (jump) r->instruction_pc.addr = target;
 #endif
     } else {
-        r->interp_PC.addr += 8;
+        r->instruction_pc.addr += 8;
         cp0_update_count(r);
     }
-    r->cp0.last_addr = r->interp_PC.addr;
+    r->cp0.last_addr = r->instruction_pc.addr;
     if (r->cp0.cycle_count >= 0) gen_interrupt(r);
 }
 
@@ -73,7 +73,7 @@ static osal_force_inline int interp_equal_branch(struct r4300_core* r,
     if (major != 4 && major != 5 && major != 20 && major != 21) return 0;
     int taken = r->regs[(op >> 21) & 31] == r->regs[(op >> 16) & 31];
     if (major & 1) taken = !taken;
-    uint32_t target = r->interp_PC.addr + ((int32_t)(int16_t)op + 1) * 4;
+    uint32_t target = r->instruction_pc.addr + ((int32_t)(int16_t)op + 1) * 4;
     if (taken && idle) interp_idle_advance(r);
     interp_branch_finish_step(r, taken, target, major >= 20, execute_one, 1);
     return 1;

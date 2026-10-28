@@ -18,7 +18,7 @@
 #include "core/backend.h"
 #ifdef __LIBRETRO__
 #include "renderer_options.h"
-#include "angrylion/n64video.h"
+#include "softrdp/softrdp_video.h"
 #endif
 
 static const uint32_t *hle_words;

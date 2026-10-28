@@ -117,11 +117,11 @@ static void emit_fpu_native(uint32_t instruction,unsigned index,const struct ari
         emit_mem_imm(0xc7,0,0,SP,-1,0,8,0);
         emit_region_commit_native(config,index,0,0);patch_jump(free_fetch,out);
     }
-    emit_state_imm(offsetof(struct r4300_core,interp_PC.addr),config->virtual_pc+index*4,0);
+    emit_state_imm(offsetof(struct r4300_core,instruction_pc.addr),config->virtual_pc+index*4,0);
     emit_mov64(STATE,ARG1_REG); emit_movimm(instruction,ARG2_REG);
     emit_mem(0x8d,1,ARG3_REG,SP,-1,0,32); emit_movimm64((intptr_t)config->commits,ARG4_REG);
     auto prepare=config->fpu_prepare;
-    if(prefetched)prepare=pure_interp_jit_fpu_prepare_prefetched;
+    if(prefetched)prepare=r4300_ops_jit_fpu_prepare_prefetched;
     emit_helper_call((const void*)prepare);
     emit_reg_op(0x85,T0,T0,0); exits[(*exit_count)++]=emit_jump(4);
     if(fn>=48) {

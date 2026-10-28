@@ -3,7 +3,7 @@
 #define PARALLAX_INTERP_THREAD_POLL_H
 #include <string.h>
 #include "timing.h"
-#include "pure_interp.h"
+#include "cpu_ops.h"
 #include "device/memory.h"
 #include "device/rdram.h"
 #include "device/rcp/rcp.h"

@@ -13,7 +13,7 @@
 #include "device/rcp/rsp/hle/rdp_emit_zsort.h"
 #include "device/rcp/rsp/hle/rdp_emit_naboo.h"
 #include "device/rcp/rsp/hle/rdp_emit_rsp.h"
-#include "device/rcp/rdp/angrylion/n64video.h"
+#include "device/rcp/rdp/softrdp/softrdp_video.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>

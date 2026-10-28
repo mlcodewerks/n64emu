@@ -214,7 +214,7 @@ static void MP3AB0(int32_t* v)
 #if HLE_SIMD_ENABLED
         __m128i x=_mm_loadu_si128((const __m128i *)(v+i));
         __m128i y=_mm_shuffle_epi32(x,_MM_SHUFFLE(1,0,3,2));
-        __m128i sum=_mm_add_epi32(x,y),diff=_mm_mullo_epi32(_mm_sub_epi32(x,y),_mm_setr_epi32(0xEC84,0x61F8,0,0));
+        __m128i sum=_mm_add_epi32(x,y),diff=hle_mullo32(_mm_sub_epi32(x,y),_mm_setr_epi32(0xEC84,0x61F8,0,0));
         diff=_mm_srai_epi32(_mm_add_epi32(diff,_mm_set1_epi32(resample_hq_enabled()?32768:0)),16);
         _mm_storeu_si128((__m128i *)(v+16+i),_mm_unpacklo_epi64(sum,diff));
 #else

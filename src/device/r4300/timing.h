@@ -78,7 +78,7 @@ static osal_force_inline int r4300_begin_prefetched_instruction_cycles(struct r4
     unsigned int issue = r4300_issue_reservation(r4300->compat_issue_clock);
     uint32_t status = r4300->cp0.regs[CP0_STATUS_REG];
     if ((status & CP0_STATUS_MODE_MASK) && !(status & (CP0_STATUS_EXL | CP0_STATUS_ERL))) {
-        r4300->interp_PC.addr = pc;
+        r4300->instruction_pc.addr = pc;
         cp0_step_cycles(&r4300->cp0, 1 + issue);
         if (check_instruction_mode(r4300, op)) return 0;
         if (cache_timing) {

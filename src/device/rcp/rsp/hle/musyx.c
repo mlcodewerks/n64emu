@@ -205,7 +205,7 @@ static int32_t dot4(const int16_t *x, const int16_t *y)
 {
 #if HLE_SIMD_ENABLED
     __m128i t=hle_vmulf16(_mm_loadl_epi64((const __m128i *)x),_mm_loadl_epi64((const __m128i *)y));
-    t=_mm_hadds_epi16(t,t);t=_mm_hadds_epi16(t,t);
+    t=hle_hadds16(t,t);t=hle_hadds16(t,t);
     return (int16_t)_mm_extract_epi16(t,0);
 #else
     size_t i;

@@ -1,4 +1,4 @@
-#include "vdac.h"
+#include "presenter.h"
 #include <libretro.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -14,7 +14,7 @@ static unsigned width = 640, height = 480;
 
 void vdac_init(struct n64video_config *config) { (void)config; }
 void vdac_read(struct frame_buffer *fb, bool alpha) { (void)fb; (void)alpha; }
-/* Render into Angrylion's own buffer, then copy at presentation time. This
+/* Render into SoftRDP's own buffer, then copy at presentation time. This
  * preserves interlaced fields across frontend buffers with unspecified contents. */
 struct rgba *vdac_acquire(uint32_t w, uint32_t h, uint32_t *pitch, bool read)
 {
@@ -35,7 +35,7 @@ void vdac_close(void)
     libretro_swap_buffer = false;
 }
 
-void angrylion_present(bool new_frame)
+void softrdp_present(bool new_frame)
 {
     struct retro_framebuffer fb = {0};
     const void *pixels;

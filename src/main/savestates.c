@@ -42,7 +42,7 @@ _Static_assert(RDP_RASTER_STATE_OFFSET + 192 <= 20480,
     "RDP raster state overlaps optional HLE state");
 
 static const char* savestate_magic = "M64+SAVE";
-static const int savestate_latest_version = 0x00011d00;  /* 1.29: SoftRDP renderer state */
+static const int savestate_latest_version = 0x00011e00;  /* 1.30: Fast3D walker/projection state */
 
 struct savestate_work {
     char *data;
@@ -97,10 +97,10 @@ int core_state_load(struct device* dev, const void *data)
     version = (version << 8) | *curr++;
     if((version >> 16) != (savestate_latest_version >> 16) || version > (unsigned)savestate_latest_version)
         return 0;
-    /* Renderer state changes the following HLE-stream offsets. Reject older
+    /* Walker state changes the following HLE-stream offsets. Reject older
      * layouts before reading their payload instead of misinterpreting it. */
-    if(version<0x00011d00) {
-        core_log(CORE_LOG_WARNING,"This savestate predates the SoftRDP renderer state format; use the previous build to load it.");
+    if(version<0x00011e00) {
+        core_log(CORE_LOG_WARNING,"This savestate predates the Fast3D walker state format; use the previous build to load it.");
         return 0;
     }
 

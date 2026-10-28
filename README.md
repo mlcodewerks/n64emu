@@ -10,12 +10,19 @@
 
 Personal N64 emulator code playset for anything with:
 
-* **x86 CPUs w/SSE2 level hardware, or ARM/AArch64 CPUs**.
+* **x86-64 CPUs with SSE2, or Linux AArch64 CPUs with NEON**.
 * **Vulkan 1.1/GL3.3/GLES 3.0**.
 * **Win7 and above/modern Linux**
 * **Modern GCC/G++ with C++20 support**
 
 ## How?
+
+CPU execution uses Ari64 exclusively. The standalone pure and cached
+interpreters have been removed; precise instruction helpers remain for JIT
+fallbacks and exception handling. SoftRDP replaces the Angrylion rasterizer,
+retaining the worker-pool design in `src/device/rcp/rdp/softrdp/worker_pool.c`.
+Backend-removal scope and validation are recorded in
+[`benchmarks/backend-removal/RESULTS.md`](benchmarks/backend-removal/RESULTS.md).
 
 Making a garbage fire by hacking on parallel-n64 to see what the heck happens, if any. This includes HLE for LLE RDP components, 
 GL3.3/GLES3 based LLE RDP, per-cycle level timing, etc.

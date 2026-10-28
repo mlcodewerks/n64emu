@@ -108,12 +108,12 @@ void resize_bilinear_task(struct hle_t* hle)
                 __m128i v=_mm_set1_epi32(4),p;
 #define HLE_RE2_CORNER(off,weight) do { \
     p=_mm_setr_epi32(win[((off)+0)&0xfff],win[((off)+1)&0xfff],win[((off)+2)&0xfff],0); \
-    v=_mm_add_epi32(v,_mm_srli_epi32(_mm_mullo_epi32(p,_mm_set1_epi32(weight)),16)); \
+    v=_mm_add_epi32(v,_mm_srli_epi32(hle_mullo32(p,_mm_set1_epi32(weight)),16)); \
 } while(0)
                 HLE_RE2_CORNER(xi,w_tl);HLE_RE2_CORNER(xi+3,w_tr);
                 HLE_RE2_CORNER(xi+0x3c0,w_bl);HLE_RE2_CORNER(xi+0x3c0+3,w_br);
 #undef HLE_RE2_CORNER
-                _mm_storeu_si128((__m128i *)chan,_mm_and_si128(_mm_min_epu32(v,_mm_set1_epi32(255)),_mm_set1_epi32(0xf8)));
+                _mm_storeu_si128((__m128i *)chan,_mm_and_si128(hle_minu32(v,_mm_set1_epi32(255)),_mm_set1_epi32(0xf8)));
             }
 #else
             for (c = 0; c < 3; ++c) {

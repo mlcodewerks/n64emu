@@ -79,6 +79,15 @@ void rdp_fifo_decode_commands(RdpFifo *f, const unsigned char *ram,
                               unsigned int size, unsigned int text);
 void rdp_fifo_append(RdpFifo *f, const int32_t *words, int count);
 
+/* gsp_triangle written straight into the FIFO tail when a whole worst-case
+ * command fits there (no copy); otherwise built aside and appended, so the
+ * FIFO drains at exactly the points rdp_fifo_append would. Returns the
+ * word count. */
+int gsp_triangle_fifo(GSPState *s, RdpFifo *f, int i0, int i1, int i2,
+                      int textured, int z_buffered);
+int gsp_triangle_fifo_with_texrecip(GSPState *s, RdpFifo *f, int i0, int i1, int i2,
+                      int textured, int z_buffered, int native_texrecip);
+
 /* Track requested and already-emitted FullSyncs. Ordinary display lists
  * forward the original words in place; native packet builders can request
  * a deferred terminator. A list without FullSync must not gain a DP IRQ. */

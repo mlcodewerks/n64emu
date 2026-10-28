@@ -40,6 +40,8 @@ typedef struct GSPVertex
                                are these doubled (with int32 wrap for large
                                coordinates), which the emit path expects. */
     int     clip;           /* clip flags (outcode) */
+    int     f3d_flags;      /* Fast3D revision B record clip flags (the
+                               microcode's own halfword, pair-dependent) */
     /* Store-time screen snapshot (see BridgeVertex): the microcode
      * computes screen coordinates and 1/w at G_VTX time under the
      * then-active viewport/perspNorm and the triangle write reloads
@@ -302,6 +304,10 @@ unsigned int gsp_get_geometry_mode(const GSPState *s);
 void gsp_set_num_lights(GSPState *s, int n);
 void gsp_set_light(GSPState *s, const unsigned char *rdram,
                    unsigned int addr, int index);
+/* Fast3D (Mario Kart 64): the default lights of the data segment at ud,
+ * as the task's DMEM load restores them. */
+void gsp_f3d_task_lights(GSPState *s, const unsigned char *rdram,
+                         unsigned int rdram_size, unsigned int ud);
 void gsp_set_light_color(GSPState *s, int index,
                          int32_t rr, int32_t gg, int32_t bb);
 void gsp_modify_vertex(GSPState *s, int vtx, unsigned int where,

@@ -18,6 +18,7 @@
  */
 
 #include "rdp_emit_f3d.h"
+#include "rdp_emit_f3dtri.h"
 #include "rdp_emit_f3dex2.h"
 #include "rdp_emit_bridge.h"
 #include "rdp_emit_frontend.h"
@@ -1356,8 +1357,7 @@ void f3d_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
 
         case F3D_TRI1:
         {
-            int32_t cw[GSP_TRI_CMD_WORDS];
-            int a, b, c, nc;
+            int a, b, c;
             f3d_sync_persp_tex();
             rsp_four_pair_begin();
             /* GoldenEye/Perfect Dark (Rare's F3DEX-derived GBI1) store the
@@ -1377,15 +1377,19 @@ void f3d_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                 b = (int)((w1 >>  8) & 0xff) / s;
                 c = (int)((w1 >>  0) & 0xff) / s;
             }
-            nc = gsp_triangle(gsp, cw, a, b, c, s_textured, s_zbuffered);
-            if (nc > 0) rdp_fifo_append(fifo, cw, nc);
+            /* GoldenEye's handler takes the flat-shade colour from the
+             * command vertex the flag byte names (Mario Kart 64's, and
+             * every other build's, from the first) */
+            gsp->viewport.f3d_flat_vtx =
+                gsp->viewport.f3d_tri_rev == F3D_TRI_REV_B
+                    ? (int)((w1 >> 24) & 0xffu) % 3 : 0;
+            gsp_triangle_fifo(gsp, fifo, a, b, c, s_textured, s_zbuffered);
+            gsp->viewport.f3d_flat_vtx = 0;
             break;
         }
 
         case F3D_TRI2:
         {
-            int32_t cw[GSP_TRI_CMD_WORDS];
-            int nc;
             f3d_sync_persp_tex();
             rsp_four_pair_begin();
             if(gsp->clip_reject==2 && fifo->group)fifo->group(1);
@@ -1417,9 +1421,8 @@ void f3d_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                 {
                     if (tri[i][0] == tri[i][1] && tri[i][0] == tri[i][2])
                         continue;
-                    nc = gsp_triangle(gsp, cw, tri[i][0], tri[i][1], tri[i][2],
-                                      s_textured, s_zbuffered);
-                    if (nc > 0) rdp_fifo_append(fifo, cw, nc);
+                    gsp_triangle_fifo(gsp, fifo, tri[i][0], tri[i][1],
+                                      tri[i][2], s_textured, s_zbuffered);
                 }
             }
             else if (s_variant_d64)
@@ -1447,10 +1450,8 @@ void f3d_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                      * order and flip the second triangle's winding; drawn
                      * with the walker's order the diagonal double-blends
                      * into a dim streak across the glyphs. */
-                    nc = gsp_triangle(gsp, cw, c1, b1, a1, s_textured, s_zbuffered);
-                    if (nc > 0) rdp_fifo_append(fifo, cw, nc);
-                    nc = gsp_triangle(gsp, cw, a0, b0, c0, s_textured, s_zbuffered);
-                    if (nc > 0) rdp_fifo_append(fifo, cw, nc);
+                    gsp_triangle_fifo(gsp, fifo, c1, b1, a1, s_textured, s_zbuffered);
+                    gsp_triangle_fifo(gsp, fifo, a0, b0, c0, s_textured, s_zbuffered);
                 }
                 else
                 {
@@ -1466,10 +1467,8 @@ void f3d_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                      * the frame moves from disagreeing with the
                      * interpreter to agreeing with it, and Hexen's title
                      * screen goes from 192 differing pixels to none. */
-                    nc = gsp_triangle(gsp, cw, a1, b1, c1, s_textured, s_zbuffered);
-                    if (nc > 0) rdp_fifo_append(fifo, cw, nc);
-                    nc = gsp_triangle(gsp, cw, a0, b0, c0, s_textured, s_zbuffered);
-                    if (nc > 0) rdp_fifo_append(fifo, cw, nc);
+                    gsp_triangle_fifo(gsp, fifo, a1, b1, c1, s_textured, s_zbuffered);
+                    gsp_triangle_fifo(gsp, fifo, a0, b0, c0, s_textured, s_zbuffered);
                 }
             }
             if(gsp->clip_reject==2 && fifo->group)fifo->group(0);
@@ -1508,12 +1507,45 @@ void f3d_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
             int b = (int)((w1 >> 16) & 0xff) / s;
             int c = (int)((w1 >>  8) & 0xff) / s;
             int d = (int)((w1 >>  0) & 0xff) / s;
-            int32_t cw[GSP_TRI_CMD_WORDS];
             int nc;
-            nc = gsp_triangle(gsp, cw, a, b, c, s_textured, s_zbuffered);
-            if (nc > 0) rdp_fifo_append(fifo, cw, nc);
-            nc = gsp_triangle(gsp, cw, a, c, d, s_textured, s_zbuffered);
-            if (nc > 0) rdp_fifo_append(fifo, cw, nc);
+            if (gsp->viewport.f3d_tri_rev == F3D_TRI_REV_A
+                && a < GSP_MAX_VERTICES && b < GSP_MAX_VERTICES
+                && c < GSP_MAX_VERTICES && d < GSP_MAX_VERTICES)
+            {
+                /* Mario Kart 64's handler (text 0x244) cuts the quad along
+                 * the diagonal with the smaller screen-y span: b-d when
+                 * |y(b) - y(d)| <= |y(c) - y(a)|, drawing (b, c, d) then
+                 * (d, a, b); a-c otherwise, drawing (b, c, a) then
+                 * (d, a, c). The flat colour comes from b. The vertex
+                 * order decides the setup's tie-breaks between vertices of
+                 * equal y, so any other order changes the edge words. */
+                int32_t dy0 = (gsp->vtx[b].scr_y >> 14) - (gsp->vtx[d].scr_y >> 14);
+                int32_t dy1 = (gsp->vtx[c].scr_y >> 14) - (gsp->vtx[a].scr_y >> 14);
+                int t1 = d, t2 = b, fv = 2;
+                if (dy0 < 0) dy0 = -dy0;
+                if (dy1 < 0) dy1 = -dy1;
+                if (dy0 > dy1)
+                {
+                    t1 = a;
+                    t2 = c;
+                    fv = 0;
+                }
+                gsp->viewport.f3d_flat_vtx = 0;
+                nc = gsp_triangle_fifo(gsp, fifo, b, c, t1, s_textured, s_zbuffered);
+                /* a first half culled on its face leaves ra zero (writer
+                 * exit 0xfa0) and the handler returns without the second;
+                 * a trivial reject, a zero area or a clip keeps it */
+                if (nc == 0 && rsp_tri_f3d_face_culled())
+                    break;
+                /* b is not a vertex of the second half on the a-c cut;
+                 * every Mario Kart 64 quad is smooth shaded */
+                gsp->viewport.f3d_flat_vtx = fv;
+                gsp_triangle_fifo(gsp, fifo, d, a, t2, s_textured, s_zbuffered);
+                gsp->viewport.f3d_flat_vtx = 0;
+                break;
+            }
+            gsp_triangle_fifo(gsp, fifo, a, b, c, s_textured, s_zbuffered);
+            gsp_triangle_fifo(gsp, fifo, a, c, d, s_textured, s_zbuffered);
             }
             break;
         }
@@ -1618,6 +1650,10 @@ void f3d_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                 ts = gsp->tex_scale_t;
             }
             gsp_set_texture(gsp, ss, ts, tile, level, gsp->tex_w, gsp->tex_h);
+            /* the Fast3D revision B triangle write clamps its depth
+             * coefficients against this command's parameter byte (the
+             * microcode keeps w0 whole at its state block) */
+            gsp->viewport.f3d_zclamp = (int)((w0 >> 16) & 0xffu);
             break;
         }
 

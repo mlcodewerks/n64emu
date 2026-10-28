@@ -114,7 +114,7 @@ static PARALLAX_FORCE_INLINE void fpu_finish(struct r4300_core* cpu, uint32_t op
     unsigned int fmt = RS_OF(op), fn = op & 63, fd = FD_OF(op);
     int single = fmt == 16, out_single = fn == 32 ? 1 : fn == 33 ? 0 : single;
     int to_integer = (fn >= 8 && fn <= 15) || fn == 36 || fn == 37;
-    if (fn == 6) { cpu->cp1.regs[fd].dword = (int64_t)bits; cpu->interp_PC.addr += 4; return; }
+    if (fn == 6) { cpu->cp1.regs[fd].dword = (int64_t)bits; cpu->instruction_pc.addr += 4; return; }
     if ((flags & 32) || ((flags & 2) &&
         (!(cpu->cp1.fcr31 & UINT32_C(0x1000000)) || (cpu->cp1.fcr31 & 0x180)))) {
         fpu_unimplemented(cpu); return;
@@ -123,19 +123,19 @@ static PARALLAX_FORCE_INLINE void fpu_finish(struct r4300_core* cpu, uint32_t op
     if (!to_integer && fpu_output(cpu, &bits, out_single)) return;
     cpu->cp1.regs[fd].dword = (int64_t)bits;
     cp0_step_cycles(&cpu->cp0, r4300_base_cycles(op, cpu->cp0.regs[CP0_STATUS_REG]) - 1);
-    cpu->interp_PC.addr += 4;
+    cpu->instruction_pc.addr += 4;
 }
 
-int pure_interp_fpu_prepare(struct r4300_core* cpu, uint32_t op, uint64_t inputs[3])
+int r4300_ops_fpu_prepare(struct r4300_core* cpu, uint32_t op, uint64_t inputs[3])
 {
     return fpu_prepare(cpu, op, inputs);
 }
-void pure_interp_fpu_finish(struct r4300_core* cpu, uint32_t op, uint64_t bits, unsigned int flags)
+void r4300_ops_fpu_finish(struct r4300_core* cpu, uint32_t op, uint64_t bits, unsigned int flags)
 {
     fpu_finish(cpu, op, bits, flags);
 }
 
-void pure_interp_fpu_arithmetic(struct r4300_core* cpu, uint32_t op)
+void r4300_ops_fpu_arithmetic(struct r4300_core* cpu, uint32_t op)
 {
     uint64_t inputs[3], bits;
     unsigned int fmt = RS_OF(op), fn = op & 63, flags = 0;
@@ -154,8 +154,8 @@ void pure_interp_fpu_arithmetic(struct r4300_core* cpu, uint32_t op)
 }
 
 #define FPU_ARITH_PAIR(name) \
-    DECLARE_INSTRUCTION(name##_S) { pure_interp_fpu_arithmetic(r4300, op); } \
-    DECLARE_INSTRUCTION(name##_D) { pure_interp_fpu_arithmetic(r4300, op); }
+    DECLARE_INSTRUCTION(name##_S) { r4300_ops_fpu_arithmetic(r4300, op); } \
+    DECLARE_INSTRUCTION(name##_D) { r4300_ops_fpu_arithmetic(r4300, op); }
 FPU_ARITH_PAIR(ABS)
 FPU_ARITH_PAIR(ADD)
 FPU_ARITH_PAIR(DIV)
@@ -175,7 +175,7 @@ FPU_ARITH_PAIR(FLOOR_W)
 FPU_ARITH_PAIR(FLOOR_L)
 FPU_ARITH_PAIR(CVT_W)
 FPU_ARITH_PAIR(CVT_L)
-#define FPU_CONVERT(name) DECLARE_INSTRUCTION(name) { pure_interp_fpu_arithmetic(r4300, op); }
+#define FPU_CONVERT(name) DECLARE_INSTRUCTION(name) { r4300_ops_fpu_arithmetic(r4300, op); }
 FPU_CONVERT(CVT_S_D)
 FPU_CONVERT(CVT_S_W)
 FPU_CONVERT(CVT_S_L)

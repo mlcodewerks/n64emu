@@ -18,6 +18,9 @@
 #include <string.h>
 #include "rdp_emit_rsp.h"
 #include "rdp_emit_simd.h"
+#if HLE_SIMD_ENABLED && !defined(RSP_NO_SSE2)
+#define RSP_SSE2 1
+#endif
 
 /* 11-bit divide result look-up table (VRCP family), from cxd4. */
 static const uint16_t div_rom[1024] = {
@@ -153,6 +156,22 @@ static const uint16_t div_rom[1024] = {
 
 /* ---- VRCP family ----------------------------------------------------- */
 
+/* leading zeros of a nonzero word: the divide unit's normalization shift */
+static int rsp_clz32(uint32_t x)
+{
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_clz(x);
+#else
+    int n = 0;
+    if (!(x & 0xffff0000u)) { n += 16; x <<= 16; }
+    if (!(x & 0xff000000u)) { n += 8;  x <<= 8; }
+    if (!(x & 0xf0000000u)) { n += 4;  x <<= 4; }
+    if (!(x & 0xc0000000u)) { n += 2;  x <<= 2; }
+    if (!(x & 0x80000000u)) { n += 1; }
+    return n;
+#endif
+}
+
 /* Core of the RSP divide unit: the input is the sign-extended DivIn (the
  * full 32-bit value for the double-precision vrcph/vrcpl pair, or the
  * sign-extended 16-bit element for single-precision vrcp). Returns the
@@ -167,7 +186,7 @@ static int32_t rsp_div_core(int32_t in32)
     if (data < 0)
         data = (data >= -32768) ? -data : ~data;
 
-    /* Normalize in unsigned arithmetic: the loop shifts the operand's
+    /* Normalize in unsigned arithmetic: the shift moves the operand's
      * leading one up into bit 31, and doing that on a signed int is a
      * signed overflow the optimizer may assume away -- at -O2 the value-
      * range assumption perturbed the reciprocal, and with it every
@@ -177,8 +196,8 @@ static int32_t rsp_div_core(int32_t in32)
         uint32_t ua = (uint32_t)data;
         if (data != 0)
         {
-            for (shift = 0; (ua & 0x80000000u) == 0u; ua <<= 1, shift++)
-                ;
+            shift = rsp_clz32(ua);
+            ua <<= shift;
         }
         addr = (int32_t)((ua >> 22) & 0x1ffu);
     }
@@ -224,7 +243,7 @@ int32_t rsp_rsq32(int32_t in32)
     if (data < 0)
         data = (data >= -32768) ? -data : ~data;
 
-    /* Normalize in unsigned arithmetic: the loop shifts the operand's
+    /* Normalize in unsigned arithmetic: the shift moves the operand's
      * leading one up into bit 31, and doing that on a signed int is a
      * signed overflow the optimizer may assume away -- at -O2 the value-
      * range assumption perturbed the reciprocal, and with it every
@@ -234,8 +253,8 @@ int32_t rsp_rsq32(int32_t in32)
         uint32_t ua = (uint32_t)data;
         if (data != 0)
         {
-            for (shift = 0; (ua & 0x80000000u) == 0u; ua <<= 1, shift++)
-                ;
+            shift = rsp_clz32(ua);
+            ua <<= shift;
         }
         addr = (int32_t)((ua >> 22) & 0x1ffu);
     }
@@ -669,7 +688,7 @@ static void light_dir_xfrm(const int32_t mv[4][4],
 {
     int32_t t_mid[4], t_hi[4];
     int32_t sq_lo[3], sq_mid[3];
-    int32_t lo, ci, si;
+    int32_t lo, si;
     Rsp32 r;
     int L;
 
@@ -1223,6 +1242,23 @@ void rsp_set_vtx_invw_2rd(int on)
 }
 
 static int s_vtx_invw_raw = 0;
+
+/* Fast3D vertex write (GoldenEye, Perfect Dark, Mario Kart 64): the
+ * shared reciprocal routine doubles the raw table result (re-latching the
+ * fraction after the integer term) and refines it as r * (2 - r * w')
+ * against the DMEM 0x60 row of 2s; the position takes the reciprocal with
+ * its integer clamped to 0x7fff when negative (vge/vmrg against v30[0]);
+ * and the stored screen integers are clamped by the vge/vlt pair against
+ * the data row at 0x28: x and y to [lo, hi], z to [0, 0x7fff]. */
+static int s_vtx_f3d = 0;
+static int32_t s_vtx_f3d_lo = -4090, s_vtx_f3d_hi = 4090;
+
+void rsp_set_vtx_f3d(int on, int32_t clamp_lo, int32_t clamp_hi)
+{
+    s_vtx_f3d = on ? 1 : 0;
+    s_vtx_f3d_lo = clamp_lo;
+    s_vtx_f3d_hi = clamp_hi;
+}
 
 void rsp_set_vtx_invw_raw(int on)
 {
@@ -1804,6 +1840,13 @@ int rsp_vtx_screen_rs(int32_t cx, int32_t cy, int32_t cz, int32_t cw,
 }
 
 static uint16_t s_projection_i[3],s_projection_f[3];
+/* The stock chain's z lane (z x 1/w' x perspNorm) of the last vertex
+ * rsp_vtx_screen placed: the fog factor runs the same chain on the same
+ * vertex. */
+static int s_fogz_ok;
+static int32_t s_fogz_cz, s_fogz_cw, s_fogz_pn;
+static Rsp32 s_fogz_p2;
+
 int rsp_vtx_screen(int32_t cx, int32_t cy, int32_t cz, int32_t cw,
                    int32_t pn,
                    int32_t vsx, int32_t vsy, int32_t vsz,
@@ -1817,6 +1860,11 @@ int rsp_vtx_screen(int32_t cx, int32_t cy, int32_t cz, int32_t cw,
     int32_t scr_i[3], scr_f[3];
     RspAcc acc;
     int lane;
+
+    /* the Fast3D vertex write runs for every vertex, behind the eye
+     * included, and its triangle path reads whatever it stored */
+    if (cw <= 0 && !s_vtx_f3d)
+        return 0;
 
     pos[0] = mk32(cx);
     pos[1] = mk32(cy);
@@ -1835,7 +1883,24 @@ int rsp_vtx_screen(int32_t cx, int32_t cy, int32_t cz, int32_t cw,
 
     /* 1/w' with the Newton-Raphson step, exactly as rsp_vtx_invw */
     r = mk32(rsp_rcp32((int32_t)(((uint32_t)U16(pw.i) << 16) | (uint32_t)U16(pw.f))));
-    if (s_vtx_invw_raw)
+    if (s_vtx_f3d)
+    {
+        acc = p_udn(r.f, 2);
+        acc += p_udh(r.i, 2);
+        r.i = acc_clamp_mid(acc);
+        r.f = acc_clamp_low(acc);
+        t = mac32(r, pw, 0);
+        {
+            int32_t borrow = (U16(t.f) != 0) ? 1 : 0;
+            u.f = (int32_t)((0 - U16(t.f)) & 0xffff);
+            u.i = 2 - S16(t.i) - borrow;
+            if (u.i > 32767) u.i = 32767;
+            if (u.i < -32768) u.i = -32768;
+            u.i &= 0xffff;
+        }
+        iw = mac32(r, u, 0);
+    }
+    else if (s_vtx_invw_raw)
     {
         /* Turbo3D's reciprocal (gspTurbo3D text +0x538..+0x574): the
          * 32-bit vrcph/vrcpl table result is doubled through the
@@ -1899,24 +1964,47 @@ int rsp_vtx_screen(int32_t cx, int32_t cy, int32_t cz, int32_t cw,
         Rsp32 p1, p2;
         int32_t vs = (lane == 0) ? vsx : (lane == 1) ? -vsy : vsz;
         int32_t vt = (lane == 0) ? vtx_ : (lane == 1) ? vty : vtz;
+        int32_t iwi = iw.i;
 
+        if (s_vtx_f3d && S16(iwi) < 0)
+            iwi = 0x7fff;
         acc = p_udl(pos[lane].f, iw.f);
         acc += p_udm(pos[lane].i, iw.f);
-        acc += p_udn(pos[lane].f, iw.i);
+        acc += p_udn(pos[lane].f, iwi);
         p1.f = acc_clamp_low(acc);
-        acc += p_udh(pos[lane].i, iw.i);
+        acc += p_udh(pos[lane].i, iwi);
         p1.i = acc_clamp_mid(acc);
 
         acc = p_udl(p1.f, pn);
         acc += p_udm(p1.i, pn);
         p2.i = acc_clamp_mid(acc);
         p2.f = acc_clamp_low(acc);
+        if (lane == 2)
+        {
+            s_fogz_ok = !s_vtx_f3d && !s_vtx_invw_raw && !s_vtx_invw_2rd;
+            s_fogz_cz = cz;
+            s_fogz_cw = cw;
+            s_fogz_pn = pn;
+            s_fogz_p2 = p2;
+        }
 
         acc = p_udh(vt, 1);
         acc += p_udn(p2.f, vs);
         scr_f[lane] = acc_clamp_low(acc);
         acc += p_udh(p2.i, vs);
         scr_i[lane] = acc_clamp_mid(acc);
+        if (s_vtx_f3d)
+        {
+            /* the fraction is re-latched after the integer term */
+            scr_f[lane] = acc_clamp_low(acc);
+            if (lane < 2)
+            {
+                if (S16(scr_i[lane]) < s_vtx_f3d_lo)
+                    scr_i[lane] = s_vtx_f3d_lo & 0xffff;
+                if (S16(scr_i[lane]) > s_vtx_f3d_hi)
+                    scr_i[lane] = s_vtx_f3d_hi & 0xffff;
+            }
+        }
     }
 
     for(lane=0;lane<3;lane++) {
@@ -1980,6 +2068,11 @@ int32_t rsp_vtx_fog(int32_t cz, int32_t cw, int32_t pn,
     if (cw <= 0)
         return 0;
 
+    if (s_fogz_ok && s_fogz_cz == cz && s_fogz_cw == cw && s_fogz_pn == pn)
+    {
+        p2 = s_fogz_p2;
+        goto shape;
+    }
     {
         Rsp32 w32 = mk32(cw);
         acc = p_udl(w32.f, pn);
@@ -2021,6 +2114,7 @@ int32_t rsp_vtx_fog(int32_t cz, int32_t cw, int32_t pn,
     p2.i = acc_clamp_mid(acc);
     p2.f = acc_clamp_low(acc);
 
+shape:
     acc = p_udh(fog_o, 1);
     acc += p_udh(1, 0x7f00);
     acc += p_udn(p2.f, fog_m);
@@ -2119,7 +2213,7 @@ static void rsp_gradients8(const int32_t ai[3][8],const int32_t af[3][8],
             __m128i f=_mm_and_si128(_mm_loadu_si128((const __m128i *)(af[row]+at)),mask);
             __m128i borrow=_mm_and_si128(_mm_cmpgt_epi32(origin_f,f),_mm_set1_epi32(1));
             i=_mm_sub_epi32(_mm_sub_epi32(_mm_srai_epi32(_mm_slli_epi32(i,16),16),origin_i),borrow);
-            i=_mm_and_si128(_mm_max_epi32(_mm_set1_epi32(-32768),_mm_min_epi32(_mm_set1_epi32(32767),i)),mask);
+            i=_mm_and_si128(hle_max32(_mm_set1_epi32(-32768),hle_min32(_mm_set1_epi32(32767),i)),mask);
             f=_mm_and_si128(_mm_sub_epi32(f,origin_f),mask);
             rsp_store_pairs4(out+at,i,f);delta[v]=_mm_or_si128(_mm_slli_epi32(i,16),f);
         }
@@ -2129,7 +2223,7 @@ static void rsp_gradients8(const int32_t ai[3][8],const int32_t af[3][8],
             for(p=0;p<2;p++) {
                 __m128i aa=_mm_shuffle_epi32(a,_MM_SHUFFLE(1,1,0,0));
                 __m128i bb=_mm_shuffle_epi32(b,_MM_SHUFFLE(1,1,0,0));
-                parts[p]=hle_sra64(_mm_add_epi64(_mm_mul_epi32(aa,ca),_mm_mul_epi32(bb,cb)),16);
+                parts[p]=hle_sra64(_mm_add_epi64(hle_mul_s32(aa,ca),hle_mul_s32(bb,cb)),16);
                 a=_mm_srli_si128(a,8);b=_mm_srli_si128(b,8);
             }
             a=hle_join64_low32(parts[0],parts[1]);
@@ -3227,6 +3321,202 @@ static void factor5_edge_attributes(const RspTriVtx *a,const RspTriVtx *b,const 
         }
     }
 }
+
+#ifdef RSP_SSE2
+/* ---- the triangle writer's attribute lanes, eight at a time ----------- */
+
+/* The eight r g b a s t w z lanes run the microcode's vector chains; held
+ * as 16-bit slices (h:m:l) of the 48-bit accumulator. These chains never
+ * leave the 47-bit range, so the slices agree with the scalar int64
+ * accumulator everywhere they are read. */
+typedef struct { __m128i h, m, l; } RxAcc;
+
+#define RX_K8000 _mm_set1_epi16((short)0x8000)
+
+/* -1 where sum = a + b carried out of 16 bits */
+static __m128i rx_carry(__m128i sum, __m128i b)
+{
+    return _mm_cmplt_epi16(_mm_xor_si128(sum, RX_K8000), _mm_xor_si128(b, RX_K8000));
+}
+
+/* eight int32 lanes holding 16-bit values into one int16 vector */
+static __m128i rx_pack16(const int32_t *p)
+{
+    __m128i a = _mm_loadu_si128((const __m128i *)(const void *)p);
+    __m128i b = _mm_loadu_si128((const __m128i *)(const void *)(p + 4));
+    a = _mm_srai_epi32(_mm_slli_epi32(a, 16), 16);
+    b = _mm_srai_epi32(_mm_slli_epi32(b, 16), 16);
+    return _mm_packs_epi32(a, b);
+}
+
+/* acc += (hi:lo), a 32-bit product sign-extended */
+static void rx_add32(RxAcc *a, __m128i hi, __m128i lo)
+{
+    __m128i l2 = _mm_add_epi16(a->l, lo);
+    __m128i c1 = rx_carry(l2, lo);
+    __m128i m1 = _mm_add_epi16(a->m, hi);
+    __m128i ca = rx_carry(m1, hi);
+    __m128i m2 = _mm_sub_epi16(m1, c1);
+    __m128i cb = _mm_and_si128(c1, _mm_cmpeq_epi16(m2, _mm_setzero_si128()));
+    a->h = _mm_sub_epi16(_mm_sub_epi16(_mm_add_epi16(a->h, _mm_srai_epi16(hi, 15)), ca), cb);
+    a->m = m2;
+    a->l = l2;
+}
+
+/* acc += (hi:lo) << 16 */
+static void rx_add32_16(RxAcc *a, __m128i hi, __m128i lo)
+{
+    __m128i m2 = _mm_add_epi16(a->m, lo);
+    a->h = _mm_sub_epi16(_mm_add_epi16(a->h, hi), rx_carry(m2, lo));
+    a->m = m2;
+}
+
+/* the products: unsigned s x signed t, signed x signed, signed s x
+ * unsigned t, unsigned x unsigned (high half only) */
+static void rx_mul_us(__m128i s, __m128i t, __m128i *hi, __m128i *lo)
+{
+    *lo = _mm_mullo_epi16(s, t);
+    *hi = _mm_add_epi16(_mm_mulhi_epi16(s, t), _mm_and_si128(t, _mm_srai_epi16(s, 15)));
+}
+
+static void rx_mul_ss(__m128i s, __m128i t, __m128i *hi, __m128i *lo)
+{
+    *lo = _mm_mullo_epi16(s, t);
+    *hi = _mm_mulhi_epi16(s, t);
+}
+
+static void rx_mul_su(__m128i s, __m128i t, __m128i *hi, __m128i *lo)
+{
+    rx_mul_us(t, s, hi, lo);
+}
+
+/* signed clamp of bits 47..16, and the low slice with the 0/0xffff
+ * clamp */
+static __m128i rx_clamp_mid(const RxAcc *a)
+{
+    return _mm_packs_epi32(_mm_unpacklo_epi16(a->m, a->h), _mm_unpackhi_epi16(a->m, a->h));
+}
+
+static __m128i rx_clamp_low(const RxAcc *a)
+{
+    __m128i t = rx_clamp_mid(a);
+    __m128i c = _mm_cmpeq_epi16(t, a->m);
+    return _mm_or_si128(_mm_and_si128(c, a->l),
+                        _mm_andnot_si128(c, _mm_xor_si128(t, RX_K8000)));
+}
+
+/* sub32 on eight lanes: the fraction borrows, the integer clamps */
+static void rx_sub32(__m128i ai, __m128i af, __m128i bi, __m128i bf,
+                     __m128i *oi, __m128i *of)
+{
+    __m128i borrow = _mm_cmplt_epi16(_mm_xor_si128(af, RX_K8000), _mm_xor_si128(bf, RX_K8000));
+    __m128i z = _mm_setzero_si128();
+    __m128i as = _mm_srai_epi16(ai, 15), bs = _mm_srai_epi16(bi, 15);
+    __m128i bw = _mm_srai_epi16(borrow, 15);
+    __m128i lo = _mm_sub_epi32(_mm_sub_epi32(_mm_unpacklo_epi16(ai, as), _mm_unpacklo_epi16(bi, bs)),
+                               _mm_sub_epi32(z, _mm_unpacklo_epi16(bw, bw)));
+    __m128i hi = _mm_sub_epi32(_mm_sub_epi32(_mm_unpackhi_epi16(ai, as), _mm_unpackhi_epi16(bi, bs)),
+                               _mm_sub_epi32(z, _mm_unpackhi_epi16(bw, bw)));
+    *of = _mm_sub_epi16(af, bf);
+    *oi = _mm_packs_epi32(lo, hi);
+}
+
+static void rx_store32(Rsp32 o[8], __m128i i, __m128i f)
+{
+    uint16_t ti[8], tf[8];
+    int k;
+    _mm_storeu_si128((__m128i *)(void *)ti, i);
+    _mm_storeu_si128((__m128i *)(void *)tf, f);
+    for (k = 0; k < 8; k++)
+    {
+        o[k].i = ti[k];
+        o[k].f = tf[k];
+    }
+}
+
+static __m128i rx_load_i(const Rsp32 v[8])
+{
+    int32_t t[8];
+    int k;
+    for (k = 0; k < 8; k++)
+        t[k] = v[k].i;
+    return rx_pack16(t);
+}
+
+static __m128i rx_load_f(const Rsp32 v[8])
+{
+    int32_t t[8];
+    int k;
+    for (k = 0; k < 8; k++)
+        t[k] = v[k].f;
+    return rx_pack16(t);
+}
+
+/* the H->L and H->M attribute deltas and the two cross numerators:
+ * dA_x = dMH.y * dA_H + dHL.y * dA_M and dA_y = dLH.x * dA_M + dHM.x *
+ * dA_H (vmudn/vmadh, the accumulator's raw 47..16 window) */
+static void rx_attr_deltas(const int32_t at_i[3][8], const int32_t at_f[3][8],
+                           int32_t mh_y, int32_t hl_y, int32_t lh_x, int32_t hm_x,
+                           Rsp32 dA_H[8], Rsp32 dA_M[8], Rsp32 dA_x[8], Rsp32 dA_y[8])
+{
+    __m128i a1i = rx_pack16(at_i[0]), a1f = rx_pack16(at_f[0]);
+    __m128i a2i = rx_pack16(at_i[1]), a2f = rx_pack16(at_f[1]);
+    __m128i a3i = rx_pack16(at_i[2]), a3f = rx_pack16(at_f[2]);
+    __m128i hi_, hf, mi, mf, ph, pl;
+    __m128i ky_mh = _mm_set1_epi16((short)mh_y), ky_hl = _mm_set1_epi16((short)hl_y);
+    __m128i kx_lh = _mm_set1_epi16((short)lh_x), kx_hm = _mm_set1_epi16((short)hm_x);
+    RxAcc a;
+    rx_sub32(a3i, a3f, a1i, a1f, &hi_, &hf);
+    rx_sub32(a2i, a2f, a1i, a1f, &mi, &mf);
+    rx_store32(dA_H, hi_, hf);
+    rx_store32(dA_M, mi, mf);
+
+    rx_mul_us(hf, ky_mh, &ph, &pl);
+    a.l = pl; a.m = ph; a.h = _mm_srai_epi16(ph, 15);
+    rx_mul_ss(hi_, ky_mh, &ph, &pl);
+    rx_add32_16(&a, ph, pl);
+    rx_mul_us(mf, ky_hl, &ph, &pl);
+    rx_add32(&a, ph, pl);
+    rx_mul_ss(mi, ky_hl, &ph, &pl);
+    rx_add32_16(&a, ph, pl);
+    rx_store32(dA_x, a.h, a.m);
+
+    rx_mul_us(mf, kx_lh, &ph, &pl);
+    a.l = pl; a.m = ph; a.h = _mm_srai_epi16(ph, 15);
+    rx_mul_ss(mi, kx_lh, &ph, &pl);
+    rx_add32_16(&a, ph, pl);
+    rx_mul_us(hf, kx_hm, &ph, &pl);
+    rx_add32(&a, ph, pl);
+    rx_mul_ss(hi_, kx_hm, &ph, &pl);
+    rx_add32_16(&a, ph, pl);
+    rx_store32(dA_y, a.h, a.m);
+}
+
+/* base = attr(H) + dAdE * y_spx (vmudn/vmadh of H, then vmadl/vmadm/
+ * vmadn with the clamped low read, vmadh with the clamped mid read) */
+static void rx_attr_base(const int32_t at_i0[8], const int32_t at_f0[8],
+                         const Rsp32 dAdE[8], int32_t y_spx_f, int32_t y_spx_i,
+                         Rsp32 base[8])
+{
+    __m128i ei = rx_load_i(dAdE), ef = rx_load_f(dAdE);
+    __m128i yf = _mm_set1_epi16((short)y_spx_f), yi = _mm_set1_epi16((short)y_spx_i);
+    __m128i ph, pl, bf;
+    RxAcc a;
+    a.m = rx_pack16(at_i0);
+    a.l = rx_pack16(at_f0);
+    a.h = _mm_srai_epi16(a.m, 15);
+    rx_add32(&a, _mm_setzero_si128(), _mm_mulhi_epu16(ef, yf));
+    rx_mul_su(ei, yf, &ph, &pl);
+    rx_add32(&a, ph, pl);
+    rx_mul_us(ef, yi, &ph, &pl);
+    rx_add32(&a, ph, pl);
+    bf = rx_clamp_low(&a);
+    rx_mul_ss(ei, yi, &ph, &pl);
+    rx_add32_16(&a, ph, pl);
+    rx_store32(base, rx_clamp_mid(&a), bf);
+}
+#endif
+
 int rsp_tri_write(int32_t *ew,
                   const RspTriVtx *v1c, const RspTriVtx *v2c,
                   const RspTriVtx *v3c,
@@ -3996,10 +4286,12 @@ int rsp_tri_write_with_texrecip(int32_t *ew,
              * floor(0x7fff * iw / (2*max))); the raw reciprocal-multiply path
              * biases this high by ~11 ulp, drifting the perspective gradient.
              * Form the quotient directly to match the LLE-emitted value. */
-            int64_t pq = (int64_t)iw[vi] << 15;
-            pq = (max_iw != 0) ? (pq / (int64_t)max_iw) : 0;
-            wnorm[vi].f = (int32_t)(pq & 0xffff);
-            wnorm[vi].i = (int32_t)((pq >> 16) & 0xffff);
+            {
+                int64_t pq = (int64_t)iw[vi] << 15;
+                pq = (max_iw != 0) ? (pq / (int64_t)max_iw) : 0;
+                wnorm[vi].f = (int32_t)(pq & 0xffff);
+                wnorm[vi].i = (int32_t)((pq >> 16) & 0xffff);
+            }
         }
         {
             const RspTriVtx *vv[3];
@@ -4067,6 +4359,37 @@ int rsp_tri_write_with_texrecip(int32_t *ew,
         rs_mh_y = clamp_s16(mh_y * scale); rs_hl_y = clamp_s16(hl_y * scale);
         rs_lh_x = clamp_s16(lh_x * scale); rs_hm_x = clamp_s16(hm_x * scale);
     }
+#ifdef RSP_SSE2
+    if (!scaled_deltas && !s_tri_attr_zboss && native_texrecip != 2)
+    {
+        /* the stock chain: deltas, numerators and bases eight lanes at a
+         * time, the gradient multiplies on the wide reciprocal per lane */
+        rx_attr_deltas((const int32_t (*)[8])at_i, (const int32_t (*)[8])at_f,
+                       mh_y, hl_y, lh_x, hm_x, dA_H, dA_M, dA_x, dA_y);
+        for (k = 0; k < 8; k++)
+        {
+            if (native_texrecip)
+            {
+                dAdX[k] = mac32(dA_x[k], inv_dx, 0);
+                dAdY[k] = mac32(dA_y[k], inv_dx, &acc);
+            }
+            else
+            {
+                dAdX[k] = mac32_wide(dA_x[k], inv_dx_64, 0);
+                dAdY[k] = mac32_wide(dA_y[k], inv_dx_64, &acc);
+            }
+            acc += p_udl(dAdX[k].f, dxhdy.f);
+            acc += p_udm(dAdX[k].i, dxhdy.f);
+            acc += p_udn(dAdX[k].f, dxhdy.i);
+            dAdE[k].f = acc_clamp_low(acc);
+            acc += p_udh(dAdX[k].i, dxhdy.i);
+            dAdE[k].i = acc_clamp_mid(acc);
+        }
+        rx_attr_base(at_i[0], at_f[0], dAdE, y_spx_f, y_spx_i, base);
+    }
+    else
+#endif
+    {
 #if HLE_SIMD_ENABLED
     rsp_gradients8(at_i,at_f,dA_H,dA_M,dA_x,dA_y,
         scaled_deltas?rs_mh_y:mh_y,scaled_deltas?rs_hl_y:hl_y,
@@ -4258,6 +4581,8 @@ int rsp_tri_write_with_texrecip(int32_t *ew,
          * reaches +-25). Zero is the closest model; its render effect is
          * confined to the dz tolerance term of the z compare. */
     }
+
+    } /* scalar/specialized attribute chain */
 
     /* The texture block's fourth halfwords are the z lane as stored by the
      * 8-byte sdv of lanes 4..7 -- captured before the z-block x32 scaling
@@ -4800,7 +5125,7 @@ int rsp_tri_write_with_texrecip(int32_t *ew,
 }
 
 #include "rdp_emit_state.h"
-#define WALKER_FIELDS(X) X(s_tri_attr_dkr) X(s_clip_lerp_l3dex) X(s_clip_lerp_seed3) X(s_vtx_invw_2rd) X(s_tri_attr_rs) X(s_tri_attr_zboss) X(s_rs_stale_w_i) X(s_rs_stale_w_f) X(s_rs_stale_l_sf) X(s_rs_stale_l_tf) X(s_vtx_invw_raw) X(s_vtx_y_round) X(s_vtx_x_round) X(s_keep_degenerate) X(s_attr_lowp) X(s_affine_tex) X(s_persp_skip) X(s_vtx_z_quant) X(s_clip_lerp_204h) X(s_rs_last_ndc2z) X(s_rs_last_pw) X(s_rs_last_outcode) X(s_rs_lut_sort) X(s_d64_lut_sort)
+#define WALKER_FIELDS(X) X(s_vtx_f3d) X(s_vtx_f3d_lo) X(s_vtx_f3d_hi) X(s_tri_attr_dkr) X(s_clip_lerp_l3dex) X(s_clip_lerp_seed3) X(s_vtx_invw_2rd) X(s_tri_attr_rs) X(s_tri_attr_zboss) X(s_rs_stale_w_i) X(s_rs_stale_w_f) X(s_rs_stale_l_sf) X(s_rs_stale_l_tf) X(s_vtx_invw_raw) X(s_vtx_y_round) X(s_vtx_x_round) X(s_keep_degenerate) X(s_attr_lowp) X(s_affine_tex) X(s_persp_skip) X(s_vtx_z_quant) X(s_clip_lerp_204h) X(s_rs_last_ndc2z) X(s_rs_last_pw) X(s_rs_last_outcode) X(s_rs_lut_sort) X(s_d64_lut_sort)
 EMIT_STATE_DEFINE(rsp_emit_saved, WALKER_FIELDS)
 #undef WALKER_FIELDS
 
@@ -4809,6 +5134,10 @@ void rsp_emit_state_save(void *p) { rsp_emit_saved_state_save(p); }
 void rsp_emit_state_load(const void *p)
 {
     rsp_emit_saved_state_load(p);
+    s_fogz_ok = 0; /* Derived from the most recent screen transform. */
     s_base_spill_packet = 0;
-    if (!p) { s_rs_stale_w_i[0] = s_rs_stale_w_i[1] = s_rs_stale_w_i[2] = 0x7fff; }
+    if (!p) {
+        s_rs_stale_w_i[0] = s_rs_stale_w_i[1] = s_rs_stale_w_i[2] = 0x7fff;
+        s_vtx_f3d_lo = -4090; s_vtx_f3d_hi = 4090;
+    }
 }

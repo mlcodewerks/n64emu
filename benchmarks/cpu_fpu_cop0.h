@@ -184,7 +184,7 @@ static void check_fast_fp(int cached)
     cpu.cp1.fcr31 = 0x01801c00;
     cpu.cp1.regs[1].dword = INT64_C(0x3ff1fffffe632358);
     execute_test_op(fp_op(17, 13));
-    assert(cpu.interp_PC.addr == 0x80000004);
+    assert(cpu.instruction_pc.addr == 0x80000004);
     assert(cpu.cp1.regs[3].dword == 1);
     assert((cpu.cp1.fcr31 & 0x3f000) == 0x1000);
     /* The reverse case: the unused high word makes the raw 64-bit register
@@ -193,7 +193,7 @@ static void check_fast_fp(int cached)
     cpu.cp1.fcr31 = 0x01801c00;
     cpu.cp1.regs[1].dword = INT64_C(0x7ff8000040200000);
     execute_test_op(fp_op(16, 13));
-    assert(cpu.interp_PC.addr == 0x80000004);
+    assert(cpu.instruction_pc.addr == 0x80000004);
     assert(cpu.cp1.regs[3].dword == 2);
     assert((cpu.cp1.fcr31 & 0x3f000) == 0x1000);
     for (unsigned fmt = 16; fmt <= 17; ++fmt) {
@@ -335,5 +335,5 @@ static void check_cop0_registers(int cached)
     control_write(13, CP0_CAUSE_IP0, 0);
     assert(test_exception_code() == CP0_CAUSE_EXCCODE_BP);
     execute_test_op(0x40410000); /* CFC0 is a no-op. */
-    assert(cpu.interp_PC.addr == 0x80000004);
+    assert(cpu.instruction_pc.addr == 0x80000004);
 }

@@ -1,11 +1,6 @@
 DEBUG ?= 0
 .DEFAULT_GOAL := all
-# Keep the CPU interpreter optimized even when the rest of the tree is built
-# with DEBUG=1. Set INTERP_OPTIMIZE=0 for source-level interpreter debugging.
-INTERP_OPTIMIZE ?= 1
-INTERP_BRANCHLESS ?= 0
 HEADLESS_BENCHMARK ?= 0
-HEADLESS_BENCH_CPU ?= cached
 FORCE_GLES ?= 0
 FORCE_GLES3 ?= 0
 LLE ?= 0
@@ -575,33 +570,31 @@ CFLAGS += -std=gnu99 -D_CRT_SECURE_NO_WARNINGS -Wno-discarded-qualifiers
 
 ifeq ($(HEADLESS_BENCHMARK),1)
 CFLAGS += -DPARALLAX_HEADLESS_BENCHMARK
-ifeq ($(HEADLESS_BENCH_CPU),pure)
-CFLAGS += -DPARALLAX_HEADLESS_BENCH_PURE
-endif
 endif
 CXXFLAGS += -std=c++17 -D_CRT_SECURE_NO_WARNINGS
 CXXFLAGS += -fpermissive
 # ISA upgrades belong to runtime-dispatched leaves, never the default C++ ABI.
 
-# HLE integer kernels share SSE4.2 and the existing NEON translation layer.
+# HLE integer kernels share SSE2 and the existing NEON translation layer.
 # Keep this ISA requirement local to HLE; scalar reference builds can opt out.
 HLE_SIMD ?= 1
-ANGRYLION_SIMD ?= 1
-ifeq ($(ANGRYLION_SIMD),0)
-$(CORE_DIR)/src/device/rcp/rdp/angrylion/n64video.o: CFLAGS += -DANGRYLION_SIMD_DISABLE
-else
-ifneq (,$(filter x86_64 amd64 x86 i386 i486 i586 i686,$(ARCH)))
-$(CORE_DIR)/src/device/rcp/rdp/angrylion/n64video.o: CFLAGS += -msse4.2
-endif
-endif
 ifeq ($(HLE_SIMD),0)
-COREFLAGS += -DHLE_SIMD_DISABLE
+COREFLAGS += -DHLE_SIMD_DISABLE -DF3D_NO_SSE2 -DRSP_NO_SSE2
 else
 ifneq (,$(filter x86_64 amd64 x86 i386 i486 i586 i686,$(ARCH)))
-$(addprefix $(CORE_DIR)/src/device/rcp/rsp/hle/,$(notdir $(patsubst %.c,%.o,$(wildcard $(CORE_DIR)/src/device/rcp/rsp/hle/*.c)))): CFLAGS += -msse4.2
-$(patsubst %.c,%.o,$(wildcard $(CORE_DIR)/src/device/rcp/rsp/hle/rdp_emit*.c)): CFLAGS += -msse4.2
+HLE_SSE2_FLAGS := -msse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-fma -mno-popcnt
+$(patsubst %.c,%.o,$(wildcard $(CORE_DIR)/src/device/rcp/rsp/hle/*.c)): CFLAGS += $(HLE_SSE2_FLAGS)
 endif
 endif
+
+# Rebuild HLE when its ISA contract changes without invalidating unrelated
+# CPU and renderer objects. Header dependencies cover the walker layouts.
+HLE_SIMD_CONFIG := $(CORE_DIR)/.hle-simd-config
+HLE_SIMD_CONFIG_VALUE := arch=$(ARCH):cc=$(CC):simd=$(HLE_SIMD):sse2-neon-v2
+ifneq ($(strip $(file <$(HLE_SIMD_CONFIG))),$(HLE_SIMD_CONFIG_VALUE))
+$(file >$(HLE_SIMD_CONFIG),$(HLE_SIMD_CONFIG_VALUE))
+endif
+$(patsubst %.c,%.o,$(wildcard $(CORE_DIR)/src/device/rcp/rsp/hle/*.c)): $(HLE_SIMD_CONFIG)
 
 ifeq ($(HAVE_LTCG),1)
    CPUFLAGS += -flto
@@ -619,9 +612,9 @@ ifneq ($(platform),win)
 COREFLAGS += -D_GNU_SOURCE
 endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
-# Ari64 emitter and interpreter-only configuration, or optimization settings.
+# Ari64 emitter, runtime layout and optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):headless=$(HEADLESS_BENCHMARK):headless-cpu=$(HEADLESS_BENCH_CPU):$(WITH_DYNAREC):$(if $(ARI64_DIR),ari64-emitter,interpreter):debug=$(DEBUG):profile=$(ARI64_PROFILE):interp=$(INTERP_OPTIMIZE):branchless=$(INTERP_BRANCHLESS):hle-simd=$(HLE_SIMD):angrylion-simd=$(ANGRYLION_SIMD):software=softrdp:simd=sse2-dispatch-v1
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):headless=$(HEADLESS_BENCHMARK):$(WITH_DYNAREC):ari64-only-v1:debug=$(DEBUG):profile=$(ARI64_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
 ifneq ($(strip $(file <$(CPU_JIT_CONFIG))),$(CPU_JIT_CONFIG_VALUE))
 $(file >$(CPU_JIT_CONFIG),$(CPU_JIT_CONFIG_VALUE))
 endif
@@ -629,13 +622,9 @@ $(OBJECTS): $(CPU_JIT_CONFIG)
 CXXFLAGS    += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(GLFLAGS) $(DYNAFLAGS)
 CFLAGS      += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(GLFLAGS) $(DYNAFLAGS)
 
-ifeq ($(INTERP_OPTIMIZE),1)
-$(CORE_DIR)/src/device/r4300/pure_interp.o $(CORE_DIR)/src/device/r4300/cached_interp.o: CFLAGS += -O3
-endif
-
-$(CORE_DIR)/src/device/r4300/pure_interp.o: CFLAGS += -DPARALLAX_INTERP_BRANCHLESS=$(INTERP_BRANCHLESS)
+$(CORE_DIR)/src/device/r4300/cpu_ops.o $(CORE_DIR)/src/device/r4300/jit_runtime.o: CFLAGS += -O3
 # Keep precise host operations behind an integer ABI; dispatch and guest checks use fast-math.
-$(CORE_DIR)/src/device/r4300/pure_interp.o: CFLAGS += -ffast-math
+$(CORE_DIR)/src/device/r4300/cpu_ops.o: CFLAGS += -ffast-math
 $(CORE_DIR)/src/device/r4300/fpu_native.o: CFLAGS += -O3 -fno-fast-math -fno-math-errno -frounding-math -ffp-contract=off
 
 ifeq (,$(findstring android,$(platform)))
@@ -655,8 +644,8 @@ all: $(TARGET)
 .PHONY: rpi4 rpi5
 rpi4 rpi5:
 	$(MAKE) platform=$@ all
-$(CORE_DIR)/src/device/r4300/pure_interp.o: $(addprefix $(CORE_DIR)/src/device/r4300/,fpu_arithmetic.h fpu_compare.h fpu_native.h interp_fpu_move.h)
-$(CORE_DIR)/src/device/r4300/cached_interp.o $(CORE_DIR)/src/device/r4300/pure_interp.o: $(addprefix $(CORE_DIR)/src/device/r4300/,interp_fpu_move.h interp_thread_poll.h)
+$(CORE_DIR)/src/device/r4300/cpu_ops.o: $(addprefix $(CORE_DIR)/src/device/r4300/,fpu_arithmetic.h fpu_compare.h fpu_native.h interp_fpu_move.h)
+$(CORE_DIR)/src/device/r4300/jit_runtime.o $(CORE_DIR)/src/device/r4300/cpu_ops.o: $(addprefix $(CORE_DIR)/src/device/r4300/,interp_fpu_move.h interp_thread_poll.h)
 $(CORE_DIR)/src/device/r4300/fpu_native.o: $(addprefix $(CORE_DIR)/src/device/r4300/,fpu_native.h fpu_neon.h cp1.h)
 $(TARGET): $(OBJECTS)
 
@@ -677,7 +666,7 @@ $(ARI64_SOURCE:.cpp=.o): CXXFLAGS += -O3
 $(ARI64_DIR)/ari64_x64.o: $(wildcard $(ARI64_DIR)/x64/*.inc) $(ARI64_DIR)/x64/assem_x64.h $(ARI64_DIR)/x64/xbyak_emit.h $(ARI64_DIR)/ari64.h $(ARI64_DIR)/code_write_scope.h
 $(ARI64_DIR)/ari64_arm64.o: $(wildcard $(ARI64_DIR)/arm64/*.inc) $(ARI64_DIR)/arm64/xbyak_emit.h $(ARI64_DIR)/ari64.h $(ARI64_DIR)/code_write_scope.h
 ifeq ($(ARI64_PROFILE),1)
-$(CORE_DIR)/src/device/r4300/cached_interp.o: CFLAGS += -DARI64_PROFILE
+$(CORE_DIR)/src/device/r4300/jit_runtime.o: CFLAGS += -DARI64_PROFILE
 endif
 endif
 

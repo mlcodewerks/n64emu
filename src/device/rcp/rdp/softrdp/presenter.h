@@ -1,6 +1,6 @@
 #pragma once
 
-#include "n64video.h"
+#include "softrdp_video.h"
 
 #include <stdint.h>
 #include <stdbool.h>

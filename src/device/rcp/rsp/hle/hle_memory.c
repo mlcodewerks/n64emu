@@ -35,9 +35,10 @@ static int memory_vector_safe(const void *dst,const void *src,size_t n)
 static __m128i memory_swap(__m128i v,int halfwords)
 {
 #ifndef MSB_FIRST
-    return _mm_shuffle_epi8(v,halfwords?
-        _mm_setr_epi8(2,3,0,1,6,7,4,5,10,11,8,9,14,15,12,13):
-        _mm_setr_epi8(3,2,1,0,7,6,5,4,11,10,9,8,15,14,13,12));
+    if (!halfwords)
+        v = _mm_or_si128(_mm_srli_epi16(v,8), _mm_slli_epi16(v,8));
+    v = _mm_shufflelo_epi16(v, _MM_SHUFFLE(2,3,0,1));
+    return _mm_shufflehi_epi16(v, _MM_SHUFFLE(2,3,0,1));
 #else
     return v;
 #endif

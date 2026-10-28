@@ -4,11 +4,11 @@
 #ifdef __LIBRETRO__
 #include "renderer_options.h"
 #endif
-#include "cached_interp.h"
+#include "jit_runtime.h"
 #if defined(COUNT_INSTR)
 #include "instr_counters.h"
 #endif
-#include "pure_interp.h"
+#include "cpu_ops.h"
 
 #include "core/log.h"
 #include "core/types.h"
@@ -22,7 +22,8 @@ void init_r4300(struct r4300_core* r4300, struct memory* mem, struct mi_controll
     unsigned int emumode, int no_compiled_jump, int randomize_interrupt, uint32_t start_address)
 {
 
-    r4300->emumode = emumode;
+    (void)emumode;
+    r4300->emumode = EMUMODE_DYNAREC;
     init_cp0(&r4300->cp0, interrupt_handlers);
     init_cp1(&r4300->cp1);
 
@@ -32,7 +33,7 @@ void init_r4300(struct r4300_core* r4300, struct memory* mem, struct mi_controll
     r4300->randomize_interrupt = randomize_interrupt;
     r4300->start_address = start_address;
     r4300->execute_one = NULL;
-    r4300->cached_interp = NULL;
+    r4300->jit = NULL;
     r4300->cached_code_pages = NULL;
     srand((unsigned int) time(NULL));
 }
@@ -63,7 +64,7 @@ void poweron_r4300(struct r4300_core* r4300)
         renderer_settings.fast_cpu_timing ? 2 : 0;
 #endif
 
-    cached_interp_invalidate(r4300, 0, 0);
+    r4300_jit_invalidate(r4300, 0, 0);
 
     /* setup CP0 registers */
     poweron_cp0(&r4300->cp0);
@@ -115,7 +116,7 @@ unsigned int get_r4300_emumode(struct r4300_core* r4300)
 
 uint32_t *fast_mem_access(struct r4300_core* r4300, uint32_t address)
 {
-    /* This code is performance critical, specially on pure interpreter mode.
+    /* This code is performance critical for precise instruction helpers.
      * Removing error checking saves some time, but the emulator may crash. */
 
     if ((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)) {
@@ -229,7 +230,7 @@ int r4300_write_aligned_dword(struct r4300_core* r4300, uint32_t address, uint64
 
 void invalidate_r4300_cached_code(struct r4300_core* r4300, uint32_t address, size_t size)
 {
-    cached_interp_invalidate(r4300, address, size);
+    r4300_jit_invalidate(r4300, address, size);
 }
 
 

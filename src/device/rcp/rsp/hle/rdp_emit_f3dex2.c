@@ -647,6 +647,42 @@ void rdp_fifo_append(RdpFifo *f, const int32_t *words, int count)
     f->used += (unsigned int)count * 4u;
 }
 
+int gsp_triangle_fifo(GSPState *s, RdpFifo *f, int i0, int i1, int i2,
+                      int textured, int z_buffered)
+{
+    return gsp_triangle_fifo_with_texrecip(s, f, i0, i1, i2, textured, z_buffered, 0);
+}
+
+int gsp_triangle_fifo_with_texrecip(GSPState *s, RdpFifo *f, int i0, int i1, int i2,
+                      int textured, int z_buffered, int native_texrecip)
+{
+    int nc;
+    if (f->used + (unsigned int)GSP_TRI_CMD_WORDS * 4u <= f->cap)
+    {
+        /* the FIFO stores native-order words: the triangle writers' own
+         * format */
+        int32_t *packet = (int32_t *)(void *)(f->storage + f->used);
+        nc = gsp_triangle_with_texrecip(s, packet,
+                          i0, i1, i2, textured, z_buffered, native_texrecip);
+        if (nc > 0) {
+            /* Match append's accounting and staging/publication callbacks
+             * even though the writer already filled the native FIFO words. */
+            hle_timing_add(HLE_WORK_RDP, (unsigned int)(nc + 1) / 2u);
+            if (f->write) f->write(packet, (unsigned int)nc);
+            if (f->time) f->time(packet, (unsigned int)nc);
+            f->used += (unsigned int)nc * 4u;
+        }
+    }
+    else
+    {
+        int32_t cmd[GSP_TRI_CMD_WORDS];
+        nc = gsp_triangle_with_texrecip(s, cmd, i0, i1, i2, textured, z_buffered, native_texrecip);
+        if (nc > 0)
+            rdp_fifo_append(f, cmd, nc);
+    }
+    return nc;
+}
+
 /* Resolve an N64 segmented/virtual address to a physical RDRAM byte address:
  * physical = seg_table[(addr >> 24) & 0xf] + (addr & 0xffffff). For KSEG0
  * pointers (top byte 0x80/0xA0) the segment index is 0 (table base 0), so the
@@ -1349,13 +1385,10 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                             |((unsigned int)idx[t][1]<<9)
                             |((unsigned int)idx[t][2]<<1));
                     }
-                    int32_t cmdw[GSP_TRI_CMD_WORDS];
-                    int nc;
                     if (idx[t][0] == idx[t][1] && idx[t][0] == idx[t][2])
                         continue;   /* degenerate padding slot */
-                    nc = gsp_triangle_with_texrecip(gsp, cmdw, idx[t][0], idx[t][1],
+                    gsp_triangle_fifo_with_texrecip(gsp, fifo, idx[t][0], idx[t][1],
                                       idx[t][2], s_textured, s_zbuffered, f3dex2_native_texrecip());
-                    if (nc > 0) rdp_fifo_append(fifo, cmdw, nc);
                 }
             }
             break;
@@ -1366,11 +1399,8 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
             int a = (int)((w0 >> 17) & 0x7f);
             int b = (int)((w0 >> 9) & 0x7f);
             int c = (int)((w0 >> 1) & 0x7f);
-            int32_t cmdw[GSP_TRI_CMD_WORDS];
-            int nc;
             if (fifo->store_indices) fifo->store_indices(w0);
-            nc = gsp_triangle_with_texrecip(gsp, cmdw, a, b, c, s_textured, s_zbuffered, f3dex2_native_texrecip());
-            if (nc > 0) rdp_fifo_append(fifo, cmdw, nc);
+            gsp_triangle_fifo_with_texrecip(gsp, fifo, a, b, c, s_textured, s_zbuffered, f3dex2_native_texrecip());
             break;
         }
 
@@ -1383,8 +1413,6 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
             int a1 = (int)((w1 >> 17) & 0x7f);
             int b1 = (int)((w1 >> 9) & 0x7f);
             int c1 = (int)((w1 >> 1) & 0x7f);
-            int32_t cmdw[GSP_TRI_CMD_WORDS];
-            int nc;
             /* The G_TRI2 handler stores the second triangle's indices and
              * jals tri_to_rdp before falling through to the G_TRI1 path
              * for the first triangle: the microcode emits the SECOND
@@ -1396,11 +1424,9 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                 tmp=c0;c0=c1;c1=tmp;
             }
             if (fifo->store_indices) fifo->store_indices(w1);
-            nc = gsp_triangle_with_texrecip(gsp, cmdw, a1, b1, c1, s_textured, s_zbuffered, f3dex2_native_texrecip());
-            if (nc > 0) rdp_fifo_append(fifo, cmdw, nc);
+            gsp_triangle_fifo_with_texrecip(gsp, fifo, a1, b1, c1, s_textured, s_zbuffered, f3dex2_native_texrecip());
             if (fifo->store_indices) fifo->store_indices(w0);
-            nc = gsp_triangle_with_texrecip(gsp, cmdw, a0, b0, c0, s_textured, s_zbuffered, f3dex2_native_texrecip());
-            if (nc > 0) rdp_fifo_append(fifo, cmdw, nc);
+            gsp_triangle_fifo_with_texrecip(gsp, fifo, a0, b0, c0, s_textured, s_zbuffered, f3dex2_native_texrecip());
             break;
         }
 

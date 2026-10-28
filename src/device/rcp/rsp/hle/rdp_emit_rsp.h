@@ -69,6 +69,8 @@ void rsp_factor5_clip_residue(const int32_t in4[4],const int32_t out4[4],
     const int16_t plane[4],const uint16_t constants[8],int32_t upper[4]);
 void rsp_factor5_reject(const int16_t xy[6]);
 void rsp_set_vtx_invw_raw(int on);
+/* Fast3D vertex write model (reciprocal refinement and screen clamps). */
+void rsp_set_vtx_f3d(int on, int32_t clamp_lo, int32_t clamp_hi);
 void rsp_set_vtx_y_round(int on);
 void rsp_set_vtx_x_round(int on);
 void rsp_set_vtx_z_quant(int on);
@@ -148,6 +150,10 @@ typedef struct RspTriVtx
     int32_t  invw;      /* VTX_INV_W 32-bit value (rsp_vtx_invw) */
     int32_t  pw;        /* perspNorm'd w (the divide input; Rogue
                            Squadron's texture normalizer folds these) */
+    int32_t  cx, cy, cz;/* clip-space x, y, z, s15.16 (Fast3D clipper) */
+    int32_t  cw;        /* clip-space w, s15.16 (the Fast3D texture
+                           weights scale it by perspNorm) */
+    int32_t  f3d_flags; /* Fast3D vertex record clip-flag halfword */
     int      flat2d;    /* raw attribute path: skip the perspective
                            normalizer and colour rounding (Fighting
                            Force 64's 2D overlay microcode) */

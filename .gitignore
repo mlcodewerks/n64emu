@@ -15,6 +15,9 @@ linker.list
 
 # Native GLRDP build and validation artifacts
 .cpu-jit-config
+.hle-simd-config
+/cpu_fpu_diff.exe
+/cpu_timing.exe
 benchmarks/*
 !benchmarks/ai_timing_trace.h
 !benchmarks/ai_timing_trace.mk
@@ -92,3 +95,33 @@ benchmarks/softrdp/*
 src/device/rcp/rdp/softrdp/.build-config
 src/device/rcp/rdp/softrdp/build/
 src/device/rcp/rsp/p_rsp/simd-build/
+
+# Backend-removal validation; preserve backups and binaries locally only.
+!benchmarks/backend-removal/
+benchmarks/backend-removal/*
+!benchmarks/backend-removal/RESULTS.md
+!benchmarks/backend-removal/validation.json
+!benchmarks/backend-removal/*.py
+
+# Fast/HLE versus Accurate/LLE mode comparison; keep generated runs local.
+!benchmarks/mode-comparison/
+benchmarks/mode-comparison/*
+!benchmarks/mode-comparison/*.c
+!benchmarks/mode-comparison/*.mk
+!benchmarks/mode-comparison/*.py
+!benchmarks/mode-comparison/*.md
+!benchmarks/mode-comparison/results.json
+
+# Upstream walker port, SSE2 conformance and compact validation evidence.
+!benchmarks/hle-sse2/
+benchmarks/hle-sse2/*
+!benchmarks/hle-sse2/*.py
+!benchmarks/hle-sse2/*.mk
+!benchmarks/hle-sse2/*.md
+!benchmarks/hle-sse2/validation.json
+!benchmarks/hle-sse2/tests/
+!benchmarks/hle-sse2/tests/*.c
+!benchmarks/hle-sse2/tests/*.h
+!benchmarks/hle-sse2/tests/legacy/
+!benchmarks/hle-sse2/tests/legacy/*.h
+benchmarks/hle-sse2/resolve-import.py

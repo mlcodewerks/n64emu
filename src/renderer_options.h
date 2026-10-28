@@ -5,8 +5,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-enum renderer_type { RENDERER_ANGRYLION, RENDERER_PARALLEL, RENDERER_GLRDP };
-enum cpu_core_type { CPU_CORE_CACHED, CPU_CORE_PURE, CPU_CORE_DYNAREC };
+enum renderer_type { RENDERER_SOFTRDP, RENDERER_PARALLEL, RENDERER_GLRDP };
 enum controller_pak_option { CONTROLLER_PAK_NONE, CONTROLLER_PAK_MEMORY,
     CONTROLLER_PAK_RUMBLE, CONTROLLER_PAK_TRANSFER };
 struct renderer_settings {
@@ -17,7 +16,6 @@ struct renderer_settings {
     bool per_cycle_timing;
     bool component_timing;
     bool fast_cpu_timing;
-    enum cpu_core_type cpu_core;
     enum renderer_type renderer;
     struct GLRDPConfig glrdp;
     unsigned threads, upscale, downscale;

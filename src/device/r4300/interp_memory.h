@@ -208,7 +208,7 @@ static osal_force_inline void interp_load_word(struct r4300_core* r, uint32_t op
     unsigned rt = (op >> 16) & 31;
     uint32_t address = (uint32_t)r->regs[(op >> 21) & 31] + (uint32_t)(int32_t)(int16_t)op;
     if (check_alignment(r, address, 3, 0)) return;
-    r->interp_PC.addr += 4;
+    r->instruction_pc.addr += 4;
     uint32_t value;
     if (interp_read_aligned_word(r, address, &value))
         r->regs[rt] = sign ? (int64_t)(int32_t)value : (int64_t)value;
@@ -219,7 +219,7 @@ static osal_force_inline void interp_store_word(struct r4300_core* r, uint32_t o
     unsigned rt = (op >> 16) & 31;
     uint32_t address = (uint32_t)r->regs[(op >> 21) & 31] + (uint32_t)(int32_t)(int16_t)op;
     if (check_alignment(r, address, 3, 1)) return;
-    r->interp_PC.addr += 4;
+    r->instruction_pc.addr += 4;
     interp_write_aligned_word(r, address, (uint32_t)r->regs[rt], ~UINT32_C(0));
 }
 

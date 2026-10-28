@@ -5,8 +5,8 @@
 #include <string.h>
 #include <time.h>
 #include "device/r4300/r4300_core.h"
-#include "device/r4300/pure_interp.h"
-#include "device/r4300/cached_interp.h"
+#include "device/r4300/cpu_ops.h"
+#include "device/r4300/jit_runtime.h"
 #include "device/r4300/timing.h"
 #include "device/memory.h"
 #include "device/rcp/rcp.h"
@@ -62,8 +62,9 @@ static void write_word(void* opaque, uint32_t address, uint32_t value, uint32_t 
 static void setup(int cached)
 {
     struct interrupt_handler handlers[CP0_INTERRUPT_HANDLERS_COUNT] = {0};
-    cached_interp_destroy(&cpu);
+    r4300_jit_destroy(&cpu);
     memset(&cpu, 0, sizeof(cpu));
+    cpu.emumode = EMUMODE_DYNAREC;
     memset(code, 0, sizeof(code));
     memory.base = code;
     cpu.mem = &memory;
@@ -71,8 +72,8 @@ static void setup(int cached)
     memory.handlers[0].read32 = read_word;
     memory.handlers[0].write32 = write_word;
     reads = writes = 0;
-    cpu.pc = &cpu.interp_PC;
-    cpu.interp_PC.addr = 0x80000000;
+    cpu.pc = &cpu.instruction_pc;
+    cpu.instruction_pc.addr = 0x80000000;
     handlers[2].callback = check_int_handler;
     handlers[2].opaque = &cpu;
     handlers[1].callback = compare_int_handler;
@@ -81,8 +82,8 @@ static void setup(int cached)
     poweron_cp0(&cpu.cp0);
     poweron_cp1(&cpu.cp1);
     translate_event_queue(&cpu.cp0, 0);
-    cpu.execute_one = cached ? cached_interp_execute_one : pure_interp_execute_one;
-    if (cached) assert(cached_interp_init(&cpu));
+    cpu.execute_one = cached ? r4300_jit_execute_one : r4300_ops_execute_one;
+    if (cached) assert(r4300_jit_init(&cpu));
     breakloop = false;
 }
 
@@ -102,7 +103,7 @@ static void check_execution(int cached)
     cpu.execute_one(&cpu);
     assert(cpu.regs[2] == 1 && cpu.cp0.count_phase == 0);
     cp0_update_count(&cpu);
-    cpu.interp_PC.addr += 100;
+    cpu.instruction_pc.addr += 100;
     cp0_update_count(&cpu);
     assert(cpu.cp0.regs[CP0_COUNT_REG] == 1);
 
@@ -111,14 +112,14 @@ static void check_execution(int cached)
     code[0] = 0x50010002; /* BEQL zero,r1: annul slot */
     code[1] = 0x0000001e; /* DDIV: must not charge annulled slot */
     cpu.execute_one(&cpu);
-    assert(cpu.interp_PC.addr == 0x80000008);
+    assert(cpu.instruction_pc.addr == 0x80000008);
     assert(cpu.cp0.regs[CP0_COUNT_REG] == 0 && cpu.cp0.count_phase == 1);
 
     setup(cached);
     code[0] = 0x10000002; /* BEQ with DIV delay slot */
     code[1] = 0x0000001a;
     cpu.execute_one(&cpu);
-    assert(cpu.interp_PC.addr == 0x8000000c);
+    assert(cpu.instruction_pc.addr == 0x8000000c);
     assert(cpu.cp0.regs[CP0_COUNT_REG] == 19 && cpu.cp0.count_phase == 0);
 
     setup(cached);
@@ -159,7 +160,7 @@ static void check_execution(int cached)
     setup(cached);
     code[0] = 0x0000000c; /* SYSCALL: exception PC must not become cycles */
     cpu.execute_one(&cpu);
-    assert(cpu.interp_PC.addr == 0x80000180);
+    assert(cpu.instruction_pc.addr == 0x80000180);
     assert(cpu.cp0.regs[CP0_COUNT_REG] == 0 && cpu.cp0.count_phase == 1);
     cpu.execute_one(&cpu);
     assert(cpu.cp0.regs[CP0_COUNT_REG] == 1);
@@ -168,7 +169,7 @@ static void check_execution(int cached)
     cpu.cp0.regs[CP0_STATUS_REG] &= ~CP0_STATUS_CU1;
     code[0] = 0x46200003; /* Disabled COP1 traps without DIV.D latency. */
     cpu.execute_one(&cpu);
-    assert(cpu.interp_PC.addr == 0x80000180);
+    assert(cpu.instruction_pc.addr == 0x80000180);
     assert(cpu.cp0.regs[CP0_COUNT_REG] == 0 && cpu.cp0.count_phase == 1);
 
     /* Continuous dispatch must service events in straight-line fast ops. */
@@ -176,14 +177,10 @@ static void check_execution(int cached)
     for (unsigned i = 0; i < 100; ++i) code[i] = 0x24210001; /* ADDIU r1,r1,1 */
     cpu.cp0.interrupt_handlers[4].callback = stop_event;
     add_interrupt_event(&cpu.cp0, PI_INT, 10);
-    if (cached) cached_interp_run(&cpu);
-    else {
-        cpu.startup = 0;
-        cpu.emumode = EMUMODE_PURE_INTERPRETER;
-        run_r4300(&cpu);
-    }
+    if (cached) r4300_jit_run(&cpu);
+    else while (!breakloop) r4300_ops_execute_one(&cpu);
     assert(cpu.regs[1] == 20 && cpu.cp0.regs[CP0_COUNT_REG] == 10);
-    assert(cpu.interp_PC.addr == 0x80000050);
+    assert(cpu.instruction_pc.addr == 0x80000050);
 }
 
 static void check_compare(void)
@@ -287,7 +284,7 @@ static void benchmark_fpu(void)
         cpu.cp1.regs[1].float32[0] = 1.25f;
         cpu.cp1.regs[2].float32[0] = 3.5f;
         uint32_t op = fp_op(16, functions[i]);
-        r4300_interp_handler handler = pure_interp_decode(op, 0);
+        r4300_op_handler handler = r4300_ops_decode(op, 0);
         clock_t start = clock();
         for (unsigned n = 0; n < iterations; ++n) handler(&cpu, op);
         printf("%s: %.1f ns/op\n", names[i],
@@ -309,7 +306,7 @@ int main(int argc, char** argv)
     check_execution(0);
     check_execution(1);
     check_compare();
-    cached_interp_destroy(&cpu);
-    puts("CPU timing and behavior regressions passed (pure and cached).");
+    r4300_jit_destroy(&cpu);
+    puts("CPU timing and behavior regressions passed (semantic helpers and Ari64).");
     return 0;
 }

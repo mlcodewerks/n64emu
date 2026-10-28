@@ -13,11 +13,6 @@ struct renderer_settings renderer_settings;
 #else
 #define RENDERERS RENDERERS_BASE
 #endif
-#ifdef HAVE_ARI64
-#define CPU_CORES "cached|pure|dynarec"
-#else
-#define CPU_CORES "cached|pure"
-#endif
 /* Legacy options are supported by every libretro frontend; first value is default.
  * Settings are latched at content load, keeping renderer resources and RDRAM intact. */
 static const struct retro_variable options[] = {
@@ -43,7 +38,6 @@ static const struct retro_variable options[] = {
     {"wtfn64_glrdp_vi_gamma", "GLRDP VI gamma correction (restart required); enabled|disabled"},
     {"wtfn64_glrdp_vi_gamma_dither", "GLRDP VI gamma dithering (restart required); enabled|disabled"},
 #endif
-    {"wtfn64_cpu_core", "CPU core (restart required); " CPU_CORES},
     {"wtfn64_timing", "Timing accuracy (restart required); fast|accurate"},
     {"wtfn64_angrylion_threads", "SoftRDP rendering threads (restart required); 6|2|4|8|10|auto"},
     {"wtfn64_performance_cores", "Performance cores only (restart required); enabled|disabled"},
@@ -151,8 +145,6 @@ void renderer_register_options(retro_environment_t environment)
                 d->info = "Allow gamma dithering when requested by the game. Independent of gamma correction. Restart content to apply.";
             if (!strcmp(d->key, "wtfn64_timing"))
                 d->info = "Accurate uses native RSP execution and full CPU cache contents. Fast uses HLE RSP and cache tags; unsupported RSP tasks stop with an error. Both retain instruction interlocks, bus delays and work-based RDP timing. Restart content to apply.";
-            if (!strcmp(d->key, "wtfn64_cpu_core"))
-                d->info = "Select the CPU execution core. All choices use the same instruction behavior and Timing accuracy setting. Restart content to apply.";
             if (strstr(d->key, "-pak")) {
                 d->category_key = "input";
                 d->info = "Choose the accessory attached to this controller. A Memory Pak allows games to save progress.";
@@ -162,10 +154,6 @@ void renderer_register_options(retro_environment_t environment)
                 next = strchr(p, '|');
                 if (next) *next++ = 0;
                 d->values[j++].value = p;
-                if (!strcmp(d->key, "wtfn64_cpu_core"))
-                    d->values[j - 1].label = !strcmp(p, "cached") ? "Cached interpreter" :
-                        !strcmp(p, "pure") ? "Pure interpreter" :
-                        "Dynarec";
                 if (strstr(d->key, "-pak"))
                     d->values[j - 1].label = !strcmp(p, "memory") ? "Memory Pak" :
                         !strcmp(p, "rumble") ? "Rumble Pak" :
@@ -240,11 +228,6 @@ void renderer_read_options(retro_environment_t env)
     s->lle_graphics = s->lle_audio = s->per_cycle_timing;
     s->component_timing = true;
     s->fast_cpu_timing = true;
-    v = value(env, "wtfn64_cpu_core", "cached");
-    s->cpu_core = !strcmp(v, "pure") ? CPU_CORE_PURE : CPU_CORE_CACHED;
-#ifdef HAVE_ARI64
-    if (!strcmp(v, "dynarec")) s->cpu_core = CPU_CORE_DYNAREC;
-#endif
 #ifdef HAVE_PARALLEL_RDP
     if (strcmp(value(env, "wtfn64_renderer", "softrdp"), "parallel-rdp") == 0)
         s->renderer = RENDERER_PARALLEL;
@@ -284,7 +267,7 @@ void renderer_read_options(retro_environment_t env)
     if (strcmp(v, "auto") != 0 && (s->threads < 2 || s->threads > 10 || s->threads % 2))
         s->threads = 6;
     s->performance_only = toggle(env, "wtfn64_performance_cores", true);
-    s->upscale = s->renderer == RENDERER_ANGRYLION ?
+    s->upscale = s->renderer == RENDERER_SOFTRDP ?
         scale(env, "wtfn64_angrylion_upscale", 4) : scale(env, "wtfn64_parallel_upscale", 8);
     if (s->renderer == RENDERER_GLRDP)
         s->upscale = scale(env, "wtfn64_glrdp_upscale", 8);

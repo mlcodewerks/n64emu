@@ -1,6 +1,6 @@
 
 
-#include "cached_interp.h"
+#include "jit_runtime.h"
 #include "timing.h"
 #include "interp_memory.h"
 #include "interp_branch.h"
@@ -18,15 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef CI_NATIVE_HOT_THRESHOLD
-/* Amortize native compilation and keep transient boot code out of the arena. */
-#define CI_NATIVE_HOT_THRESHOLD 64
-#endif
-#ifndef CI_PRECISE_HOT_THRESHOLD
-#define CI_PRECISE_HOT_THRESHOLD 8
-#endif
-#if CI_NATIVE_HOT_THRESHOLD > 255 || CI_PRECISE_HOT_THRESHOLD > 255
-#error JIT heat thresholds must fit the block heat counter
+#ifndef HAVE_ARI64
+#error The CPU runtime requires an Ari64 host emitter
 #endif
 
 #if defined(_MSC_VER) && defined(_M_X64)
@@ -34,7 +27,7 @@
 #endif
 
 #include "device/r4300/idec.h"
-#include "device/r4300/pure_interp.h"
+#include "device/r4300/cpu_ops.h"
 #include "device/r4300/r4300_core.h"
 #include "device/r4300/tlb.h"
 
@@ -162,15 +155,14 @@ struct cached_block
     uint8_t idle_end;
     uint8_t ram_poll;
     uint32_t delay_op;
-    r4300_interp_handler delay_handler;
+    r4300_op_handler delay_handler;
     /* Execution reads one compact descriptor. Handler pointers stay cold
      * for arithmetic, guarded RAM and direct COP1 dispatch. */
     struct cached_instruction instructions[CI_BLOCK_INSTRUCTIONS];
-    r4300_interp_handler handlers[CI_BLOCK_INSTRUCTIONS];
+    r4300_op_handler handlers[CI_BLOCK_INSTRUCTIONS];
 #ifdef HAVE_ARI64
     ari64_entry native_entry, native_one_entry, native_chain_entry;
     uint64_t native_generation, native_one_generation;
-    uint8_t heat, native_candidate;
     uint8_t native_link_replace;
     struct ari64_link_cache native_links[2];
 #endif
@@ -188,7 +180,7 @@ struct cached_set
     uint8_t next_replace;
 };
 
-struct cached_interp_state
+struct r4300_jit_state
 {
 #ifdef HAVE_ARI64
     struct ari64* jit;
@@ -210,7 +202,7 @@ struct cached_interp_state
     uint32_t set_mask;
     uint32_t page_generation[CI_PHYS_PAGE_COUNT];
     uint64_t page_cached[(CI_PHYS_PAGE_COUNT + 63) / 64];
-    r4300_interp_handler pending_delay_handler;
+    r4300_op_handler pending_delay_handler;
     uint32_t pending_delay_op;
     uint32_t pending_delay_pc;
     uint8_t pending_delay_fast_op;
@@ -220,17 +212,17 @@ struct cached_interp_state
     struct cached_block* previous_block;
 };
 
-static CI_FORCE_INLINE int ci_page_is_cached(const struct cached_interp_state* state, uint32_t page)
+static CI_FORCE_INLINE int ci_page_is_cached(const struct r4300_jit_state* state, uint32_t page)
 {
     return (int)((state->page_cached[page >> 6] >> (page & 63)) & UINT64_C(1));
 }
 
-static CI_FORCE_INLINE void ci_page_set_cached(struct cached_interp_state* state, uint32_t page)
+static CI_FORCE_INLINE void ci_page_set_cached(struct r4300_jit_state* state, uint32_t page)
 {
     state->page_cached[page >> 6] |= UINT64_C(1) << (page & 63);
 }
 
-static CI_FORCE_INLINE void ci_page_clear_cached(struct cached_interp_state* state, uint32_t page)
+static CI_FORCE_INLINE void ci_page_clear_cached(struct r4300_jit_state* state, uint32_t page)
 {
     state->page_cached[page >> 6] &= ~(UINT64_C(1) << (page & 63));
 }
@@ -809,7 +801,7 @@ static CI_COLD_NOINLINE void ci_execute_fast_op(struct r4300_core* r4300, uint8_
 
 static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r4300, uint32_t pc, uint32_t physical_page)
 {
-    struct cached_interp_state* state = r4300->cached_interp;
+    struct r4300_jit_state* state = r4300->jit;
     struct cached_set* set = &state->sets[ci_hash_pc(pc) & state->set_mask];
     struct cached_block* block = &set->ways[set->next_replace];
     uint32_t* op_ptr;
@@ -825,8 +817,6 @@ static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r
     block->valid = 0;
 #ifdef HAVE_ARI64
     block->native_entry = block->native_one_entry = NULL;
-    block->heat = 0;
-    block->native_candidate = 0;
     block->native_link_replace = 0;
     memset(block->native_links,0,sizeof(block->native_links));
 #ifdef ARI64_PROFILE
@@ -857,7 +847,7 @@ static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r
         const uint32_t next_op = (i + 1 < page_count) ? op_ptr[i + 1] : UINT32_C(0xffffffff);
         const enum r4300_opcode opcode = r4300_get_idec(op)->opcode;
         const int idle = ci_can_use_idle_handler(opcode, instruction_pc, op, next_op);
-        r4300_interp_handler handler = pure_interp_decode(op, idle);
+        r4300_op_handler handler = r4300_ops_decode(op, idle);
 
         if (handler == NULL)
         {
@@ -891,7 +881,7 @@ static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r
                 const enum r4300_opcode delay_opcode = r4300_get_idec(delay_op)->opcode;
                 const int delay_idle =
                     ci_can_use_idle_handler(delay_opcode, delay_pc, delay_op, delay_next_op);
-                r4300_interp_handler delay_handler = pure_interp_decode(delay_op, delay_idle);
+                r4300_op_handler delay_handler = r4300_ops_decode(delay_op, delay_idle);
 
                 if (delay_handler != NULL)
                 {
@@ -944,7 +934,7 @@ static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r
 }
 
 static CI_FORCE_INLINE int ci_block_matches(const struct cached_block* block,
-                                                  const struct cached_interp_state* state,
+                                                  const struct r4300_jit_state* state,
                                                   uint32_t pc,
                                                   uint32_t physical_page)
 {
@@ -967,33 +957,33 @@ static int ci_verify_dirty_block(struct r4300_core* r, struct cached_block* bloc
 {
     if (!block->valid || block->ram_poll ||
         block->virtual_pc != pc || block->physical_page != physical_page) return 0;
-    if (block->epoch == r->cached_interp->epoch &&
-        block->page_generation == r->cached_interp->page_generation[physical_page]) return 1;
+    if (block->epoch == r->jit->epoch &&
+        block->page_generation == r->jit->page_generation[physical_page]) return 1;
     const uint32_t* source = fast_mem_access(r, pc);
     if (!source || memcmp(source, block->source_words, block->source_count * sizeof(uint32_t))) {
 #ifdef HAVE_ARI64
-        ++r->cached_interp->jit_verifications[1];
+        ++r->jit->jit_verifications[1];
 #endif
         return 0;
     }
-    if (block->epoch != r->cached_interp->epoch || block->page_generation != r->cached_interp->page_generation[physical_page]) {
-        ++r->cached_interp->restored_blocks;
+    if (block->epoch != r->jit->epoch || block->page_generation != r->jit->page_generation[physical_page]) {
+        ++r->jit->restored_blocks;
 #ifdef HAVE_ARI64
-        ++r->cached_interp->jit_verifications[0];
+        ++r->jit->jit_verifications[0];
 #endif
     }
     /* A data write elsewhere on the page or an unchanged TLB mapping does
      * not change the compiled instructions. Retain code and hotness, but
      * restore write tracking before any native execution resumes. */
-    block->epoch = r->cached_interp->epoch;
-    block->page_generation = r->cached_interp->page_generation[physical_page];
-    ci_page_set_cached(r->cached_interp, physical_page);
+    block->epoch = r->jit->epoch;
+    block->page_generation = r->jit->page_generation[physical_page];
+    ci_page_set_cached(r->jit, physical_page);
     return 1;
 }
 
 static struct cached_block* ci_lookup_block(struct r4300_core* r4300, uint32_t pc)
 {
-    struct cached_interp_state* state = r4300->cached_interp;
+    struct r4300_jit_state* state = r4300->jit;
     struct cached_set* set;
     struct cached_block* block;
     uint32_t physical_page;
@@ -1069,7 +1059,7 @@ found:
     return block;
 }
 
-static void ci_bump_page(struct cached_interp_state* state, uint32_t physical_page)
+static void ci_bump_page(struct r4300_jit_state* state, uint32_t physical_page)
 {
     if (!ci_page_is_cached(state, physical_page))
         return;
@@ -1112,13 +1102,13 @@ static int ci_virtual_to_physical_page_noexcept(struct r4300_core* r4300, uint32
     return 1;
 }
 
-int cached_interp_init(struct r4300_core* r4300)
+int r4300_jit_init(struct r4300_core* r4300)
 {
-    if (r4300->cached_interp != NULL)
+    if (r4300->jit != NULL)
         return 1;
 
-    r4300->cached_interp = (struct cached_interp_state*)calloc(1, sizeof(*r4300->cached_interp));
-    if (r4300->cached_interp == NULL)
+    r4300->jit = (struct r4300_jit_state*)calloc(1, sizeof(*r4300->jit));
+    if (r4300->jit == NULL)
         return 0;
     unsigned set_count = CI_SET_COUNT;
 #ifdef HAVE_ARI64
@@ -1127,19 +1117,19 @@ int cached_interp_init(struct r4300_core* r4300)
 #endif
     if (r4300->emumode == EMUMODE_DYNAREC) set_count = CI_JIT_SET_COUNT;
 #endif
-    r4300->cached_interp->set_mask = set_count - 1;
-    r4300->cached_interp->sets = calloc(set_count, sizeof(*r4300->cached_interp->sets));
-    if (!r4300->cached_interp->sets) { cached_interp_destroy(r4300); return 0; }
-    r4300->cached_interp->recent_blocks = calloc(set_count, sizeof(*r4300->cached_interp->recent_blocks));
-    if (!r4300->cached_interp->recent_blocks) { cached_interp_destroy(r4300); return 0; }
+    r4300->jit->set_mask = set_count - 1;
+    r4300->jit->sets = calloc(set_count, sizeof(*r4300->jit->sets));
+    if (!r4300->jit->sets) { r4300_jit_destroy(r4300); return 0; }
+    r4300->jit->recent_blocks = calloc(set_count, sizeof(*r4300->jit->recent_blocks));
+    if (!r4300->jit->recent_blocks) { r4300_jit_destroy(r4300); return 0; }
 
-    r4300->cached_interp->epoch = 1;
-    r4300->cached_code_pages = r4300->cached_interp->page_cached;
+    r4300->jit->epoch = 1;
+    r4300->cached_code_pages = r4300->jit->page_cached;
 #ifdef HAVE_ARI64
     if (r4300->emumode == EMUMODE_DYNAREC) {
-        r4300->cached_interp->jit = ari64_create();
-        if (!r4300->cached_interp->jit) {
-            cached_interp_destroy(r4300);
+        r4300->jit->jit = ari64_create();
+        if (!r4300->jit->jit) {
+            r4300_jit_destroy(r4300);
             return 0;
         }
     }
@@ -1147,28 +1137,28 @@ int cached_interp_init(struct r4300_core* r4300)
     return 1;
 }
 
-void cached_interp_destroy(struct r4300_core* r4300)
+void r4300_jit_destroy(struct r4300_core* r4300)
 {
 #ifdef HAVE_ARI64
-    if (r4300->cached_interp) ari64_destroy(r4300->cached_interp->jit);
+    if (r4300->jit) ari64_destroy(r4300->jit->jit);
 #endif
-    if (r4300->cached_interp) free(r4300->cached_interp->sets);
-    if (r4300->cached_interp) free(r4300->cached_interp->recent_blocks);
-    free(r4300->cached_interp);
-    r4300->cached_interp = NULL;
+    if (r4300->jit) free(r4300->jit->sets);
+    if (r4300->jit) free(r4300->jit->recent_blocks);
+    free(r4300->jit);
+    r4300->jit = NULL;
     r4300->cached_code_pages = NULL;
     r4300->execute_one = NULL;
 }
-void cached_interp_cache_stats(struct r4300_core* r, uint64_t stats[2])
+void r4300_jit_cache_stats(struct r4300_core* r, uint64_t stats[2])
 {
-    stats[0] = r->cached_interp ? r->cached_interp->decoded_blocks : 0;
-    stats[1] = r->cached_interp ? r->cached_interp->restored_blocks : 0;
+    stats[0] = r->jit ? r->jit->decoded_blocks : 0;
+    stats[1] = r->jit ? r->jit->restored_blocks : 0;
 }
 
-void cached_interp_tlb_changed(struct r4300_core* r4300)
+void r4300_jit_tlb_changed(struct r4300_core* r4300)
 {
 #ifdef HAVE_ARI64
-    struct cached_interp_state* state=r4300->cached_interp;
+    struct r4300_jit_state* state=r4300->jit;
     if(state && ++state->fetch_generation==0) {
         state->fetch_generation=1;
         memset(state->fetch_cache,0,sizeof(state->fetch_cache));
@@ -1177,9 +1167,9 @@ void cached_interp_tlb_changed(struct r4300_core* r4300)
     (void)r4300;
 #endif
 }
-void cached_interp_invalidate(struct r4300_core* r4300, uint32_t address, size_t size)
+void r4300_jit_invalidate(struct r4300_core* r4300, uint32_t address, size_t size)
 {
-    struct cached_interp_state* state = r4300->cached_interp;
+    struct r4300_jit_state* state = r4300->jit;
     uint64_t first;
     uint64_t last;
     uint64_t page_address;
@@ -1189,7 +1179,7 @@ void cached_interp_invalidate(struct r4300_core* r4300, uint32_t address, size_t
 
     if (size == 0)
     {
-        cached_interp_tlb_changed(r4300);
+        r4300_jit_tlb_changed(r4300);
         ++state->epoch;
         memset(state->page_cached, 0, sizeof(state->page_cached));
         if (state->epoch == 0)
@@ -1269,7 +1259,7 @@ static CI_FORCE_INLINE int ci_execute_hot_fast_op(struct r4300_core* r4300, uint
 }
 
 static CI_FORCE_INLINE void ci_execute_cached_instruction(struct r4300_core* r4300,
-                                                          r4300_interp_handler handler,
+                                                          r4300_op_handler handler,
                                                           uint32_t op,
                                                           uint8_t fast_op,
                                                           uint32_t pc)
@@ -1278,7 +1268,7 @@ static CI_FORCE_INLINE void ci_execute_cached_instruction(struct r4300_core* r43
     if (CI_LIKELY(fast_op != CI_FAST_NONE))
     {
         if (!ci_execute_hot_fast_op(r4300, fast_op, op)) ci_execute_fast_op(r4300, fast_op, op);
-        r4300->interp_PC.addr = pc + 4;
+        r4300->instruction_pc.addr = pc + 4;
     }
     else
     {
@@ -1291,13 +1281,13 @@ static CI_FORCE_INLINE void ci_execute_cached_instruction(struct r4300_core* r43
 
 static CI_FORCE_INLINE void ci_execute_one(struct r4300_core* r4300)
 {
-    if (r4300->interp_PC.addr & 3) { pure_interp_execute_one(r4300); return; }
-    struct cached_interp_state* state = r4300->cached_interp;
-    const uint32_t pc = r4300->interp_PC.addr;
+    if (r4300->instruction_pc.addr & 3) { r4300_ops_execute_one(r4300); return; }
+    struct r4300_jit_state* state = r4300->jit;
+    const uint32_t pc = r4300->instruction_pc.addr;
 
     if (CI_LIKELY(state != NULL && state->pending_delay_valid && state->pending_delay_pc == pc))
     {
-        r4300_interp_handler handler = state->pending_delay_handler;
+        r4300_op_handler handler = state->pending_delay_handler;
         const uint32_t op = state->pending_delay_op;
         const uint8_t fast_op = state->pending_delay_fast_op;
         state->pending_delay_valid = 0;
@@ -1305,302 +1295,8 @@ static CI_FORCE_INLINE void ci_execute_one(struct r4300_core* r4300)
         return;
     }
 
-    {
-        struct cached_block* block = ci_lookup_block(r4300, pc);
-        if (CI_UNLIKELY(block == NULL))
-        {
-            if (r4300->interp_PC.addr != pc) {
-                /* Lookup already raised a fetch exception. Charge the failed
-                 * fetch, rather than executing the exception vector here. */
-                cp0_step_cycles(&r4300->cp0, 1);
-                if (!r4300->delay_slot && r4300->cp0.cycle_count >= 0) gen_interrupt(r4300);
-                return;
-            }
-            pure_interp_execute_one(r4300);
-            return;
-        }
+    r4300_ops_execute_one(r4300);
 
-        ci_execute_cached_instruction(r4300, block->handlers[0], block->instructions[0].op,
-                                      block->instructions[0].meta >> CI_META_FAST_SHIFT, pc);
-    }
-}
-
-void cached_interp_execute_one(struct r4300_core* r4300)
-{
-    ci_execute_one(r4300);
-}
-
-/* Direct RAM descriptors already identify the complete memory operation.
- * Reuse the cacheability decision instead of decoding the opcode and scanning
- * a mapped TLB a second time just to update instruction-boundary history. */
-static CI_FORCE_INLINE unsigned ci_memory_pipeline_cycles(struct r4300_core* r,
-    uint32_t op, unsigned fp, unsigned write, unsigned cached)
-{
-    unsigned rt = (op >> 16) & 31;
-    uint64_t target;
-    unsigned stalls;
-    if (fp) {
-        unsigned fr = (r->cp0.regs[CP0_STATUS_REG] & CP0_STATUS_FR) != 0;
-        target = r4300_pipeline_fpr(r4300_pipeline_fpr_index(rt, fr));
-        stalls = (r->pipeline_load_mask & target) != 0;
-    } else {
-        target = r4300_pipeline_gpr(rt);
-        uint64_t candidates = target | r4300_pipeline_gpr((op >> 21) & 31);
-        stalls = !(r->pipeline_load_mask >> 32) && (r->pipeline_load_mask & candidates) != 0;
-    }
-    stalls += cached && r->pipeline_cached_store;
-    r->pipeline_load_mask = write ? 0 : target;
-    r->pipeline_fpu_result_mask = 0;
-    r->pipeline_fpu_cc = 0;
-    r->pipeline_cached_store = cached && write;
-    return stalls;
-}
-
-/* These accesses cannot trap or observe COUNT. Keep the installed handler
- * authoritative and flush the batch before MMIO, TLB faults, alignment, cache misses
- * or code-page accesses, which use the shared interpreter memory path. */
-static CI_FORCE_INLINE int ci_execute_direct_ram(struct r4300_core* r, uint32_t op, uint8_t kind,
-    unsigned int cache_timing, unsigned int* access_cycles, unsigned int* pipeline_cycles)
-{
-    unsigned fp = kind & 16;
-    if (fp && !(r->cp0.regs[CP0_STATUS_REG] & CP0_STATUS_CU1)) return 0;
-    unsigned alignment = (1u << (kind & 3)) - 1;
-    uint32_t address = (uint32_t)r->regs[(op >> 21) & 31] + (uint32_t)(int32_t)(int16_t)op;
-    if (address & alignment) return 0;
-    int write = (kind & 4) != 0;
-    uint32_t translated = address;
-    if ((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)) {
-        uint32_t mapped = write ? r->cp0.tlb.LUT_w[address >> CI_PAGE_SHIFT] : r->cp0.tlb.LUT_r[address >> CI_PAGE_SHIFT];
-        if (!mapped) return 0;
-        translated = (mapped & UINT32_C(0xfffff000)) | (address & UINT32_C(0xfff));
-        if (!translated) return 0;
-    }
-    uint32_t physical = translated & UINT32_C(0x1ffffffc);
-    const struct mem_handler* handler = &r->mem->handlers[physical >> 16];
-    unsigned rt = (op >> 16) & 31;
-    if (write) {
-        unsigned page = physical >> CI_PAGE_SHIFT;
-        if (handler->write32 != write_rdram_dram || ci_page_is_cached(r->cached_interp, page)) return 0;
-    } else if (handler->read32 != read_rdram_dram) return 0;
-    uint32_t* word;
-    unsigned cached = cache_timing && r4300_access_cached(r, address);
-    if (cached) {
-        unsigned index = (address >> 4) & 511;
-        uint32_t* tag = &r->dcache_tags[index];
-        if ((*tag & ~2u) != ((physical & UINT32_C(0x1ffff000)) | 1)) return 0;
-        word = r->cache_timing == 2 ?
-            &((struct rdram*)handler->opaque)->dram[rdram_dram_address(physical)] :
-            &r->dcache_words[index][(physical >> 2) & 3];
-        if (write) *tag |= 2;
-        *access_cycles = R4300_DCACHE_HIT_CYCLES;
-    } else {
-        struct rdram* rdram = (struct rdram*)handler->opaque;
-        word = &rdram->dram[rdram_dram_address(physical)];
-        *access_cycles = cache_timing ? (!write && physical < UINT32_C(0x00800000) ? 31 : 38) : 0;
-        if (cache_timing && physical >= UINT32_C(0x04000000) && physical < UINT32_C(0x05000000))
-            *access_cycles = write ? 8 : 21;
-    }
-    /* Only commit history after every fast-path guard succeeds, before
-     * a load can overwrite its own base register. Fallback must see the
-     * previous instruction's history exactly once. */
-    *pipeline_cycles = cache_timing ? ci_memory_pipeline_cycles(r, op, fp, write, cached) : 0;
-    if (write) {
-        uint64_t value = (uint64_t)r->regs[rt];
-        if (fp) {
-            if (alignment == 7) memcpy(&value, r->cp1.regs_double[rt], 8);
-            else { uint32_t single; memcpy(&single, r->cp1.regs_simple[rt], 4); value = single; }
-        }
-        if (alignment == 7) { word[0] = (uint32_t)(value >> 32); word[1] = (uint32_t)value; }
-        else if (alignment == 3) *word = (uint32_t)value;
-        else {
-            unsigned shift = (alignment == 0 ? 3 - (address & 3) : 2 - (address & 2)) * 8;
-            uint32_t mask = (alignment == 0 ? UINT32_C(0xff) : UINT32_C(0xffff)) << shift;
-            masked_write(word, (uint32_t)value << shift, mask);
-        }
-    } else {
-        uint64_t value = *word;
-        if (alignment == 7) value = (value << 32) | word[1];
-        else if (alignment == 0) value = (value >> ((3 - (address & 3)) * 8)) & UINT32_C(0xff);
-        else if (alignment == 1) value = (value >> ((2 - (address & 2)) * 8)) & UINT32_C(0xffff);
-        if (fp) {
-            if (alignment == 7) memcpy(r->cp1.regs_double[rt], &value, 8);
-            else { uint32_t single = (uint32_t)value; memcpy(r->cp1.regs_simple[rt], &single, 4); }
-        } else if (rt) {
-            if (!(kind & 8)) {
-                if (alignment == 0) value = (uint64_t)(int64_t)(int8_t)value;
-                else if (alignment == 1) value = (uint64_t)(int64_t)(int16_t)value;
-                else value = (uint64_t)(int64_t)(int32_t)value;
-            }
-            r->regs[rt] = (int64_t)value;
-        }
-    }
-    return 1;
-}
-
-/* Fast descriptors contain only nontrapping integer operations. Their issue
- * history needs the raw-field integer LDI check, then clears every outgoing
- * load/FPU/store dependency. Avoid decoding the instruction again here. */
-static CI_FORCE_INLINE unsigned ci_integer_pipeline_cycles(struct r4300_core* r, uint32_t op)
-{
-    uint64_t candidates = r4300_pipeline_gpr((op >> 21) & 31) | r4300_pipeline_gpr((op >> 16) & 31);
-    unsigned stalls = !(r->pipeline_load_mask >> 32) && (r->pipeline_load_mask & candidates) != 0;
-    r->pipeline_load_mask = r->pipeline_fpu_result_mask = 0;
-    r->pipeline_fpu_cc = r->pipeline_cached_store = 0;
-    return stalls;
-}
-
-static CI_FORCE_INLINE void ci_execute_block(struct r4300_core* r4300, unsigned int cache_timing, struct cached_block* known_block)
-{
-    if (r4300->interp_PC.addr & 3) { pure_interp_execute_one(r4300); return; }
-    struct cached_interp_state* state = r4300->cached_interp;
-    if (!cache_timing) r4300_pipeline_reset(r4300);
-    const uint32_t start_pc = r4300->interp_PC.addr;
-    struct cached_block* block = known_block ? known_block : ci_lookup_block(r4300, start_pc);
-    uint32_t local_pc = start_pc;
-    unsigned int i;
-
-    if (CI_UNLIKELY(block == NULL))
-    {
-        if (r4300->interp_PC.addr != start_pc) {
-            cp0_step_cycles(&r4300->cp0, 1);
-            if (!r4300->delay_slot && r4300->cp0.cycle_count >= 0) gen_interrupt(r4300);
-            return;
-        }
-        pure_interp_execute_one(r4300);
-        return;
-    }
-
-#ifndef WTFN64_DISABLE_RAM_POLL
-    if ((block->ram_poll == 1 && interp_ram_poll_advance(r4300, &block->poll)) ||
-        (block->ram_poll == 2 && interp_thread_poll_advance(r4300, start_pc)) ||
-        (block->ram_poll == 3 && interp_simple_poll_advance(r4300,&block->simple_poll))) return;
-#endif
-
-    for (i = 0; i < block->count; ++i)
-    {
-        const uint8_t meta = block->instructions[i].meta;
-        const uint8_t fast_op = meta >> CI_META_FAST_SHIFT;
-        const uint32_t op = block->instructions[i].op;
-        uint32_t status = r4300->cp0.regs[CP0_STATUS_REG];
-        if (CI_LIKELY((fast_op != CI_FAST_NONE || (meta & CI_FLAG_RAM_MEMORY)) &&
-                      (!(status & CP0_STATUS_MODE_MASK) ||
-                       (status & (CP0_STATUS_EXL | CP0_STATUS_ERL))))) {
-            /* Arithmetic and guarded RAM accesses cannot observe COUNT,
-             * modify mappings/code, trap in kernel mode, or call a device.
-             * Keep elapsed clocks
-             * local until a handler or the exact interrupt boundary. */
-            unsigned int elapsed = 0;
-            const unsigned int phase = r4300->cp0.count_phase;
-            /* These guarded operations only return elapsed clocks. Keep the
-             * unchanged deadline in a register across RAM stores instead of
-             * making the compiler reload CP0 through possible pointer aliases. */
-            const int64_t deadline = r4300->cp0.cycle_count;
-            do {
-                const uint32_t fast_instruction = block->instructions[i].op;
-                const uint8_t kind = block->instructions[i].meta >> CI_META_FAST_SHIFT;
-                unsigned int access_cycles = 0, pipeline_cycles = 0;
-                if (!cache_timing && kind == CI_FAST_LUI_PAIR &&
-                    deadline + ((elapsed + 2 * (1 + (r4300->compat_issue_clock != 0)) + phase) >> 1) < 0) {
-                    r4300->regs[(fast_instruction >> 16) & 31] =
-                        interp_lui_pair_value(fast_instruction, block->instructions[i + 1].op);
-                    elapsed += 2 * (1 + (r4300->compat_issue_clock != 0));
-                    local_pc += 8;
-                    i += 2;
-                    if (i == block->count) break;
-                    continue;
-                }
-                if (kind == CI_FAST_NONE && !ci_execute_direct_ram(r4300, fast_instruction, block->instructions[i].ram_kind, cache_timing, &access_cycles, &pipeline_cycles)) break;
-                if (cache_timing && kind != CI_FAST_NONE)
-                    pipeline_cycles = ci_integer_pipeline_cycles(r4300, fast_instruction);
-                /* Only compatibility modes reserve an extra issue clock. */
-                elapsed += block->instructions[i].cycles + access_cycles +
-                    r4300_pipeline_issue_cycles(r4300_issue_reservation(
-                        r4300->compat_issue_clock), pipeline_cycles);
-                if (cache_timing) elapsed += r4300_fetch_cycles(r4300, local_pc);
-                if (kind != CI_FAST_NONE && !ci_execute_hot_fast_op(r4300, kind, fast_instruction))
-                    ci_execute_fast_op(r4300, kind, fast_instruction);
-                local_pc += 4;
-                if (CI_UNLIKELY(deadline + ((elapsed + phase) >> 1) >= 0)) {
-                    cp0_step_cycles(&r4300->cp0, elapsed);
-                    r4300->interp_PC.addr = local_pc;
-                    gen_interrupt(r4300);
-                    return;
-                }
-                ++i;
-            } while (i < block->count && ((block->instructions[i].meta >> CI_META_FAST_SHIFT) != CI_FAST_NONE ||
-                     (block->instructions[i].meta & CI_FLAG_RAM_MEMORY)));
-            if (elapsed) {
-                cp0_step_cycles(&r4300->cp0, elapsed);
-                --i;
-                continue;
-            }
-        }
-        if (!r4300_begin_instruction_cycles(r4300, op, local_pc, block->instructions[i].cycles, cache_timing)) return;
-
-        if (CI_LIKELY(fast_op != CI_FAST_NONE))
-        {
-
-            if (!ci_execute_hot_fast_op(r4300, fast_op, op))
-                ci_execute_fast_op(r4300, fast_op, op);
-            local_pc += 4;
-            if (CI_UNLIKELY(r4300->cp0.cycle_count >= 0))
-            {
-                r4300->interp_PC.addr = local_pc;
-                gen_interrupt(r4300);
-                return;
-            }
-            continue;
-        }
-
-
-        r4300->interp_PC.addr = local_pc;
-
-        if (block->has_delay && i + 1 == block->count)
-        {
-            state->pending_delay_handler = block->delay_handler;
-            state->pending_delay_op = block->delay_op;
-            state->pending_delay_fast_op = block->delay_fast_op;
-            state->pending_delay_pc = local_pc + 4;
-            state->pending_delay_valid = 1;
-        }
-
-        if (block->instructions[i].fp_kind == 1) pure_interp_fpu_arithmetic(r4300, op);
-        else if (block->instructions[i].fp_kind == 2) pure_interp_fpu_compare(r4300, op);
-        else if (block->instructions[i].fp_kind == 3) interp_fpu_move(r4300, op);
-        else if (!interp_word_memory(r4300, op) && !interp_equal_branch(r4300, op, block->idle_end, ci_execute_one))
-            block->handlers[i](r4300, op);
-        r4300->regs[0] = 0;
-        state->pending_delay_valid = 0;
-
-        if (CI_UNLIKELY(r4300->cp0.cycle_count >= 0))
-        {
-            gen_interrupt(r4300);
-            return;
-        }
-        local_pc += 4;
-        if (CI_UNLIKELY(breakloop || r4300->interp_PC.addr != local_pc))
-            return;
-
-        if ((meta & CI_FLAG_MAY_INVALIDATE) != 0 &&
-            CI_UNLIKELY(block->epoch != state->epoch ||
-                        block->page_generation != state->page_generation[block->physical_page]))
-            return;
-    }
-
-    r4300->interp_PC.addr = local_pc;
-}
-
-void cached_interp_run(struct r4300_core* r4300)
-{
-    /* Cache emulation is fixed at startup. Specialize outside the dispatch
-     * loop so disabled emulation does not carry the I-cache machinery. */
-    if (r4300->cache_timing == 2) {
-        while (!breakloop) ci_execute_block(r4300, 2, NULL);
-    } else if (r4300->cache_timing) {
-        while (!breakloop) ci_execute_block(r4300, 1, NULL);
-    } else {
-        while (!breakloop) ci_execute_block(r4300, 0, NULL);
-    }
 }
 
 #ifdef HAVE_ARI64
@@ -1610,7 +1306,7 @@ void cached_interp_run(struct r4300_core* r4300)
 static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned phase)
 {
     struct cached_block* block = opaque;
-    struct cached_interp_state* state = r->cached_interp;
+    struct r4300_jit_state* state = r->jit;
     uint32_t pc = block->virtual_pc + i * 4;
 
     unsigned count = (phase >> 8) & 63;
@@ -1637,13 +1333,13 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
         if (!r4300_begin_instruction_cycles(r, op, pc, block->instructions[i].cycles, r->cache_timing)) return 0;
         if (phase == 0) return 1;
         if (phase == 11) {
-            r->interp_PC.addr = pc;
+            r->instruction_pc.addr = pc;
             if (!check_cop1_unusable(r)) return 1;
             r->regs[0] = 0; ++state->jit_commits;
             if (r->cp0.cycle_count >= 0) gen_interrupt(r);
             return 0;
         }
-        r->interp_PC.addr = pc;
+        r->instruction_pc.addr = pc;
         if (block->has_delay && i + 1 == block->count) {
             state->pending_delay_handler = block->delay_handler;
             state->pending_delay_op = block->delay_op;
@@ -1651,20 +1347,20 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
             state->pending_delay_pc = pc + 4;
             state->pending_delay_valid = 1;
         }
-        if (block->instructions[i].fp_kind == 1) pure_interp_fpu_arithmetic(r, op);
-        else if (block->instructions[i].fp_kind == 2) pure_interp_fpu_compare(r, op);
+        if (block->instructions[i].fp_kind == 1) r4300_ops_fpu_arithmetic(r, op);
+        else if (block->instructions[i].fp_kind == 2) r4300_ops_fpu_compare(r, op);
         else if (block->instructions[i].fp_kind == 3) interp_fpu_move(r, op);
         else if (!interp_word_memory(r, op) && !interp_equal_branch(r, op, block->idle_end, ci_execute_one))
             block->handlers[i](r, op);
         state->pending_delay_valid = 0;
-    } else r->interp_PC.addr = pc + 4;
+    } else r->instruction_pc.addr = pc + 4;
     r->regs[0] = 0;
     ++state->jit_commits;
     if (!r->delay_slot && r->cp0.cycle_count >= 0) {
         gen_interrupt(r);
         return 0;
     }
-    if (breakloop || r->interp_PC.addr != pc + 4) return 0;
+    if (breakloop || r->instruction_pc.addr != pc + 4) return 0;
     return block->epoch == state->epoch &&
            block->page_generation == state->page_generation[block->physical_page] &&
            ci_mapping_matches(r, block);
@@ -1672,9 +1368,9 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
 
 static ari64_entry ci_jit_link(struct r4300_core* r)
 {
-    if (breakloop || r->delay_slot || r->stop || (r->interp_PC.addr & 3)) return NULL;
-    struct cached_interp_state* state = r->cached_interp;
-    uint32_t pc = r->interp_PC.addr;
+    if (breakloop || r->delay_slot || r->stop || (r->instruction_pc.addr & 3)) return NULL;
+    struct r4300_jit_state* state = r->jit;
+    uint32_t pc = r->instruction_pc.addr;
     /* Do not fetch, compile, run a polling shortcut or recycle an arena from
      * a generated frame. A miss returns to the normal CPU dispatcher. */
     struct cached_block* next = state->recent_blocks[ci_hash_pc(pc) & state->set_mask];
@@ -1715,22 +1411,22 @@ static ari64_entry ci_jit_link(struct r4300_core* r)
 #ifdef ARI64_PROFILE
 static int ci_jit_fpu_prepare(struct r4300_core* r, uint32_t op, uint64_t inputs[3], uint64_t* commits)
 {
-    ++r->cached_interp->profile_fpu[op & 63];
-    return pure_interp_jit_fpu_prepare(r,op,inputs,commits);
+    ++r->jit->profile_fpu[op & 63];
+    return r4300_ops_jit_fpu_prepare(r,op,inputs,commits);
 }
 #else
-#define ci_jit_fpu_prepare pure_interp_jit_fpu_prepare
+#define ci_jit_fpu_prepare r4300_ops_jit_fpu_prepare
 #endif
 static int ci_jit_fpu_finish(struct r4300_core* r, uint32_t op, uint64_t bits, unsigned flags)
 {
-    uint32_t pc = r->interp_PC.addr;
-    if ((op & 63) >= 48) pure_interp_fpu_compare_finish(r, (int)(bits & 1));
-    else pure_interp_fpu_finish(r, op, bits, flags);
+    uint32_t pc = r->instruction_pc.addr;
+    if ((op & 63) >= 48) r4300_ops_fpu_compare_finish(r, (int)(bits & 1));
+    else r4300_ops_fpu_finish(r, op, bits, flags);
     r->regs[0] = 0;
-    ++r->cached_interp->jit_commits;
-    ++r->cached_interp->jit_fast_commits;
+    ++r->jit->jit_commits;
+    ++r->jit->jit_fast_commits;
     if (r->cp0.cycle_count >= 0) { gen_interrupt(r); return 0; }
-    return !breakloop && r->interp_PC.addr == pc + 4;
+    return !breakloop && r->instruction_pc.addr == pc + 4;
 }
 
 static void ci_execute_jit(struct r4300_core* r, int one)
@@ -1738,15 +1434,15 @@ static void ci_execute_jit(struct r4300_core* r, int one)
     /* A delay slot remains one precise instruction, never a nested native
      * compilation that could recycle the caller's executable arena. */
     if (r->delay_slot) { ci_execute_one(r); return; }
-    if (r->interp_PC.addr & 3) { pure_interp_execute_one(r); return; }
-    struct cached_interp_state* state = r->cached_interp;
-    uint32_t pc = r->interp_PC.addr;
+    if (r->instruction_pc.addr & 3) { r4300_ops_execute_one(r); return; }
+    struct r4300_jit_state* state = r->jit;
+    uint32_t pc = r->instruction_pc.addr;
     struct cached_block* block = ci_lookup_block(r, pc);
     if (!block) {
-        if (r->interp_PC.addr != pc) {
+        if (r->instruction_pc.addr != pc) {
             cp0_step_cycles(&r->cp0, 1);
             if (r->cp0.cycle_count >= 0) gen_interrupt(r);
-        } else pure_interp_execute_one(r);
+        } else r4300_ops_execute_one(r);
         return;
     }
 #ifndef WTFN64_DISABLE_RAM_POLL
@@ -1754,24 +1450,9 @@ static void ci_execute_jit(struct r4300_core* r, int one)
         (block->ram_poll == 2 && interp_thread_poll_advance(r, pc)) ||
         (block->ram_poll == 3 && interp_simple_poll_advance(r,&block->simple_poll)))) return;
 #endif
-    if (!one && !block->native_candidate) {
-        uint32_t ops[CI_BLOCK_INSTRUCTIONS];
-        for (unsigned i = 0; i < block->count; ++i) ops[i] = block->instructions[i].op;
-        block->native_candidate = ari64_has_native(ops,block->count,block->delay_op,block->has_delay,block->idle_end) ? 1 : 2;
-    }
-
     ari64_entry* entry = one ? &block->native_one_entry : &block->native_entry;
     uint64_t* generation = one ? &block->native_one_generation : &block->native_generation;
     if (!ari64_entry_valid(state->jit, *entry, *generation)) {
-        /* Ari64-style hot block compilation: execute cold decoded blocks
-         * before spending code space and protection syscalls on them. */
-        /* Short precise-only wrappers pay off by retaining native tail chains
-         * across unsafe delay slots. Compile those sooner than cold regions. */
-        if (!one && block->heat < (block->native_candidate == 2 ? CI_PRECISE_HOT_THRESHOLD : CI_NATIVE_HOT_THRESHOLD)) {
-            ++block->heat;
-            ci_execute_block(r, r->cache_timing, block);
-            return;
-        }
         ++state->jit_compile_misses[*entry != NULL];
         uint32_t ops[CI_BLOCK_INSTRUCTIONS];
         unsigned count = one ? 1 : block->count;
@@ -1804,11 +1485,11 @@ static void ci_execute_jit(struct r4300_core* r, int one)
     (*entry)(r);
 }
 
-void cached_dynarec_execute_one(struct r4300_core* r) { ci_execute_jit(r, 1); }
-void cached_dynarec_run(struct r4300_core* r) { while (!breakloop) ci_execute_jit(r, 0); }
-void cached_dynarec_stats(struct r4300_core* r, uint64_t stats[4])
+void r4300_jit_execute_one(struct r4300_core* r) { ci_execute_jit(r, 1); }
+void r4300_jit_run(struct r4300_core* r) { while (!breakloop) ci_execute_jit(r, 0); }
+void r4300_jit_stats(struct r4300_core* r, uint64_t stats[4])
 {
-    struct cached_interp_state* s = r->cached_interp;
+    struct r4300_jit_state* s = r->jit;
     ari64_stats(s ? s->jit : NULL, &stats[0], &stats[1]);
     stats[2] = s ? s->jit_dispatch_entries + s->jit_indirect_links + s->jit_direct_links : 0;
     stats[3] = s ? s->jit_commits : 0;
@@ -1841,18 +1522,54 @@ void cached_dynarec_stats(struct r4300_core* r, uint64_t stats[4])
     }
 #endif
 }
-void cached_dynarec_code_stats(struct r4300_core* r, uint64_t stats[3])
+void r4300_jit_code_stats(struct r4300_core* r, uint64_t stats[3])
 {
-    ari64_code_stats(r->cached_interp ? r->cached_interp->jit : NULL, stats);
+    ari64_code_stats(r->jit ? r->jit->jit : NULL, stats);
 }
-void cached_dynarec_optimization_stats(struct r4300_core* r, uint64_t stats[2])
+void r4300_jit_optimization_stats(struct r4300_core* r, uint64_t stats[2])
 {
-    struct cached_interp_state* s = r->cached_interp;
+    struct r4300_jit_state* s = r->jit;
     stats[0] = s ? s->jit_fast_commits : 0;
     stats[1] = s ? s->jit_indirect_links + s->jit_direct_links : 0;
 }
-uint64_t cached_dynarec_direct_links(struct r4300_core* r)
+uint64_t r4300_jit_direct_links(struct r4300_core* r)
 {
-    return r->cached_interp ? r->cached_interp->jit_direct_links : 0;
+    return r->jit ? r->jit->jit_direct_links : 0;
 }
 #endif
+
+void run_r4300(struct r4300_core* r4300)
+{
+#ifdef OSAL_SSE
+    // Save FTZ/DAZ mode.
+    unsigned int daz = _MM_GET_DENORMALS_ZERO_MODE();
+    unsigned int ftz = _MM_GET_FLUSH_ZERO_MODE();
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_OFF);
+#endif
+
+    breakloop = false;
+    if (r4300->startup)
+    {
+        r4300->stop = 0;
+        r4300->pc = &r4300->instruction_pc;
+        r4300->instruction_pc.addr = r4300->cp0.last_addr = r4300->start_address;
+        if (!r4300_jit_init(r4300)) {
+            core_log(CORE_LOG_ERROR,"Ari64 initialization failed; stopping CPU");
+            r4300->stop=1;
+            breakloop=true;
+            goto cpu_run_done;
+        }
+        core_log(CORE_LOG_INFO,"CPU dynarec: " ARI64_BACKEND_NAME);
+        r4300->startup = 0;
+    }
+
+    r4300->execute_one=r4300_jit_execute_one;
+    r4300_jit_run(r4300);
+cpu_run_done: ;
+
+#ifdef OSAL_SSE
+    // Restore FTZ/DAZ mode.
+    _MM_SET_DENORMALS_ZERO_MODE(daz);
+    _MM_SET_FLUSH_ZERO_MODE(ftz);
+#endif
+}

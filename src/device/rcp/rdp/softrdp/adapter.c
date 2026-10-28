@@ -1,7 +1,7 @@
 /* Libretro/RCP bridge. Keep the host interface while replacing the rasterizer. */
-#include "../angrylion/n64video.h"
-#include "../angrylion/vdac.h"
-#include "../angrylion/msg.h"
+#include "softrdp_video.h"
+#include "presenter.h"
+#include "messages.h"
 #include "upstream/core/sr.h"
 #include "upstream/core/sr_threads.h"
 #include "upstream/present/sr_field_output.h"

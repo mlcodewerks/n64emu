@@ -10,7 +10,7 @@ extern "C" {
 #include "device/r4300/idec.h"
 #include <assert.h>
 #include "device/r4300/timing.h"
-#include "device/r4300/pure_interp.h"
+#include "device/r4300/cpu_ops.h"
 #include "device/memory.h"
 #include "device/rdram.h"
 }

@@ -18,12 +18,12 @@
  * sees the sleeper or the sleeper sees the bump.
  */
 
-#include "parallel_al.h"
+#include "worker_pool.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-#include "retro_atomic.h"
+#include "worker_atomic.h"
 #include "../performance_cores.h"
 #include <rthreads/rthreads.h>
 #include <features/features_cpu.h>

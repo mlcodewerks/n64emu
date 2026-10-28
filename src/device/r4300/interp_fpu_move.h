@@ -12,6 +12,6 @@ static osal_force_inline void interp_fpu_move(struct r4300_core* r, uint32_t op)
     unsigned fs = (op >> 11) & 31;
     if (!(r->cp0.regs[CP0_STATUS_REG] & CP0_STATUS_FR)) fs &= ~1u;
     r->cp1.regs[(op >> 6) & 31] = r->cp1.regs[fs];
-    r->interp_PC.addr += 4;
+    r->instruction_pc.addr += 4;
 }
 #endif

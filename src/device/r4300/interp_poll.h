@@ -2,7 +2,7 @@
 #define PARALLAX_R4300_INTERP_POLL_H
 
 #include "timing.h"
-#include "pure_interp.h"
+#include "cpu_ops.h"
 #include "device/rdram.h"
 #include <string.h>
 
@@ -148,7 +148,7 @@ static int interp_simple_poll_advance(struct r4300_core* r,const struct interp_s
 {
     uint32_t status=r->cp0.regs[CP0_STATUS_REG];
     if(breakloop || r->stop || r->delay_slot || r->skip_jump || r->regs[0] ||
-        r->interp_PC.addr!=p->pc || r->cp0.last_addr!=p->pc || r->cp0.cycle_count>=0 || r->cp0.count_phase>1 ||
+        r->instruction_pc.addr!=p->pc || r->cp0.last_addr!=p->pc || r->cp0.cycle_count>=0 || r->cp0.count_phase>1 ||
         ((status&CP0_STATUS_MODE_MASK) && !(status&(CP0_STATUS_EXL|CP0_STATUS_ERL))) ||
         r->pipeline_load_mask || r->pipeline_fpu_result_mask || r->pipeline_fpu_cc || r->pipeline_cached_store)return 0;
     const uint32_t* code=interp_simple_poll_ram(r,p->pc,p->count);

@@ -2,8 +2,8 @@
 static void execute_test_op(uint32_t op)
 {
     code[0] = op;
-    cpu.interp_PC.addr = 0x80000000;
-    cached_interp_invalidate(&cpu, 0x80000000, 4);
+    cpu.instruction_pc.addr = 0x80000000;
+    r4300_jit_invalidate(&cpu, 0x80000000, 4);
     cpu.execute_one(&cpu);
     assert(cpu.regs[0] == 0);
 }
@@ -106,7 +106,7 @@ static void check_exception_behavior(int cached)
     cpu.regs[31] = 1;
     code[1] = 0x24010007; /* delay slot observes the link */
     execute_test_op(0x07f00002); /* BLTZAL ra evaluates after writing ra in Ares */
-    assert(cpu.interp_PC.addr == 0x8000000c && cpu.regs[1] == 7);
+    assert(cpu.instruction_pc.addr == 0x8000000c && cpu.regs[1] == 7);
     assert(cpu.regs[31] == (int32_t)0x80000008);
 
     setup(cached);
@@ -125,12 +125,12 @@ static void check_exception_behavior(int cached)
     setup(cached);
     cpu.cp0.regs[CP0_STATUS_REG] |= CP0_STATUS_BEV;
     execute_test_op(0x70000000); /* reserved opcode */
-    assert(cpu.interp_PC.addr == 0xbfc00380 && test_exception_code() == CP0_CAUSE_EXCCODE_RI);
+    assert(cpu.instruction_pc.addr == 0xbfc00380 && test_exception_code() == CP0_CAUSE_EXCCODE_RI);
 
     setup(cached);
     code[0] = 0x10000002; code[1] = 0x0000000d;
     cpu.execute_one(&cpu);
-    assert(cpu.interp_PC.addr == 0x80000180 && cpu.cp0.regs[CP0_EPC_REG] == 0x80000000);
+    assert(cpu.instruction_pc.addr == 0x80000180 && cpu.cp0.regs[CP0_EPC_REG] == 0x80000000);
     assert(cpu.cp0.regs[CP0_CAUSE_REG] & CP0_CAUSE_BD);
 
     setup(cached);
@@ -138,11 +138,11 @@ static void check_exception_behavior(int cached)
     cpu.cp0.regs[CP0_STATUS_REG] |= CP0_STATUS_ERL;
     cpu.llbit = 1;
     execute_test_op(0x42000018); /* ERET from ERL */
-    assert(cpu.interp_PC.addr == 0x80000200 && cpu.llbit == 0);
+    assert(cpu.instruction_pc.addr == 0x80000200 && cpu.llbit == 0);
     assert(!(cpu.cp0.regs[CP0_STATUS_REG] & CP0_STATUS_ERL));
 
     setup(cached);
-    cpu.interp_PC.addr = 0x80000001;
+    cpu.instruction_pc.addr = 0x80000001;
     cpu.execute_one(&cpu);
     assert(test_exception_code() == CP0_CAUSE_EXCCODE_ADEL);
     assert(cpu.cp0.regs[CP0_BADVADDR_REG] == 0x80000001);
@@ -150,7 +150,7 @@ static void check_exception_behavior(int cached)
     setup(cached);
     cpu.cp0.regs[CP0_INDEX_REG] = 63;
     execute_test_op(0x42000002); /* invalid TLB index is ignored, never OOB */
-    assert(cpu.interp_PC.addr == 0x80000004);
+    assert(cpu.instruction_pc.addr == 0x80000004);
     cpu.cp0.regs[CP0_WIRED_REG] = 63;
     execute_test_op(0x40010800); /* RANDOM with WIRED > 31 */
     assert(cpu.regs[1] >= 0 && cpu.regs[1] <= 63);
@@ -192,7 +192,7 @@ static void check_fpu_behavior(int cached)
                 cpu.cp1.regs[4].dword = 0;
                 cpu.cp1.fcr31 = 0x3f000; /* Each compare clears old cause bits. */
                 execute_test_op(0x44041030 | (fmt << 21) | pred);
-                assert(!cpu.stop && cpu.interp_PC.addr == 0x80000004);
+                assert(!cpu.stop && cpu.instruction_pc.addr == 0x80000004);
                 assert(!!(cpu.cp1.fcr31 & 0x800000) == !!(pred & 1));
                 assert(!!(cpu.cp1.fcr31 & 0x10040) == !!(signaling || (pred & 8)));
                 assert(!(cpu.cp1.fcr31 & 0x2f000));

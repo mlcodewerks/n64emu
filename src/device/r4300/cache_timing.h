@@ -83,7 +83,7 @@ static inline void r4300_dcache_writeback(struct r4300_core* r, uint32_t va)
     for (unsigned i = 0; i < 4; ++i)
         mem_write32(mem_get_handler(r->mem, pa), pa + i * 4,
                     r->dcache_words[index][i], ~0u);
-    if (r->cached_interp) invalidate_r4300_cached_code(r, pa, 16);
+    if (r->jit) invalidate_r4300_cached_code(r, pa, 16);
     r->dcache_tags[index] &= ~2u;
 }
 

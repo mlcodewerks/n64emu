@@ -42,20 +42,20 @@ static PARALLAX_FORCE_INLINE int fpu_compare_prepare(struct r4300_core* r4300, u
     inputs[0] = lhs; inputs[1] = rhs; inputs[2] = unordered;
     return 1;
 }
-int pure_interp_fpu_compare_prepare(struct r4300_core* r, uint32_t op, uint64_t inputs[3])
+int r4300_ops_fpu_compare_prepare(struct r4300_core* r, uint32_t op, uint64_t inputs[3])
 {
     return fpu_compare_prepare(r, op, inputs);
 }
 static PARALLAX_FORCE_INLINE void fpu_compare_finish(struct r4300_core* r, int result)
 {
     r->cp1.fcr31 = (r->cp1.fcr31 & ~FCR31_CMP_BIT) | (result ? FCR31_CMP_BIT : 0);
-    r->interp_PC.addr += 4;
+    r->instruction_pc.addr += 4;
 }
-void pure_interp_fpu_compare_finish(struct r4300_core* r, int result)
+void r4300_ops_fpu_compare_finish(struct r4300_core* r, int result)
 {
     fpu_compare_finish(r, result);
 }
-void pure_interp_fpu_compare(struct r4300_core* r4300, uint32_t op)
+void r4300_ops_fpu_compare(struct r4300_core* r4300, uint32_t op)
 {
     uint64_t inputs[3];
     if (!fpu_compare_prepare(r4300, op, inputs)) return;
@@ -76,8 +76,8 @@ void pure_interp_fpu_compare(struct r4300_core* r4300, uint32_t op)
 }
 
 #define FPU_COMPARE_PAIR(name) \
-    DECLARE_INSTRUCTION(name##_S) { pure_interp_fpu_compare(r4300, op); } \
-    DECLARE_INSTRUCTION(name##_D) { pure_interp_fpu_compare(r4300, op); }
+    DECLARE_INSTRUCTION(name##_S) { r4300_ops_fpu_compare(r4300, op); } \
+    DECLARE_INSTRUCTION(name##_D) { r4300_ops_fpu_compare(r4300, op); }
 FPU_COMPARE_PAIR(C_F)
 FPU_COMPARE_PAIR(C_UN)
 FPU_COMPARE_PAIR(C_EQ)

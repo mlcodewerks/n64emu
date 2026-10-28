@@ -29,7 +29,7 @@
 #include "core/file.h"
 
 #include "core/frontend.h"
-#include "device/rcp/rdp/angrylion/n64video.h"
+#include "device/rcp/rdp/softrdp/softrdp_video.h"
 #include "renderer_options.h"
 #ifdef HAVE_GLRDP
 #include "device/rcp/rdp/glrdp/libretro_glrdp.h"
@@ -527,7 +527,7 @@ bool retro_load_game(const struct retro_game_info *game)
     renderer_read_options(environ_cb);
     if (log_cb)
         log_cb(RETRO_LOG_INFO, "Renderer: %s, upscale %ux, performance cores %s.\n",
-                renderer_settings.renderer == RENDERER_ANGRYLION ? "Angrylion" : renderer_settings.renderer == RENDERER_GLRDP ? "GLRDP" : "paraLLEl-RDP",
+                renderer_settings.renderer == RENDERER_SOFTRDP ? "SoftRDP" : renderer_settings.renderer == RENDERER_GLRDP ? "GLRDP" : "paraLLEl-RDP",
                 renderer_settings.upscale, renderer_settings.performance_only ? "only" : "unrestricted");
     performance_cores_init();
     performance_cores_set_enabled(renderer_settings.performance_only);
@@ -613,16 +613,7 @@ void update_variables(bool startup)
 
         EnableFrameDuping = 1;
         EnableFullspeed = 0;
-#if defined(PARALLAX_HEADLESS_BENCH_PURE)
-        r4300_emumode = EMUMODE_PURE_INTERPRETER;
-#elif defined(PARALLAX_HEADLESS_BENCHMARK) && !defined(M64P_BENCH_RUNTIME_CPU)
-        r4300_emumode = EMUMODE_INTERPRETER;
-#else
-        r4300_emumode = renderer_settings.cpu_core == CPU_CORE_PURE ? EMUMODE_PURE_INTERPRETER : EMUMODE_INTERPRETER;
-#ifdef HAVE_ARI64
-        if (renderer_settings.cpu_core == CPU_CORE_DYNAREC) r4300_emumode = EMUMODE_DYNAREC;
-#endif
-#endif
+        r4300_emumode = EMUMODE_DYNAREC;
         retro_screen_aspect = 4.0 / 3.0;
         AspectRatio = 1; // Aspect::a43
         EnableOverscan = 0;
@@ -692,8 +683,8 @@ void retro_run(void)
     else
 #endif
     {
-        extern void angrylion_present(bool new_frame);
-        angrylion_present(libretro_swap_buffer);
+        extern void softrdp_present(bool new_frame);
+        softrdp_present(libretro_swap_buffer);
     }
 }
 void retro_reset(void)

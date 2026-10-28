@@ -62,12 +62,10 @@ struct mi_controller;
 struct rdram;
 
 struct jump_table;
-struct cached_interp_state;
+struct r4300_jit_state;
 
 
 enum {
-    EMUMODE_PURE_INTERPRETER = 0,
-    EMUMODE_INTERPRETER      = 1,
     EMUMODE_DYNAREC          = 2,
 };
 
@@ -91,10 +89,10 @@ struct r4300_core
     /* When reset_hard_job is set, next interrupt will cause hard reset */
     int reset_hard_job;
 
-    /* from pure_interp.c */
-    struct precomp_instr interp_PC;
+    /* Current instruction cursor and native block-cache runtime. */
+    struct precomp_instr instruction_pc;
     void (*execute_one)(struct r4300_core* r4300);
-    struct cached_interp_state* cached_interp;
+    struct r4300_jit_state* jit;
     uint64_t* cached_code_pages;
 
     unsigned int emumode;

@@ -8,7 +8,7 @@ static unsigned emit_fpu_sequence(void* block,const uint32_t* ops,unsigned start
     /* Hoisting the mapped TLB scan pays for the sequence guard. Direct
      * KSEG fetches are cheaper through the specialized per-op helper. */
     if(config->cache_timing && (config->virtual_pc&UINT32_C(0xc0000000))!=UINT32_C(0x80000000) &&
-       config->fpu_prepare==pure_interp_jit_fpu_prepare)
+       config->fpu_prepare==r4300_ops_jit_fpu_prepare)
         while(end<count && native_fpu_instruction(ops[end]))++end;
     if(end-start<3){emit_fpu_native(ops[start],start,config,exits,exit_count);return start+1;}
     unsigned base=0;

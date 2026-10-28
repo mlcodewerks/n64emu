@@ -6,7 +6,7 @@ static void emit_direct_links(void* block, const struct ari64_config* config)
     emit_mem_imm(0x80,0,7,RAX,-1,0,0,0); misses[miss_count++] = emit_jump(5);
     emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,delay_slot),0); misses[miss_count++] = emit_jump(5);
     emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,stop),0); misses[miss_count++] = emit_jump(5);
-    emit_mem(0x8b,0,RDX,R12,-1,0,offsetof(struct r4300_core,interp_PC.addr));
+    emit_mem(0x8b,0,RDX,R12,-1,0,offsetof(struct r4300_core,instruction_pc.addr));
     for (unsigned slot = 0; slot < 2; ++slot) {
         emit_movimm64((intptr_t)&config->links[slot],R11);
         emit_mem(0x39,0,RDX,R11,-1,0,offsetof(struct ari64_link_cache,pc));

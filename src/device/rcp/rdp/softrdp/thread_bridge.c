@@ -1,7 +1,7 @@
 /* SoftRDP's scanline jobs use Parallax's existing synchronous generation pool. */
 #include "upstream/core/sr_threads.h"
 #include "upstream/core/sr_async.h"
-#include "../angrylion/parallel_al.h"
+#include "worker_pool.h"
 #include "../performance_cores.h"
 #include <stddef.h>
 

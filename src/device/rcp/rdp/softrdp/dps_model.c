@@ -32,7 +32,7 @@ static struct {
 static _Thread_local unsigned current_worker;
 int softrdp_dps_armed;
 /* Reuse only the licensed cen64 span-buffer model, never the old rasterizer. */
-#include "../angrylion/n64video/rdp/dps.c"
+#include "dps_span_model.inc"
 
 void softrdp_dps_reset(void)
 {

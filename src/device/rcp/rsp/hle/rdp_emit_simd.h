@@ -1,5 +1,5 @@
 /* Integer SIMD shared by the angrylion HLE microcode emitters.
- * SSE4.2 / NEON selection and exact accumulator primitives are common
+ * SSE2 / NEON selection and exact accumulator primitives are common
  * with audio HLE. Display-list and FIFO state remain ordered by callers. */
 #ifndef PARALLAX_RDP_EMIT_SIMD_H
 #define PARALLAX_RDP_EMIT_SIMD_H
@@ -60,14 +60,14 @@ static inline void rdp_simd_blend4(int32_t *out,const int32_t *a,const int32_t *
         /* Convex weights bound the final sum to signed 32 bits. Vector
          * additions may wrap internally; their final bits are exact. */
         __m128i mask=_mm_set1_epi32(65535);
-        __m128i f=_mm_add_epi32(_mm_srli_epi32(_mm_mullo_epi32(_mm_and_si128(x,mask),ga),16),_mm_srli_epi32(_mm_mullo_epi32(_mm_and_si128(y,mask),gb),16));
-        __m128i integer=_mm_add_epi32(_mm_mullo_epi32(_mm_srai_epi32(x,16),ga),_mm_mullo_epi32(_mm_srai_epi32(y,16),gb));
+        __m128i f=_mm_add_epi32(_mm_srli_epi32(hle_mullo32(_mm_and_si128(x,mask),ga),16),_mm_srli_epi32(hle_mullo32(_mm_and_si128(y,mask),gb),16));
+        __m128i integer=_mm_add_epi32(hle_mullo32(_mm_srai_epi32(x,16),ga),hle_mullo32(_mm_srai_epi32(y,16),gb));
         _mm_storeu_si128((__m128i *)out,_mm_add_epi32(integer,f));
         return;
     }
     for(i=0;i<2;i++) {
         __m128i xx=_mm_shuffle_epi32(x,_MM_SHUFFLE(1,1,0,0)),yy=_mm_shuffle_epi32(y,_MM_SHUFFLE(1,1,0,0));
-        __m128i acc=_mm_add_epi64(hle_sra64(_mm_mul_epi32(xx,ga),16),hle_sra64(_mm_mul_epi32(yy,gb),16));
+        __m128i acc=_mm_add_epi64(hle_sra64(hle_mul_s32(xx,ga),16),hle_sra64(hle_mul_s32(yy,gb),16));
         v[i]=_mm_or_si128(_mm_slli_epi64(hle_clamp64_s16(hle_sra64(acc,16)),16),hle_rsp_low64(acc));
         x=_mm_srli_si128(x,8);y=_mm_srli_si128(y,8);
     }
@@ -86,14 +86,14 @@ static inline void rdp_simd_blend8(int16_t *out,const int16_t *a,const int16_t *
 #if HLE_SIMD_ENABLED
     __m128i x=_mm_loadu_si128((const __m128i *)a),y=_mm_loadu_si128((const __m128i *)b),v[2];unsigned i;
     for(i=0;i<2;i++) {
-        __m128i p=_mm_mullo_epi32(_mm_cvtepi16_epi32(x),_mm_set1_epi32((uint16_t)wa));
-        __m128i q=_mm_mullo_epi32(_mm_cvtepi16_epi32(y),_mm_set1_epi32((uint16_t)wb));
+        __m128i p=hle_mullo32(hle_sext16_32(x),_mm_set1_epi32((uint16_t)wa));
+        __m128i q=hle_mullo32(hle_sext16_32(y),_mm_set1_epi32((uint16_t)wb));
         if((uint16_t)wa+(unsigned)(uint16_t)wb<=65536) {
             v[i]=_mm_srai_epi32(_mm_add_epi32(p,q),16);
             x=_mm_srli_si128(x,8);y=_mm_srli_si128(y,8);continue;
         }
-        __m128i lo=_mm_add_epi64(_mm_cvtepi32_epi64(p),_mm_cvtepi32_epi64(q));
-        __m128i hi=_mm_add_epi64(_mm_cvtepi32_epi64(_mm_srli_si128(p,8)),_mm_cvtepi32_epi64(_mm_srli_si128(q,8)));
+        __m128i lo=_mm_add_epi64(hle_sext32_64(p),hle_sext32_64(q));
+        __m128i hi=_mm_add_epi64(hle_sext32_64(_mm_srli_si128(p,8)),hle_sext32_64(_mm_srli_si128(q,8)));
         v[i]=hle_join64_low32(hle_clamp64_s16(hle_sra64(lo,16)),hle_clamp64_s16(hle_sra64(hi,16)));
         x=_mm_srli_si128(x,8);y=_mm_srli_si128(y,8);
     }
@@ -108,11 +108,11 @@ static inline void rdp_simd_light_fold3(int32_t *lt,const int32_t *rgb,const int
 #if HLE_SIMD_ENABLED
     __m128i x=_mm_setr_epi32((int16_t)lt[0],(int16_t)lt[1],(int16_t)lt[2],0),parts[2];int32_t out[4];unsigned i;
     __m128i c=_mm_setr_epi32((rgb[0]&255)<<7,(rgb[1]&255)<<7,(rgb[2]&255)<<7,0);
-    __m128i p=_mm_mullo_epi32(x,_mm_set1_epi32(32767)),q=_mm_mullo_epi32(c,_mm_set1_epi32(d)),r=_mm_setzero_si128();
-    if(rgb2){c=_mm_setr_epi32((rgb2[0]&255)<<7,(rgb2[1]&255)<<7,(rgb2[2]&255)<<7,0);r=_mm_mullo_epi32(c,_mm_set1_epi32(d2));}
+    __m128i p=hle_mullo32(x,_mm_set1_epi32(32767)),q=hle_mullo32(c,_mm_set1_epi32(d)),r=_mm_setzero_si128();
+    if(rgb2){c=_mm_setr_epi32((rgb2[0]&255)<<7,(rgb2[1]&255)<<7,(rgb2[2]&255)<<7,0);r=hle_mullo32(c,_mm_set1_epi32(d2));}
     for(i=0;i<2;i++) {
-        __m128i a=_mm_add_epi64(_mm_cvtepi32_epi64(p),_mm_cvtepi32_epi64(q));
-        a=_mm_add_epi64(a,_mm_add_epi64(_mm_cvtepi32_epi64(r),_mm_set1_epi64x(0x4000)));
+        __m128i a=_mm_add_epi64(hle_sext32_64(p),hle_sext32_64(q));
+        a=_mm_add_epi64(a,_mm_add_epi64(hle_sext32_64(r),_mm_set1_epi64x(0x4000)));
         parts[i]=hle_clamp64_s16(hle_sra64(a,15));
         p=_mm_srli_si128(p,8);q=_mm_srli_si128(q,8);r=_mm_srli_si128(r,8);
     }
@@ -149,10 +149,22 @@ static inline void rdp_simd_rotate4(int64_t *out,const int32_t m[4][4],const int
 static inline void rdp_simd_pack_attrs(int32_t *out,const int32_t *a,const int32_t *b)
 {
 #if HLE_SIMD_ENABLED
-    __m128i mask=_mm_setr_epi8(8,9,0,1,12,13,4,5,-1,-1,-1,-1,-1,-1,-1,-1);
-    __m128i a0=_mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)a),mask),a1=_mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(a+4)),mask);
-    __m128i b0=_mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)b),mask),b1=_mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(b+4)),mask);
-    __m128i x=_mm_unpacklo_epi32(a0,a1),y=_mm_unpacklo_epi32(b0,b1);
+    __m128i a0=_mm_loadu_si128((const __m128i *)a),a1=_mm_loadu_si128((const __m128i *)(a+4));
+    __m128i b0=_mm_loadu_si128((const __m128i *)b),b1=_mm_loadu_si128((const __m128i *)(b+4));
+    __m128i x,y;
+    /* Truncate each lane before PACKSSDW; saturation would lose unsigned
+     * low-halfword bit patterns. Then arrange two native packet words. */
+    a0=_mm_srai_epi32(_mm_slli_epi32(a0,16),16);
+    a1=_mm_srai_epi32(_mm_slli_epi32(a1,16),16);
+    b0=_mm_srai_epi32(_mm_slli_epi32(b0,16),16);
+    b1=_mm_srai_epi32(_mm_slli_epi32(b1,16),16);
+    x=_mm_packs_epi32(a0,a1);y=_mm_packs_epi32(b0,b1);
+    x=_mm_shufflelo_epi16(x,_MM_SHUFFLE(1,3,0,2));
+    x=_mm_shufflehi_epi16(x,_MM_SHUFFLE(1,3,0,2));
+    y=_mm_shufflelo_epi16(y,_MM_SHUFFLE(1,3,0,2));
+    y=_mm_shufflehi_epi16(y,_MM_SHUFFLE(1,3,0,2));
+    x=_mm_shuffle_epi32(x,_MM_SHUFFLE(3,1,2,0));
+    y=_mm_shuffle_epi32(y,_MM_SHUFFLE(3,1,2,0));
     _mm_storeu_si128((__m128i *)out,_mm_unpacklo_epi64(x,y));
     _mm_storeu_si128((__m128i *)(out+4),_mm_unpackhi_epi64(x,y));
 #else
@@ -172,13 +184,13 @@ static inline void rdp_simd_readback4(int32_t *out,const int64_t *acc,const int3
 #if HLE_SIMD_ENABLED
     __m128i v[2],p[2],lo[2],integer,fraction,partial;unsigned i;
     for(i=0;i<2;i++){
-        __m128i end=_mm_cvtepi32_epi64(_mm_loadl_epi64((const __m128i *)(last+2*i)));
+        __m128i end=hle_sext32_64(_mm_loadl_epi64((const __m128i *)(last+2*i)));
         __m128i a=_mm_loadu_si128((const __m128i *)(acc+2*i));
         lo[i]=a;v[i]=_mm_srli_epi64(a,16);
         p[i]=_mm_srli_epi64(_mm_sub_epi64(a,_mm_slli_epi64(end,16)),16);
     }
     integer=hle_join64_low32(v[0],v[1]);partial=hle_join64_low32(p[0],p[1]);
-    integer=_mm_min_epi32(_mm_set1_epi32(32767),_mm_max_epi32(_mm_set1_epi32(-32768),integer));
+    integer=hle_min32(_mm_set1_epi32(32767),hle_max32(_mm_set1_epi32(-32768),integer));
     fraction=_mm_and_si128(hle_join64_low32(lo[0],lo[1]),_mm_set1_epi32(65535));
     fraction=hle_select(_mm_cmpgt_epi32(partial,_mm_set1_epi32(32767)),_mm_set1_epi32(65535),fraction);
     fraction=_mm_andnot_si128(_mm_cmpgt_epi32(_mm_set1_epi32(-32768),partial),fraction);
@@ -204,7 +216,7 @@ static inline void rdp_simd_matrix_wrap4(int32_t *out,const int32_t *a,const int
             __m128i row=_mm_loadu_si128((const __m128i *)(b+4*k)),gain=_mm_set1_epi32(a[4*i+k]);
             for(j=0;j<2;j++){
                 __m128i v=_mm_shuffle_epi32(row,_MM_SHUFFLE(1,1,0,0));
-                sum[j]=_mm_add_epi64(sum[j],hle_sra64(_mm_mul_epi32(v,gain),16));row=_mm_srli_si128(row,8);
+                sum[j]=_mm_add_epi64(sum[j],hle_sra64(hle_mul_s32(v,gain),16));row=_mm_srli_si128(row,8);
             }
         }
         _mm_storeu_si128((__m128i *)(result+4*i),hle_join64_low32(sum[0],sum[1]));

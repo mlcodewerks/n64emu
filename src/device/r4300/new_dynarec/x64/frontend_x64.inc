@@ -343,7 +343,7 @@ static void emit_transfer_commit(void* block, unsigned index,
 {
     emit_mem_imm(0x83, 1, 7, R12, -1, 0, offsetof(struct r4300_core, cp0.cycle_count),0);
     unsigned char* event = emit_jump(13); /* signed >= 0 */
-    emit_state_imm(offsetof(struct r4300_core, interp_PC.addr), config->virtual_pc + (index + 1) * 4, 0);
+    emit_state_imm(offsetof(struct r4300_core, instruction_pc.addr), config->virtual_pc + (index + 1) * 4, 0);
     emit_state_imm(gpr_offset(0), 0, 1);
     if (config->commits) {
         emit_movimm64((intptr_t)config->commits, R11);
