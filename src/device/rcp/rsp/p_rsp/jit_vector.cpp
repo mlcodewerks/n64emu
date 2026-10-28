@@ -5,6 +5,7 @@
 #include "rsp/reciprocal.h"
 #include <algorithm>
 #include <array>
+#include "rsp/quantize.hpp"
 #include <climits>
 #include <unordered_map>
 
@@ -276,8 +277,8 @@ static bool append_vector_instruction(VectorProgram &p,unsigned op,unsigned vd,u
     case 0x2d: result=rsp_vnxor(s,t);lo=result;break;
     case 0x30: case 0x31: case 0x32: case 0x33: case 0x34: case 0x35: case 0x36:
         store(acc_offset(2),t);return false;
-    case 0x37:return true;
-    default:accumulator=false;break; // Reserved operations zero VD only.
+    case 0x37:case 0x3f:return true;
+    default:lo=_mm_add_epi16(s,t);break; // VZERO: sum in ACC_LO, zero VD.
     }
     if(accumulator)store(acc_offset(2),lo);
     if(multiply){store(acc_offset(1),md);store(acc_offset(0),hi);}
@@ -288,6 +289,12 @@ static bool append_vector_instruction(VectorProgram &p,unsigned op,unsigned vd,u
 
 void Emitter::vector_instruction(unsigned op,unsigned vd,unsigned vs,unsigned vt,unsigned e,bool register_arguments)
 {
+    if(quantize_opcode(op)) {
+        assert(!register_arguments);
+        prepare();pushargr(JIT_V0);pushargi(op|(vd<<6)|(vs<<11)|(vt<<16)|(e<<21));
+        finishi(reinterpret_cast<CodePointer>(execute_quantize));
+        return;
+    }
     VectorProgram p;
     p.register_arguments=register_arguments;
     bool vector_only=append_vector_instruction(p,op,vd,vs,vt,e);
@@ -300,6 +307,11 @@ void Emitter::vector_sequence(const uint32_t *instructions,unsigned count)
     VectorProgram p;
     for(unsigned i=0;i<count;i++) {
         uint32_t instr=instructions[i];
+        if(quantize_opcode(instr&63)) {
+            emit_vector_program(p);p=VectorProgram();
+            vector_instruction(instr&63,(instr>>6)&31,(instr>>11)&31,(instr>>16)&31,(instr>>21)&15);
+            continue;
+        }
         bool vector_only=append_vector_instruction(p,instr&63,(instr>>6)&31,(instr>>11)&31,(instr>>16)&31,(instr>>21)&15);
         assert(vector_only); (void)vector_only;
     }
@@ -567,7 +579,9 @@ void Emitter::vector_transfer(unsigned op,unsigned scalar,unsigned vector,unsign
 
 void Emitter::vector_scalar(unsigned op,unsigned vd,unsigned vs,unsigned vt,unsigned e)
 {
-    const unsigned source=vec_offset(vt)+(e&7)*2,dest=vec_offset(vd)+(vs&7)*2;
+    unsigned lane=vs&7;
+    unsigned selected=op!=0x33?e&7:e<2?lane:e<4?(lane&~1u)|(e&1):e<8?(lane&~3u)|(e&3):e&7;
+    const unsigned source=vec_offset(vt)+selected*2,dest=vec_offset(vd)+lane*2;
     const unsigned div_in=offsetof(CPUState,cp2)+offsetof(CP2,div_in),div_out=offsetof(CPUState,cp2)+offsetof(CP2,div_out),dp=offsetof(CPUState,cp2)+offsetof(CP2,dp_flag);
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
     using namespace Xbyak_aarch64;

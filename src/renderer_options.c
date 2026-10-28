@@ -144,7 +144,7 @@ void renderer_register_options(retro_environment_t environment)
             if (!strcmp(d->key, "wtfn64_glrdp_vi_gamma_dither"))
                 d->info = "Allow gamma dithering when requested by the game. Independent of gamma correction. Restart content to apply.";
             if (!strcmp(d->key, "wtfn64_timing"))
-                d->info = "Accurate uses native RSP execution and full CPU cache contents. Fast uses HLE RSP and cache tags; unsupported RSP tasks stop with an error. Both retain instruction interlocks, bus delays and work-based RDP timing. Restart content to apply.";
+                d->info = "Accurate uses native RSP execution and full CPU cache contents. Fast uses supported graphics, audio and task HLE, native RSP for unsupported microcodes, and cache tags. Both retain instruction interlocks, bus delays and work-based RDP timing. Restart content to apply.";
             if (strstr(d->key, "-pak")) {
                 d->category_key = "input";
                 d->info = "Choose the accessory attached to this controller. A Memory Pak allows games to save progress.";
@@ -222,8 +222,8 @@ void renderer_read_options(retro_environment_t env)
     memset(s, 0, sizeof(*s));
     v = value(env, "wtfn64_timing", "fast");
     s->per_cycle_timing = strcmp(v, "accurate") == 0;
-    /* The timing mode owns RSP routing. Stale frontend overrides cannot
-     * mix native RSP with Fast or HLE RSP with Accurate. */
+      /* The timing mode owns RSP routing. Fast prefers supported HLE and
+       * uses native RSP for unsupported programs; Accurate always uses native. */
     s->rsp_hle = !s->per_cycle_timing;
     s->lle_graphics = s->lle_audio = s->per_cycle_timing;
     s->component_timing = true;

@@ -228,7 +228,7 @@ extern "C"
 #if defined(__LIBRETRO__) && !defined(DEBUG_JIT)
         RSP::cpu.set_cycle_timing(renderer_component_timing());
         core_log(CORE_LOG_INFO,"RSP backend: %s; component timing %s",
-                     renderer_settings.rsp_hle ? "strict HLE" : "JIT LLE",
+                     renderer_settings.rsp_hle ? "HLE with native fallback" : "JIT LLE",
                      renderer_component_timing() ? "on" : "off");
 #endif
 	}

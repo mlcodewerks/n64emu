@@ -741,8 +741,9 @@ extern "C"
 	}
 
 	// RESERVED
-	void RSP_RESERVED(RSP::CPUState *rsp, unsigned vd, unsigned, unsigned, unsigned)
+	void RSP_RESERVED(RSP::CPUState *rsp, unsigned vd, unsigned vs, unsigned vt, unsigned e)
 	{
+		write_acc_lo(rsp->cp2.acc.e, _mm_add_epi16(LOAD_VS(), LOAD_VT()));
 		rsp_vect_t result = rsp_vzero();
 		STORE_RESULT();
 	}

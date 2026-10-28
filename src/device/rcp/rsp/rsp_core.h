@@ -90,12 +90,14 @@ struct rsp_core
     int64_t slice_start_clock, slice_end_clock;
     uint32_t slice_overhang, clock_overhang;
     /* Pending HALT/BROKE and SIG values in low bits; changed SIG mask in
-     * bits 23..30, IRQ clear in bit 15, IRQ set in bit 31. Save format 1.17. */
+     * bits 23..30, IRQ clear in bit 15, IRQ set in bit 31. Bit 2 marks native
+     * slice ownership. This fits the existing serialized pending word. */
     uint32_t rsp_completion_status;
     int cycle_timing;
 };
 
 #define RSP_PENDING_SIGNALS UINT32_C(0x7f80)
+#define RSP_PENDING_NATIVE UINT32_C(0x4)
 #define RSP_PENDING_IRQ_CLEAR UINT32_C(0x8000)
 #define RSP_PENDING_IRQ_SET UINT32_C(0x80000000)
 

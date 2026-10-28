@@ -3,6 +3,34 @@
 #endif
 #include "rsp_jit.hpp"
 #include "rsp/timing.hpp"
+#include "rsp/quantize.hpp"
+#ifdef PARALLAX_RSP_ENTRY_CAPTURE
+#include "../../../../../benchmarks/libdragon/rsp_fixture.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+static void rsp_entry_capture(RSP::CPUState *state, unsigned entry)
+{
+    static unsigned seen, written;
+    const char *prefix=std::getenv("RSP_ENTRY_CAPTURE_PREFIX");
+    unsigned stride=std::getenv("RSP_ENTRY_CAPTURE_STRIDE")?std::strtoul(std::getenv("RSP_ENTRY_CAPTURE_STRIDE"),nullptr,0):1;
+    unsigned limit=std::getenv("RSP_ENTRY_CAPTURE_LIMIT")?std::strtoul(std::getenv("RSP_ENTRY_CAPTURE_LIMIT"),nullptr,0):16;
+    if(!prefix || !stride || seen++%stride || written>=limit)return;
+    char path[1024];std::snprintf(path,sizeof(path),"%s-%04u.rsp",prefix,written++);
+    FILE *file=std::fopen(path,"wb");if(!file)std::abort();
+    libdragon_rsp_fixture f={};f.magic=0x4c445231;f.entry=entry;f.ram_bytes=0x800000;
+    f.return_pc=std::strtoul(std::getenv("RSP_ENTRY_RETURN_PC"),nullptr,0);
+    std::memcpy(f.scalar,state->sr,sizeof(f.scalar));
+    std::memcpy(f.vector,state->cp2.regs,sizeof(f.vector));
+    std::memcpy(f.accumulator,state->cp2.acc.e,sizeof(f.accumulator));
+    std::memcpy(f.flags,state->cp2.flags,sizeof(f.flags));
+    f.div_in=state->cp2.div_in;f.div_out=state->cp2.div_out;f.div_pending=state->cp2.dp_flag;
+    for(unsigned i=0;i<16;i++)f.cp0[i]=*state->cp0.cr[i];f.irq=*state->cp0.irq;
+    bool ok=std::fwrite(&f,sizeof(f),1,file)==1 && std::fwrite(state->dmem,4096,1,file)==1 &&
+        std::fwrite(state->imem,4096,1,file)==1 && std::fwrite(state->rdram,f.ram_bytes,1,file)==1;
+    if(std::fclose(file) || !ok)std::abort();
+}
+#endif
 #include "rsp_disasm.hpp"
 #include <utility>
 #include <assert.h>
@@ -914,7 +942,7 @@ Func CPU::get_vector_sequence(const uint32_t *instructions, unsigned count)
 Func CPU::get_vector_block(uint32_t instruction)
 {
     unsigned op=instruction&63;
-    bool generic=op<0x30;
+    bool generic=op<0x30 && !quantize_opcode(op);
     uint32_t key=generic?(0x80000000u|op):instruction;
     auto found=vector_blocks.find(key);
     if(found!=vector_blocks.end())return found->second;
@@ -1064,6 +1092,14 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
                           InstructionInfo &info, const InstructionInfo &last_info,
                           bool first_instruction, bool next_instruction_is_branch_target)
 {
+#ifdef PARALLAX_RSP_ENTRY_CAPTURE
+    const char *capture_pc=std::getenv("RSP_ENTRY_CAPTURE_PC");
+    if(capture_pc && pc==std::strtoul(capture_pc,nullptr,0)) {
+        regs.flush_register_window(_jit);
+        jit_begin_call(_jit);_jit->pushargr(JIT_REGISTER_STATE);_jit->pushargi(pc);
+        jit_end_call(_jit,reinterpret_cast<CodePointer>(rsp_entry_capture));
+    }
+#endif
 #ifdef TRACE
 	regs.flush_register_window(_jit);
 	jit_begin_call(_jit);
@@ -1111,7 +1147,7 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 		uint32_t op = instr & 63;
 		// VNOP has no vector/accumulator effects. Timing was already decoded
 		// above; avoid a helper call and caller-save spills in either mode.
-		if (op == 0x37)
+		if (op == 0x37 || op == 0x3f)
 			return;
 		uint32_t vd = (instr >> 6) & 31;
 		uint32_t vs = (instr >> 11) & 31;
@@ -1120,7 +1156,7 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 
 		// Divider normalization uses volatile scalar scratch registers. Other
 		// vector instructions leave the scalar register cache intact.
-		if (op == 0x30 || op == 0x31 || op == 0x34 || op == 0x35)
+		if (op == 0x30 || op == 0x31 || op == 0x34 || op == 0x35 || quantize_opcode(op))
 			regs.flush_caller_save_registers(_jit);
         // Large arithmetic sequences share native leaves across overlapping
         // regions and microcodes. Their private ABI keeps the scalar cache live.
@@ -1825,7 +1861,7 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 
 		using LWC2Op = void (*)(RSP::CPUState *, unsigned rt, unsigned imm, int simm, unsigned rs);
 		static const LWC2Op ops[32] = {
-			RSP_LBV, RSP_LSV, RSP_LLV, RSP_LDV, RSP_LQV, RSP_LRV, RSP_LPV, RSP_LUV, RSP_LHV, nullptr, nullptr, RSP_LTV,
+			RSP_LBV, RSP_LSV, RSP_LLV, RSP_LDV, RSP_LQV, RSP_LRV, RSP_LPV, RSP_LUV, RSP_LHV, RSP_LFV, nullptr, RSP_LTV,
 		};
 
 		auto *op = ops[rd];
@@ -2179,7 +2215,7 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
         // and ordinary delay slots also require individually visible state.
         auto vector_only = [](uint32_t instruction) {
             unsigned op = instruction & 63;
-            return (instruction >> 25) == 0x25 && (op < 0x30 || op > 0x36);
+            return (instruction >> 25) == 0x25 && !quantize_opcode(op) && (op < 0x30 || op > 0x36);
         };
         if (i && !last_info.branch && vector_only(instr))
             while (vector_count < 8 && i + vector_count < instruction_count &&

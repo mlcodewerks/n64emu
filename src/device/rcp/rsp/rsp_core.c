@@ -175,8 +175,26 @@ static void update_sp_status(struct rsp_core* sp, uint32_t w)
 
     /* A completed synchronous slice still owns the SP until its scheduled
      * completion. CLR_HALT/CLR_BROKE must not replay it before that event. */
-    if (get_event(&sp->mi->r4300->cp0.q, SP_INT))
+    if (get_event(&sp->mi->r4300->cp0.q, SP_INT)) {
+        if (sp->rsp_completion_status & RSP_PENDING_NATIVE) {
+            /* The native slice already ran synchronously. Later CPU signal
+             * writes take precedence over its deferred signal snapshot. */
+            uint32_t touched = 0;
+            for (unsigned i=0; i<8; i++) {
+                unsigned command = (w >> (9 + 2*i)) & 3;
+                if (command == 1 || command == 2) touched |= SP_STATUS_SIG0 << i;
+            }
+            sp->rsp_completion_status &= ~(touched << 16);
+            /* Keep a wake-up that arrives while a native BREAK is pending.
+             * Resume its post-BREAK PC at the deadline instead of discarding
+             * CLR_HALT and subsequently stranding a persistent RSP queue. */
+            if ((w & 3) == 1 && (sp->rsp_completion_status & SP_STATUS_HALT)) {
+                sp->rsp_task_locked = 1;
+                sp->mi->r4300->cp0.interrupt_unsafe_state |= INTR_UNSAFE_RSP;
+            }
+        }
         return;
+    }
     if (!((w & 0x3) == 1) && !(w & 0x4) && !sp->rsp_task_locked)
         return;
 
@@ -403,6 +421,7 @@ static void do_SP_Task_at(struct rsp_core* sp, int64_t start_clock, uint32_t ove
             signal_rcp_interrupt(sp->mi, MI_INTR_SP);
         }
     }
+    if (optional_rsp_native_dispatch()) sp->rsp_completion_status |= RSP_PENDING_NATIVE;
     /* BROKE is sticky and does not prevent CLR_HALT from restarting the SP.
      * Hide only newly produced completion bits until their guest deadline. */
     sp->regs[SP_STATUS_REG] = (sp->regs[SP_STATUS_REG] & ~(SP_STATUS_BROKE | SP_STATUS_HALT)) |

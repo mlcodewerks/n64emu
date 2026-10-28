@@ -9,7 +9,7 @@ enum renderer_type { RENDERER_SOFTRDP, RENDERER_PARALLEL, RENDERER_GLRDP };
 enum controller_pak_option { CONTROLLER_PAK_NONE, CONTROLLER_PAK_MEMORY,
     CONTROLLER_PAK_RUMBLE, CONTROLLER_PAK_TRANSFER };
 struct renderer_settings {
-    /* Accurate always uses native RSP; Fast is strict HLE with no fallback. */
+    /* Accurate always uses native RSP; Fast prefers HLE with native fallback. */
     bool rsp_hle, lle_graphics, lle_audio;
     /* Derived from the single Fast/Accurate setting. Component clocks and
      * tags-only CPU timing are always available; Accurate selects full caches. */

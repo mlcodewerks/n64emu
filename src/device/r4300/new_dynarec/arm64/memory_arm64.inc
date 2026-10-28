@@ -316,9 +316,26 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
     if(constant_address)emit_movimm(address,ADDRESS);
     else {
     emit_state_load(gpr_offset(rs), ADDRESS);
+    emit_addimm64(ADDRESS, (int16_t)instruction, T0);
     emit_addimm(ADDRESS, (int16_t)instruction, ADDRESS);
     }
     exit->registers = regcache;
+    // XKPHYS must reach the shared handler before the address is truncated.
+    if (constant_address) {
+        if (((base_constant + uint64_t(int64_t(int16_t(instruction)))) >> 32) == UINT32_C(0x90000000)) {
+            assert(exit->guard_count < 16);
+            exit->guards[exit->guard_count++] = emit_b();
+        }
+    } else {
+        emit_shift_reg(T0, 5, 32, 1);
+        emit_imm_op(7, T0, UINT32_C(0x90000000), 0);
+        memory_guard(exit, 4);
+    }
+    if (write && size == 8) {
+        emit_mem(0x8b, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, mi));
+        emit_mem_imm(0xf7, 0, 0, T0, -1, 0, offsetof(struct mi_controller, regs[MI_INIT_MODE_REG]), 0x80);
+        memory_guard(exit, 5);
+    }
     if (fp) {
         emit_mem_imm(0xf7,0,0,STATE,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_CU1);
         memory_guard(exit,4);

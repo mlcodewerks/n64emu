@@ -1,6 +1,6 @@
 #include "core/file.h"
-/* Accurate executes native RSP instructions. Fast uses task HLE and streaming
- * walkers exclusively, stopping on unsupported programs or continuations. */
+/* Accurate executes native RSP instructions. Fast prefers validated task HLE
+ * and streaming walkers, and executes unsupported programs natively. */
 #include "optional_rsp.h"
 #include "renderer_options.h"
 #include "device/device.h"
@@ -54,6 +54,9 @@ static unsigned int graphics_checksum;
 static const char *graphics_capture_prefix;
 static unsigned int graphics_capture_started, graphics_capture_count;
 static unsigned long long graphics_tasks, audio_tasks, other_tasks, boot_tasks, lle_tasks;
+static unsigned long long native_fallback_slices;
+/* Only queried synchronously by do_SP_Task_at after this dispatch returns. */
+static int native_dispatch;
 static unsigned long long graphics_resumes[HLE_RESUME_F3D + 1];
 static int timing_probe_active, timing_probe_failed;
 static uint32_t timing_probe_status;
@@ -158,6 +161,7 @@ void optional_rsp_init(rsp_memory rsp_info)
     graphics_capture_started = graphics_capture_count = 0;
     memset(&hle, 0, sizeof(hle));
     graphics_tasks = audio_tasks = other_tasks = boot_tasks = lle_tasks = 0;
+    native_fallback_slices = 0;
     strict_hle_failed = 0;
     memset(graphics_resumes, 0, sizeof(graphics_resumes));
     hle_init(&hle, info.RDRAM, info.DMEM, info.IMEM, info.MI_INTR_REG,
@@ -295,7 +299,7 @@ static void graphics_capture_begin(const uint32_t *task)
 
 static unsigned int unsupported_hle_task(void)
 {
-    static const char message[] = "Fast RSP: unsupported task. Select Accurate timing and restart content.";
+    static const char message[] = "Fast RSP: HLE execution failed after dispatch. Select Accurate timing and restart content.";
     if (!strict_hle_failed) {
         strict_hle_failed = 1;
         core_log(CORE_LOG_ERROR, "%s (task=%u, PC=%03x)", message,
@@ -305,13 +309,17 @@ static unsigned int unsupported_hle_task(void)
             environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &notification);
         }
     }
-    *info.SP_STATUS_REG |= 3u; /* HALT/BROKE; never execute a native fallback. */
+    /* A walker may already have published memory/RDP writes. Restarting it
+     * natively here would execute that prefix twice. Unsupported microcodes
+     * are routed to native before any HLE work, in optional_rsp_execute. */
+    *info.SP_STATUS_REG |= 3u;
     stop_device(&g_dev);
     return 0;
 }
 
 unsigned int optional_rsp_execute(unsigned int cycles)
 {
+    native_dispatch = 0;
     const uint32_t *task = (const uint32_t *)(info.DMEM + 0xfc0);
     enum hle_task_kind kind;
     /* Fresh launches and OS yield relaunches still validate their ucode.
@@ -320,8 +328,14 @@ unsigned int optional_rsp_execute(unsigned int cycles)
         ? hle_graphics_resume_pending(&hle) : HLE_RESUME_NONE;
     if (!renderer_settings.rsp_hle)
         goto native;
-    if (strict_hle_failed || (*info.SP_PC_REG & 0xfff) != 0)
+    if (strict_hle_failed)
         return unsupported_hle_task();
+    /* A nonzero entry PC is a native continuation, not a fresh OSTask.
+     * While SP owns an unfinished slice, only an active HLE walker may
+     * resume through HLE. This also covers a native loop that yields at PC
+     * zero. Both ownership and walker state already survive save/load. */
+    if (!resume && ((*info.SP_PC_REG & 0xfff) != 0 || g_dev.sp.rsp_task_locked))
+        goto native;
     /* Upstream identifies direct programs by boot size. Their DMEM tail is
      * not an OSTask and must not be subjected to guest-pointer checks.
      * Graphics streams terminate with commands; their unused data_size
@@ -331,14 +345,14 @@ unsigned int optional_rsp_execute(unsigned int cycles)
         (task[6] & 3) || task[6] > 0x7ff000 || task[7] > 0x1000 ||
         (task[12] & 3) || task[12] >= 0x800000 ||
         (task[0] != 1u && task[13] > 0x800000 - task[12])))
-        return unsupported_hle_task();
+        goto native;
     kind = resume ? HLE_TASK_GRAPHICS : hle_get_task_kind(&hle);
     if (kind == HLE_TASK_UNKNOWN ||
         (kind == HLE_TASK_GRAPHICS && (renderer_settings.lle_graphics ||
             (!resume && !graphics_supported(task)))) ||
         (kind == HLE_TASK_AUDIO && ((task[12] & 7) ||
             renderer_settings.lle_audio || !audio_supported(task))))
-        return unsupported_hle_task();
+        goto native;
     if(kind==HLE_TASK_GRAPHICS && !(task[1]&1u) && !hle_stream_can_resume(graphics_checksum) &&
         (graphics_checksum==0x2095bu || graphics_checksum==0x25c16u || graphics_checksum==0x25c53u) &&
         task[10]<task[11] && task[11]<=0x800000u){
@@ -388,6 +402,8 @@ unsigned int optional_rsp_execute(unsigned int cycles)
     else other_tasks++;
     return hle_timing_cycles();
 native:
+    native_dispatch = 1;
+    if (renderer_settings.rsp_hle) native_fallback_slices++;
     if ((*info.SP_PC_REG & 0xfff) == 0 && task[0] == 1 && task[3] <= 0x1000 &&
         task[4] <= 0x7ff000 && task[6] <= 0x7ff000)
         graphics_capture_begin(task);
@@ -429,10 +445,19 @@ void optional_rsp_report(void)
 {
     core_log(CORE_LOG_INFO, "RSP tasks: HLE graphics=%llu audio=%llu LLE=%llu other=%llu boot=%llu",
         graphics_tasks, audio_tasks, lle_tasks, other_tasks, boot_tasks);
+    core_log(CORE_LOG_INFO, "Fast RSP native fallback slices: %llu", native_fallback_slices);
     core_log(CORE_LOG_INFO, "RSP streaming continuations: F3DEX2=%llu Rogue=%llu BOSS=%llu Naboo=%llu",
         graphics_resumes[HLE_RESUME_STREAMING], graphics_resumes[HLE_RESUME_RS],
         graphics_resumes[HLE_RESUME_ZBOSS], graphics_resumes[HLE_RESUME_NABOO]);
     core_log(CORE_LOG_INFO, "RSP F3D continuations: %llu", graphics_resumes[HLE_RESUME_F3D]);
+}
+
+int optional_rsp_native_dispatch(void) { return native_dispatch; }
+
+void optional_rsp_dispatch_counts(uint64_t out[6])
+{
+    out[0] = graphics_tasks; out[1] = audio_tasks; out[2] = other_tasks;
+    out[3] = boot_tasks; out[4] = lle_tasks; out[5] = native_fallback_slices;
 }
 
 #define AUDIO_STATE_OFFSET offsetof(struct hle_t, alist_buffer)

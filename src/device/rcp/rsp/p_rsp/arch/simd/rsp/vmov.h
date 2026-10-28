@@ -10,7 +10,10 @@ inline __m128i rsp_vmov(RSP::CPUState *rsp, unsigned src, unsigned e, unsigned d
 	uint16_t data;
 
 	// Get the element from VT.
-	data = rsp->cp2.regs[src].e[e & 0x7];
+	unsigned lane = de & 7;
+	unsigned selected = e < 2 ? lane : e < 4 ? (lane & ~1u) | (e & 1) :
+	    e < 8 ? (lane & ~3u) | (e & 3) : e & 7;
+	data = rsp->cp2.regs[src].e[selected];
 
 	// Write out the upper part of the result.
 	rsp->cp2.regs[dest].e[de & 0x7] = data;

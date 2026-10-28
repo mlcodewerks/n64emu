@@ -58,6 +58,23 @@ static inline void store_packed_vector(RSP::CPUState* rsp, unsigned rt,
 
 extern "C"
 {
+    // Fractional gather: construct the rotating window, then replace at most
+    // eight vector bytes. Odd elements preserve the untouched half-lanes.
+    void RSP_LFV(RSP::CPUState *rsp, unsigned rt, unsigned e, int offset, unsigned base)
+    {
+        TRACE_LS(LFV);
+        unsigned address=rsp->sr[base]+offset*16;
+        unsigned index=(address&7)-e;
+        address&=0xff8;
+        uint16_t gathered[8];
+        for(unsigned lane=0;lane<8;lane++) {
+            unsigned position=(lane&3)*4+(lane>=4?8:0);
+            gathered[lane]=READ_MEM_U8(rsp->dmem,(address+((index+position)&15))&0xfff)<<7;
+        }
+        auto *destination=reinterpret_cast<uint8_t*>(rsp->cp2.regs[rt].e);
+        const auto *source=reinterpret_cast<const uint8_t*>(gathered);
+        for(unsigned byte=e;byte<16 && byte<e+8;byte++)destination[MES(byte)]=source[MES(byte)];
+    }
 	// DMEM accesses wrap within 4 KiB. Vector loads truncate while stores
 	// wrap their source bytes; packed accesses use rotating 16-byte windows.
 

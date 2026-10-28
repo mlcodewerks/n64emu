@@ -10,5 +10,7 @@ void optional_rsp_load_v116(const void *buffer);
 void optional_rsp_load_legacy(const void *buffer);
 void optional_rsp_load_legacy_stream(const void *buffer);
 void optional_rsp_report(void);
+void optional_rsp_dispatch_counts(uint64_t out[6]);
+int optional_rsp_native_dispatch(void);
 void optional_rsp_shutdown(void);
 void optional_rsp_timing_dma_write(uint32_t address, uint32_t bytes);

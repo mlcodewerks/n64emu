@@ -1,4 +1,5 @@
 #include "rsp_jit.hpp"
+#include "rsp/quantize.hpp"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -6,10 +7,10 @@
 using namespace RSP;
 using VUOp=void (*)(CPUState*,unsigned,unsigned,unsigned,unsigned);
 static const VUOp operations[64]={
- RSP_VMULF,RSP_VMULU,nullptr,nullptr,RSP_VMUDL,RSP_VMUDM,RSP_VMUDN,RSP_VMUDH,RSP_VMACF,RSP_VMACU,nullptr,nullptr,RSP_VMADL,RSP_VMADM,RSP_VMADN,RSP_VMADH,
+ RSP_VMULF,RSP_VMULU,quantize_reference<2>,quantize_reference<3>,RSP_VMUDL,RSP_VMUDM,RSP_VMUDN,RSP_VMUDH,RSP_VMACF,RSP_VMACU,quantize_reference<10>,quantize_reference<11>,RSP_VMADL,RSP_VMADM,RSP_VMADN,RSP_VMADH,
  RSP_VADD,RSP_VSUB,nullptr,RSP_VABS,RSP_VADDC,RSP_VSUBC,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,RSP_VSAR,nullptr,nullptr,
  RSP_VLT,RSP_VEQ,RSP_VNE,RSP_VGE,RSP_VCL,RSP_VCH,RSP_VCR,RSP_VMRG,RSP_VAND,RSP_VNAND,RSP_VOR,RSP_VNOR,RSP_VXOR,RSP_VNXOR,nullptr,nullptr,
- RSP_VRCP,RSP_VRCPL,RSP_VRCPH,RSP_VMOV,RSP_VRSQ,RSP_VRSQL,RSP_VRSQH,RSP_VNOP,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+ RSP_VRCP,RSP_VRCPL,RSP_VRCPH,RSP_VMOV,RSP_VRSQ,RSP_VRSQL,RSP_VRSQH,RSP_VNOP,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,RSP_VNOP};
 static unsigned transfer_tests(JIT::Allocator &memory,std::mt19937 &random)
 {
  unsigned cases=0;

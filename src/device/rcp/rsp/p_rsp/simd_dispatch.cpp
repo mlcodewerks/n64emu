@@ -43,6 +43,9 @@ decltype(RSP_LUV) RSP_LUV_sse42;
 decltype(RSP_LHV) RSP_LHV_ssse3;
 decltype(RSP_LHV) RSP_LHV_sse41;
 decltype(RSP_LHV) RSP_LHV_sse42;
+decltype(RSP_LFV) RSP_LFV_ssse3;
+decltype(RSP_LFV) RSP_LFV_sse41;
+decltype(RSP_LFV) RSP_LFV_sse42;
 decltype(RSP_LTV) RSP_LTV_ssse3;
 decltype(RSP_LTV) RSP_LTV_sse41;
 decltype(RSP_LTV) RSP_LTV_sse42;
@@ -221,6 +224,7 @@ void *rsp_resolve_simd_helper(void *pointer)
         {reinterpret_cast<void *>(RSP_LPV), reinterpret_cast<void *>(RSP_LPV_ssse3), reinterpret_cast<void *>(RSP_LPV_sse41), reinterpret_cast<void *>(RSP_LPV_sse42)},
         {reinterpret_cast<void *>(RSP_LUV), reinterpret_cast<void *>(RSP_LUV_ssse3), reinterpret_cast<void *>(RSP_LUV_sse41), reinterpret_cast<void *>(RSP_LUV_sse42)},
         {reinterpret_cast<void *>(RSP_LHV), reinterpret_cast<void *>(RSP_LHV_ssse3), reinterpret_cast<void *>(RSP_LHV_sse41), reinterpret_cast<void *>(RSP_LHV_sse42)},
+        {reinterpret_cast<void *>(RSP_LFV), reinterpret_cast<void *>(RSP_LFV_ssse3), reinterpret_cast<void *>(RSP_LFV_sse41), reinterpret_cast<void *>(RSP_LFV_sse42)},
         {reinterpret_cast<void *>(RSP_LTV), reinterpret_cast<void *>(RSP_LTV_ssse3), reinterpret_cast<void *>(RSP_LTV_sse41), reinterpret_cast<void *>(RSP_LTV_sse42)},
         {reinterpret_cast<void *>(RSP_SBV), reinterpret_cast<void *>(RSP_SBV_ssse3), reinterpret_cast<void *>(RSP_SBV_sse41), reinterpret_cast<void *>(RSP_SBV_sse42)},
         {reinterpret_cast<void *>(RSP_SSV), reinterpret_cast<void *>(RSP_SSV_ssse3), reinterpret_cast<void *>(RSP_SSV_sse41), reinterpret_cast<void *>(RSP_SSV_sse42)},
