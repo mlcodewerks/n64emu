@@ -32,7 +32,7 @@
 #include "profile.h"
 #endif
 #include "rom.h"
-#include "md5.h"
+#include <utils/md5.h>
 #ifdef __LIBRETRO__
 #include "renderer_options.h"
 #endif
@@ -998,17 +998,17 @@ void main_stop(void)
 
 core_result open_pif(const unsigned char* pifimage, unsigned int size)
 {
-    md5_byte_t pif_ntsc_md5[] = {0x49, 0x21, 0xD5, 0xF2, 0x16, 0x5D, 0xEE, 0x6E, 0x24, 0x96, 0xF4, 0x38, 0x8C, 0x4C, 0x81, 0xDA};
-    md5_byte_t pif_pal_md5[]  = {0x2B, 0x6E, 0xEC, 0x58, 0x6F, 0xAA, 0x43, 0xF3, 0x46, 0x23, 0x33, 0xB8, 0x44, 0x83, 0x45, 0x54};
+    const unsigned char pif_ntsc_md5[] = {0x49, 0x21, 0xD5, 0xF2, 0x16, 0x5D, 0xEE, 0x6E, 0x24, 0x96, 0xF4, 0x38, 0x8C, 0x4C, 0x81, 0xDA};
+    const unsigned char pif_pal_md5[]  = {0x2B, 0x6E, 0xEC, 0x58, 0x6F, 0xAA, 0x43, 0xF3, 0x46, 0x23, 0x33, 0xB8, 0x44, 0x83, 0x45, 0x54};
 
     uint32_t *dst32 = mem_base_u32(g_mem_base, MM_PIF_MEM);
     uint32_t *src32 = (uint32_t*) pifimage;
-    md5_state_t state;
-    md5_byte_t digest[16];
+    MD5_CTX state;
+    unsigned char digest[16];
 
-    md5_init(&state);
-    md5_append(&state, (const md5_byte_t*)pifimage, size);
-    md5_finish(&state, digest);
+    MD5_Init(&state);
+    MD5_Update(&state, pifimage, size);
+    MD5_Final(digest, &state);
 
     if (memcmp(digest, pif_ntsc_md5, 16) == 0)
         core_log(CORE_LOG_INFO, "Using NTSC PIF ROM");

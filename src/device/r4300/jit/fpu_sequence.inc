@@ -2,7 +2,7 @@
  * cacheability once for a straight-line COP1 sequence. These helpers cannot
  * modify mappings or I-cache tags; faults leave before the next instruction. */
 static unsigned emit_fpu_sequence(void* block,const uint32_t* ops,unsigned start,unsigned count,
-    const struct ari64_config* config,ari64_step step,unsigned char** exits,unsigned* exit_count)
+    const struct parallaxjit_config* config,parallaxjit_step step,unsigned char** exits,unsigned* exit_count)
 {
     unsigned end=start+1;
     /* Hoisting the mapped TLB scan pays for the sequence guard. Direct

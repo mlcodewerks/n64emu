@@ -1,15 +1,15 @@
 
-#ifndef ARI64_X64_ARENA_BYTES
-#define ARI64_X64_ARENA_BYTES (8 << TARGET_SIZE_2)
+#ifndef PARALLAXJIT_X64_ARENA_BYTES
+#define PARALLAXJIT_X64_ARENA_BYTES (8 << TARGET_SIZE_2)
 #endif
-enum { CODE_BYTES = ARI64_X64_ARENA_BYTES, MAX_INSTRUCTIONS = 32 };
-#ifndef ARI64_X64_SEGMENTS
+enum { CODE_BYTES = PARALLAXJIT_X64_ARENA_BYTES, MAX_INSTRUCTIONS = 32 };
+#ifndef PARALLAXJIT_X64_SEGMENTS
 /* Keep the default 8 MiB recycling granularity as the arena grows. */
-#define ARI64_X64_SEGMENTS (CODE_BYTES >= (256 << 20) ? 32 : CODE_BYTES >= (1 << 20) ? 16 : 1)
+#define PARALLAXJIT_X64_SEGMENTS (CODE_BYTES >= (256 << 20) ? 32 : CODE_BYTES >= (1 << 20) ? 16 : 1)
 #endif
-enum { CODE_SEGMENTS = ARI64_X64_SEGMENTS,
+enum { CODE_SEGMENTS = PARALLAXJIT_X64_SEGMENTS,
     SEGMENT_BYTES = CODE_BYTES / CODE_SEGMENTS };
-struct ari64 {
+struct parallaxjit {
     host_fault_domain* faults;
     unsigned char* code;
     size_t used, page_size;
@@ -30,9 +30,9 @@ static int code_protect(void* ptr, size_t size, int executable)
 
 #include "../code_write_scope.h"
 
-struct ari64* ari64_create(void)
+struct parallaxjit* parallaxjit_create(void)
 {
-    struct ari64* s = (struct ari64*)calloc(1, sizeof(*s));
+    struct parallaxjit* s = (struct parallaxjit*)calloc(1, sizeof(*s));
     if (!s) return NULL;
 #ifdef _WIN32
     SYSTEM_INFO info;
@@ -40,7 +40,7 @@ struct ari64* ari64_create(void)
     s->page_size = info.dwPageSize;
     /* Upstream linkage uses rel32 calls. Keep the arena within range of this
      * module, so precise helpers can use the same five-byte call encoding. */
-    uintptr_t anchor = (uintptr_t)&ari64_create;
+    uintptr_t anchor = (uintptr_t)&parallaxjit_create;
     uintptr_t cursor = anchor > UINT32_C(0x60000000) ? anchor - UINT32_C(0x60000000) : (uintptr_t)info.lpMinimumApplicationAddress;
     uintptr_t limit = anchor + UINT32_C(0x60000000);
     MEMORY_BASIC_INFORMATION region;
@@ -67,7 +67,7 @@ struct ari64* ari64_create(void)
     return s;
 }
 
-void ari64_destroy(struct ari64* s)
+void parallaxjit_destroy(struct parallaxjit* s)
 {
     if (!s) return;
     host_fault_destroy(s->faults);
@@ -79,22 +79,45 @@ void ari64_destroy(struct ari64* s)
     free(s);
 }
 
-uint64_t ari64_generation(const struct ari64* s) { return s->generation; }
-void* ari64_fault_guard(const struct ari64* s) { return s && s->faults ? (void*)s->faults->guard : NULL; }
-void* ari64_fault_enter(struct ari64* s)
+uint64_t parallaxjit_generation(const struct parallaxjit* s) { return s->generation; }
+void* parallaxjit_fault_guard(const struct parallaxjit* s) { return s && s->faults ? (void*)s->faults->guard : NULL; }
+void* parallaxjit_fault_enter(struct parallaxjit* s)
 {
     void* previous = active_fault_domain;
     active_fault_domain = s ? s->faults : NULL;
     return previous;
 }
-void ari64_fault_leave(void* previous) { active_fault_domain = (host_fault_domain*)previous; }
-uint64_t ari64_fault_count(const struct ari64* s) { return s && s->faults ? (uint64_t)s->faults->faults : 0; }
-void ari64_fault_resolve(struct ari64* s)
+void parallaxjit_fault_leave(void* previous) { active_fault_domain = (host_fault_domain*)previous; }
+uint64_t parallaxjit_fault_count(const struct parallaxjit* s) { return s && s->faults ? (uint64_t)s->faults->faults : 0; }
+void parallaxjit_fault_resolve(struct parallaxjit* s, struct r4300_core* r, uint32_t op)
 {
     host_fault_domain* d = s ? s->faults : NULL;
     if (!d || !d->pending_site) return;
     host_fault_site* site = &d->segments[d->pending_segment].sites[d->pending_site - 1];
     d->pending_site = 0;
+    /* Framebuffer reads are rearmed after GPU writes and become ordinary RAM
+     * after download. Do not permanently demote a hot site after two frames.
+     * Classify here in normal execution, never in VEH/the signal handler. */
+    if (!(op & UINT32_C(0x20000000)) && r->mem->cpu_notification_query) {
+        uint32_t va = (uint32_t)r->regs[(op >> 21) & 31] + (int32_t)(int16_t)op;
+        int direct = (va & UINT32_C(0xc0000000)) == UINT32_C(0x80000000);
+        uint32_t mapped = direct ? va : r->cp0.tlb.LUT_r[va >> 12];
+        uint32_t pa = direct ? va & UINT32_C(0x1fffffff) :
+            (mapped & UINT32_C(0x1ffff000)) | (va & 4095);
+        if (mapped && (uint64_t)(pa & ~UINT32_C(4095)) + 4096 <= r->cp0.tlb.fastmem->ram_size) {
+            const struct mem_handler* h = mem_get_handler(r->mem, pa);
+            if (h->opaque == r->mem->cpu_notification.opaque &&
+                h->read32 == r->mem->cpu_notification.read32) {
+                /* A cached hit does not download the GPU page. Keep the
+                 * bounded precise path for that case instead of faulting
+                 * on every load while ownership remains armed. */
+                unsigned cached_hit = r->cache_timing == 1 && r4300_access_cached(r, va) &&
+                    (r->dcache_tags[(va >> 4) & 511] & ~2u) == ((pa & UINT32_C(0x1ffff000)) | 1);
+                if (!cached_hit && r->mem->cpu_notification_query(
+                    h->opaque, pa, MEMORY_NOTIFICATION_READ_RELEASES_PAGE)) return;
+            }
+        }
+    }
     /* Repeated MMIO/SMC/missing-TLB accesses use the precise exit directly.
      * Patch only from normal C code, with the generated frame suspended. */
     if (++site->hits != 2) return;
@@ -110,22 +133,22 @@ void ari64_fault_resolve(struct ari64* s)
 #endif
     if (!code_protect((void*)page, s->page_size, 1)) abort();
 }
-int ari64_entry_valid(const struct ari64* s, ari64_entry entry, uint64_t generation)
+int parallaxjit_entry_valid(const struct parallaxjit* s, parallaxjit_entry entry, uint64_t generation)
 {
     uintptr_t offset = (uintptr_t)entry - (uintptr_t)s->code;
     return entry && offset < CODE_BYTES && s->segment_generation[offset / SEGMENT_BYTES] == generation;
 }
-const uint64_t* ari64_entry_generation_ptr(const struct ari64* s, ari64_entry entry)
+const uint64_t* parallaxjit_entry_generation_ptr(const struct parallaxjit* s, parallaxjit_entry entry)
 {
     uintptr_t offset = (uintptr_t)entry - (uintptr_t)s->code;
     return entry && offset < CODE_BYTES ? &s->segment_generation[offset / SEGMENT_BYTES] : NULL;
 }
-void ari64_stats(const struct ari64* s, uint64_t* blocks, uint64_t* native)
+void parallaxjit_stats(const struct parallaxjit* s, uint64_t* blocks, uint64_t* native)
 {
     *blocks = s ? s->blocks : 0;
     *native = s ? s->native : 0;
 }
-void ari64_code_stats(const struct ari64* s, uint64_t stats[3])
+void parallaxjit_code_stats(const struct parallaxjit* s, uint64_t stats[3])
 {
     stats[0] = s ? s->emitted_bytes : 0;
     stats[1] = s ? s->relative_calls : 0;
@@ -276,7 +299,7 @@ static void emit_helper_call(const void* function)
     if(displacement>=INT32_MIN && displacement<=INT32_MAX) { JIT(call(function)); ++compile_relative_calls; }
     else { emit_movimm64((intptr_t)function,R11); JIT(call(Xbyak::Reg64(R11))); ++compile_absolute_calls; }
 }
-static void emit_step_call(void* block, unsigned index, unsigned phase, ari64_step step)
+static void emit_step_call(void* block, unsigned index, unsigned phase, parallaxjit_step step)
 {
     emit_mov64(R12, ARG1_REG);
     emit_movimm64((intptr_t)block, ARG2_REG);
@@ -349,7 +372,7 @@ static void emit_ram_delay_checkpoint(uint32_t pc,uint32_t branch,bool restore)
         }
     }
 }
-int ari64_has_native(const uint32_t* ops, unsigned count, uint32_t delay_op, unsigned has_delay, unsigned idle)
+int parallaxjit_has_native(const uint32_t* ops, unsigned count, uint32_t delay_op, unsigned has_delay, unsigned idle)
 {
     for (unsigned i = 0; i < count; ++i) {
         enum r4300_opcode op = r4300_get_idec(ops[i])->opcode;
@@ -359,7 +382,7 @@ int ari64_has_native(const uint32_t* ops, unsigned count, uint32_t delay_op, uns
         native_branch_opcode(r4300_get_idec(ops[count - 1])->opcode) &&
         (native_opcode(r4300_get_idec(delay_op)->opcode) || native_ram_opcode(r4300_get_idec(delay_op)->opcode));
 }
-static unsigned char* emit_step(void* block, unsigned index, unsigned phase, ari64_step step)
+static unsigned char* emit_step(void* block, unsigned index, unsigned phase, parallaxjit_step step)
 {
     emit_step_call(block, index, phase, step);
     emit_reg_op(0x85,RAX,RAX,0);
@@ -371,7 +394,7 @@ static unsigned char* emit_step(void* block, unsigned index, unsigned phase, ari
  * Commit locally while no event is due; the original helper still handles
  * exact event boundaries and all preparation faults. */
 static void emit_transfer_commit(void* block, unsigned index,
-    const struct ari64_config* config, ari64_step step,
+    const struct parallaxjit_config* config, parallaxjit_step step,
     unsigned char** exits, unsigned* exit_count)
 {
     emit_mem_imm(0x83, 1, 7, R12, -1, 0, offsetof(struct r4300_core, cp0.cycle_count),0);
@@ -392,10 +415,10 @@ static void emit_transfer_commit(void* block, unsigned index,
 }
 
 #include "../fpu_sequence.inc"
-static ari64_entry compile_block(struct ari64* s, void* block,
-    const uint32_t* ops, unsigned count, ari64_step step, int optimized, const struct ari64_config* config)
+static parallaxjit_entry compile_block(struct parallaxjit* s, void* block,
+    const uint32_t* ops, unsigned count, parallaxjit_step step, int optimized, const struct parallaxjit_config* config)
 {
-    ari64_link link = config ? config->link : NULL;
+    parallaxjit_link link = config ? config->link : NULL;
     if (!s || !ops || !step || !count || count > MAX_INSTRUCTIONS) return NULL;
     uint32_t extended_ops[MAX_INSTRUCTIONS];
     unsigned branch_index = MAX_INSTRUCTIONS;
@@ -411,7 +434,9 @@ static ari64_entry compile_block(struct ari64* s, void* block,
      * Mapped fetch-cache probes occur in both the entry and resume guards;
      * account for them even in a one-instruction block with direct links.
      * Compile only while no generated frame is active. */
-    size_t reserve = (count * 2048 + 512 + 15) & ~(size_t)15;
+    /* Entry/continuation guards and absolute helper calls have fixed costs
+     * even for a one-instruction block at the end of a guest page. */
+    size_t reserve = (count * 2048 + 2048 + 15) & ~(size_t)15;
     if (optimized && config && config->cache_timing && config->fetch_cache &&
         config->fetch_generation && (config->virtual_pc & UINT32_C(0xc0000000)) != UINT32_C(0x80000000))
         reserve += 2048 + count * 1024;
@@ -456,13 +481,13 @@ static ari64_entry compile_block(struct ari64* s, void* block,
 #else
     if (optimized) emit_addimm64(RSP, -88, RSP);
 #endif
-#ifndef ARI64_X64_CHAIN_ALIGNMENT
-#define ARI64_X64_CHAIN_ALIGNMENT 32
+#ifndef PARALLAXJIT_X64_CHAIN_ALIGNMENT
+#define PARALLAXJIT_X64_CHAIN_ALIGNMENT 32
 #endif
-    static_assert(ARI64_X64_CHAIN_ALIGNMENT && !(ARI64_X64_CHAIN_ALIGNMENT&(ARI64_X64_CHAIN_ALIGNMENT-1)) && ARI64_X64_CHAIN_ALIGNMENT<=64,"bounded power-of-two native entry alignment");
-#if ARI64_X64_CHAIN_ALIGNMENT > 1
+    static_assert(PARALLAXJIT_X64_CHAIN_ALIGNMENT && !(PARALLAXJIT_X64_CHAIN_ALIGNMENT&(PARALLAXJIT_X64_CHAIN_ALIGNMENT-1)) && PARALLAXJIT_X64_CHAIN_ALIGNMENT<=64,"bounded power-of-two native entry alignment");
+#if PARALLAXJIT_X64_CHAIN_ALIGNMENT > 1
     // Tail links land here directly, skipping the dispatcher-only prologue.
-    JIT(align(ARI64_X64_CHAIN_ALIGNMENT));
+    JIT(align(PARALLAXJIT_X64_CHAIN_ALIGNMENT));
 #endif
     unsigned char* chain_entry = out;
     JIT(endbr64());
@@ -665,18 +690,18 @@ static ari64_entry compile_block(struct ari64* s, void* block,
     s->emitted_bytes += out - start;
     s->relative_calls += compile_relative_calls;
     s->absolute_calls += compile_absolute_calls;
-    if (config && config->chain_entry) *config->chain_entry = (ari64_entry)(void*)chain_entry;
-    return (ari64_entry)(void*)start;
+    if (config && config->chain_entry) *config->chain_entry = (parallaxjit_entry)(void*)chain_entry;
+    return (parallaxjit_entry)(void*)start;
 }
 
-ari64_entry ari64_compile(struct ari64* s, void* block,
-    const uint32_t* ops, unsigned count, ari64_step step)
+parallaxjit_entry parallaxjit_compile(struct parallaxjit* s, void* block,
+    const uint32_t* ops, unsigned count, parallaxjit_step step)
 {
     try { return compile_block(s, block, ops, count, step, 0, NULL); }
     catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak emission failed (%u instructions): %s",count,error.what()); return NULL; }
 }
-ari64_entry ari64_compile_optimized(struct ari64* s, void* block,
-    const uint32_t* ops, unsigned count, ari64_step step, const struct ari64_config* config)
+parallaxjit_entry parallaxjit_compile_optimized(struct parallaxjit* s, void* block,
+    const uint32_t* ops, unsigned count, parallaxjit_step step, const struct parallaxjit_config* config)
 {
     try { return compile_block(s, block, ops, count, step, 1, config); }
     catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak emission failed at %08x (%u instructions): %s",config?config->virtual_pc:0,count,error.what()); return NULL; }

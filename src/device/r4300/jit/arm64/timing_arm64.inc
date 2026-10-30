@@ -1,20 +1,57 @@
 /* Straight-line ALU fetches cannot exit. Charge their fixed clocks and
  * uncached penalties together, before any memory guard, branch or commit. */
-static void emit_pending_clocks(const struct ari64_config* config,unsigned base,unsigned fetches,size_t fetch_flag=4)
+static void emit_pending_clocks(const struct parallaxjit_config* config,unsigned base,unsigned fetches,size_t fetch_flag=4)
 {
     if(base)emit_addimm(CLOCKS,base,CLOCKS);
     if(!config->cache_timing || !fetches)return;
     if((config->virtual_pc&UINT32_C(0xe0000000))==UINT32_C(0xa0000000)) {
         emit_write_buffer_drain_native(config,base);
-        emit_addimm(CLOCKS,40*fetches,CLOCKS);return;
+        emit_addimm(CLOCKS,R4300_UNCACHED_FETCH_CYCLES*fetches,CLOCKS);return;
     }
     emit_mem_imm(0xf7,0,0,SP,-1,0,fetch_flag,2);
     auto *cached=emit_jump(5);
     emit_write_buffer_drain_native(config,base);
-    emit_addimm(CLOCKS,40*fetches,CLOCKS);patch_jump(cached,out);
+    emit_addimm(CLOCKS,R4300_UNCACHED_FETCH_CYCLES*fetches,CLOCKS);patch_jump(cached,out);
 }
 
-static void emit_region_guard(const struct ari64_config* config, unsigned start,
+/* Previously queued bus work can outlive the next region's fixed costs.
+ * Reserve its latest deadline before admitting a native region. COUNT writes
+ * do not rebase these monotonic CPU-clock deadlines. This only guards entry;
+ * the existing fetch/data paths still charge the actual remaining wait. */
+static void emit_pending_transfer_guard(const struct parallaxjit_config* config,
+    unsigned cached_bound, unsigned uncached_bound, struct memory_exit* failure)
+{
+    if (!config->cache_timing || config->compat_issue_clock) return;
+    emit_movimm(0, T2);
+    emit_mem(0x8b, 0, T0, STATE, -1, 0, offsetof(struct r4300_core, write_buffer_count));
+    emit_reg_op(0x85, T0, T0, 0); auto *no_writes = emit_jump(4);
+    emit_addimm(T0, -1, T0);
+    emit_mem(0x8b, 1, T2, STATE, T0, 3, offsetof(struct r4300_core, write_buffer_end));
+    patch_jump(no_writes, out);
+    emit_mem(0x8b, 0, T0, STATE, -1, 0, offsetof(struct r4300_core, icache_fill_index));
+    emit_reg_op(0x85, T0, T0, 0); auto *no_fill = emit_jump(4);
+    emit_mem(0x8b, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, icache_fill_end));
+    emit_reg_op(0x39, T0, T2, 1); auto *writes_later = emit_jump(3);
+    emit_mov64(T0, T2);
+    patch_jump(writes_later, out); patch_jump(no_fill, out);
+    emit_reg_op(0x85, T2, T2, 1); auto *empty = emit_jump(4);
+    /* The next event is at 2*(count_clock-cycle_count), independent of the
+     * writable COUNT register and of the current half-clock phase. */
+    emit_mem(0x8b, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, cp0.count_clock));
+    emit_mem(0x8b, 1, T1, STATE, -1, 0, offsetof(struct r4300_core, cp0.cycle_count));
+    emit_reg_op(0x29, T1, T0, 1); emit_shift_reg(T0, 4, 1, 1);
+    emit_addimm64(T0, -int(cached_bound), T0);
+    if (cached_bound != uncached_bound) {
+        emit_mem_imm(0xf7, 0, 0, SP, -1, 0, 4, 2);
+        auto *cached = emit_jump(5);
+        emit_addimm64(T0, int(cached_bound) - int(uncached_bound), T0);
+        patch_jump(cached, out);
+    }
+    emit_reg_op(0x39, T0, T2, 1); memory_guard(failure, 3);
+    patch_jump(empty, out);
+}
+
+static void emit_region_guard(const struct parallaxjit_config* config, unsigned start,
     unsigned count, unsigned base, unsigned memory_count, struct memory_exit* failure)
 {
     emit_movimm64((intptr_t)&breakloop, ADDRESS);
@@ -56,10 +93,10 @@ static void emit_region_guard(const struct ari64_config* config, unsigned start,
     if (config->cache_timing && count) {
         uint32_t pc = config->virtual_pc + start * 4;
         unsigned lines = ((pc + (count - 1) * 4) >> 5) - (pc >> 5) + 1;
-        unsigned common = base + count + memory_count * 38 + 1 +
+        unsigned common = base + count + memory_count * R4300_UNCACHED_DATA_CYCLES + 1 +
             ((pc & UINT32_C(0xc0000000)) != UINT32_C(0x80000000) ? 3 : 0);
-        cached_bound = common + lines * 48;
-        uncached_bound = common + count * 40;
+        cached_bound = common + lines * R4300_ICACHE_FILL_CYCLES;
+        uncached_bound = common + count * R4300_UNCACHED_FETCH_CYCLES;
     }
     /* Rounding up covers either half-clock phase without reading it. An odd
      * bound may fall back one COUNT tick early; precise execution still
@@ -76,8 +113,9 @@ static void emit_region_guard(const struct ari64_config* config, unsigned start,
         emit_mem_imm(0x81, 1, 7, STATE, -1, 0, offsetof(struct r4300_core, cp0.cycle_count),-(int32_t)((uncached_bound + 1) >> 1)); memory_guard(failure, 13);
         patch_jump(done, out);
     }
+    emit_pending_transfer_guard(config, cached_bound, uncached_bound, failure);
 }
-static void emit_region_commit_native(const struct ari64_config* config,
+static void emit_region_commit_native(const struct parallaxjit_config* config,
     unsigned start, unsigned count, int branch)
 {
     emit_mem(0x8b, 0, T0, STATE, -1, 0, offsetof(struct r4300_core, cp0.count_phase));

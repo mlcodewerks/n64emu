@@ -32,9 +32,21 @@ struct mem_mapping
     struct mem_handler handler;
 };
 
+enum memory_notification_query {
+    MEMORY_NOTIFICATION_FAST_READ_PAGE,
+    MEMORY_NOTIFICATION_FAST_WRITE_PAGE,
+    MEMORY_NOTIFICATION_READ_RELEASES_PAGE
+};
+
 struct memory
 {
     struct r4300_fastmem* cpu_fastmem;
+    /* A notification handler may expose clean 4 KiB pages to guarded RAM.
+     * Queries take a physical byte address and memory_notification_query.
+     * Read-release queries test the exact address; fast-page queries promise
+     * the whole page is ordinary RAM. Never called in the host fault handler. */
+    struct mem_handler cpu_notification;
+    int (*cpu_notification_query)(void*, uint32_t, int);
     struct mem_handler handlers[0x10000];
     void* base;
 

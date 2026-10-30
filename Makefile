@@ -612,9 +612,9 @@ ifneq ($(platform),win)
 COREFLAGS += -D_GNU_SOURCE
 endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
-# Ari64 emitter, runtime layout and optimization settings.
+# ParallaxJIT emitter, runtime layout and optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):headless=$(HEADLESS_BENCHMARK):$(WITH_DYNAREC):ari64-only-v1:debug=$(DEBUG):profile=$(ARI64_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):headless=$(HEADLESS_BENCHMARK):$(WITH_DYNAREC):parallaxjit-only-v1:debug=$(DEBUG):profile=$(PARALLAXJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
 ifneq ($(strip $(file <$(CPU_JIT_CONFIG))),$(CPU_JIT_CONFIG_VALUE))
 $(file >$(CPU_JIT_CONFIG),$(CPU_JIT_CONFIG_VALUE))
 endif
@@ -661,12 +661,12 @@ endif
 %.o: %.cpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
-ifneq ($(ARI64_DIR),)
-$(ARI64_SOURCE:.cpp=.o): CXXFLAGS += -O3
-$(ARI64_DIR)/ari64_x64.o: $(wildcard $(ARI64_DIR)/x64/*.inc) $(ARI64_DIR)/x64/assem_x64.h $(ARI64_DIR)/x64/xbyak_emit.h $(ARI64_DIR)/ari64.h $(ARI64_DIR)/code_write_scope.h
-$(ARI64_DIR)/ari64_arm64.o: $(wildcard $(ARI64_DIR)/arm64/*.inc) $(ARI64_DIR)/arm64/xbyak_emit.h $(ARI64_DIR)/ari64.h $(ARI64_DIR)/code_write_scope.h
-ifeq ($(ARI64_PROFILE),1)
-$(CORE_DIR)/src/device/r4300/jit_runtime.o: CFLAGS += -DARI64_PROFILE
+ifneq ($(PARALLAXJIT_DIR),)
+$(PARALLAXJIT_SOURCE:.cpp=.o): CXXFLAGS += -O3
+$(PARALLAXJIT_DIR)/parallaxjit_x64.o: $(wildcard $(PARALLAXJIT_DIR)/x64/*.inc) $(PARALLAXJIT_DIR)/x64/assem_x64.h $(PARALLAXJIT_DIR)/x64/xbyak_emit.h $(PARALLAXJIT_DIR)/parallaxjit.h $(PARALLAXJIT_DIR)/code_write_scope.h
+$(PARALLAXJIT_DIR)/parallaxjit_arm64.o: $(wildcard $(PARALLAXJIT_DIR)/arm64/*.inc) $(PARALLAXJIT_DIR)/arm64/xbyak_emit.h $(PARALLAXJIT_DIR)/parallaxjit.h $(PARALLAXJIT_DIR)/code_write_scope.h
+ifeq ($(PARALLAXJIT_PROFILE),1)
+$(CORE_DIR)/src/device/r4300/jit_runtime.o: CFLAGS += -DPARALLAXJIT_PROFILE
 endif
 endif
 

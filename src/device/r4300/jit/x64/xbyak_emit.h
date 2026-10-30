@@ -1,4 +1,4 @@
-/* Xbyak encoding for the shared Ari64 frontend. GPL-2.0-or-later. */
+/* Xbyak encoding for the shared ParallaxJIT frontend. GPL-2.0-or-later. */
 static unsigned char* out;
 struct x64_emitter : Xbyak::CodeGenerator {
     std::map<unsigned char*, std::unique_ptr<Xbyak::Label>> jumps;

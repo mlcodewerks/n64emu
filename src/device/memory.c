@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 #if defined(_WIN32) || defined(HAVE_LIBNX)
 #include <malloc.h>
@@ -40,6 +41,8 @@ void init_memory(struct memory* mem,
 
     mem->base = base;
     mem->cpu_fastmem = NULL;
+    memset(&mem->cpu_notification, 0, sizeof(mem->cpu_notification));
+    mem->cpu_notification_query = NULL;
 
     for(m = 0; m < mappings_count; ++m) {
         apply_mem_mapping(mem, &mappings[m]);

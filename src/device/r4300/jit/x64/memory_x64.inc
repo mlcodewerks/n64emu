@@ -27,7 +27,7 @@ static void memory_guard(struct memory_exit* exit, unsigned condition)
     assert(exit->guard_count < 16);
     exit->guards[exit->guard_count++] = emit_jump(condition);
 }
-static void emit_write_buffer_drain_native(const struct ari64_config* config,unsigned unissued=0)
+static void emit_write_buffer_drain_native(const struct parallaxjit_config* config,unsigned unissued=0)
 {
     if(config->compat_issue_clock)return;
     JIT(push(Xbyak::Reg64(RAX)));JIT(push(Xbyak::Reg64(RDX)));
@@ -45,7 +45,7 @@ static void emit_write_buffer_drain_native(const struct ari64_config* config,uns
     emit_state_imm(offsetof(struct r4300_core,write_buffer_count),0,0);
     patch_jump(empty,out);JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RAX)));
 }
-static void emit_icache_fill_wait_native(const struct ari64_config* config,unsigned unissued=0,unsigned index=UINT32_MAX)
+static void emit_icache_fill_wait_native(const struct parallaxjit_config* config,unsigned unissued=0,unsigned index=UINT32_MAX)
 {
     if(config->compat_issue_clock)return;
     JIT(push(Xbyak::Reg64(RAX)));JIT(push(Xbyak::Reg64(RDX)));JIT(push(Xbyak::Reg64(RCX)));
@@ -62,7 +62,7 @@ static void emit_icache_fill_wait_native(const struct ari64_config* config,unsig
     emit_state_imm(offsetof(struct r4300_core,icache_fill_index),0,0);
     patch_jump(skip,out);JIT(pop(Xbyak::Reg64(RCX)));JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RAX)));
 }
-static void emit_icache_prefetch_native(const struct ari64_config* config,unsigned unissued,unsigned index)
+static void emit_icache_prefetch_native(const struct parallaxjit_config* config,unsigned unissued,unsigned index)
 {
     JIT(push(Xbyak::Reg64(RAX)));JIT(push(Xbyak::Reg64(RDX)));JIT(push(Xbyak::Reg64(RCX)));
     emit_mem(0x8b,1,RAX,R12,-1,0,offsetof(struct r4300_core,cp0.count_clock));
@@ -76,7 +76,7 @@ static void emit_icache_prefetch_native(const struct ari64_config* config,unsign
     emit_mem(0x8b,1,RDX,R12,RCX,3,offsetof(struct r4300_core,write_buffer_end));
     emit_reg_op(0x39,RDX,RAX,1);auto *later=emit_jump(3);
     emit_mov64(RDX,RAX);patch_jump(later,out);patch_jump(empty,out);
-    emit_addimm64(RAX,48,RAX);emit_mem(0x89,1,RAX,R12,-1,0,offsetof(struct r4300_core,icache_fill_end));
+    emit_addimm64(RAX,R4300_ICACHE_FILL_CYCLES,RAX);emit_mem(0x89,1,RAX,R12,-1,0,offsetof(struct r4300_core,icache_fill_end));
     if(index==UINT32_MAX){
         emit_mov(R14,RDX);emit_shift_reg(RDX,5,5,0);emit_imm_op(4,RDX,511,0);emit_addimm(RDX,1,RDX);
         emit_mem(0x89,0,RDX,R12,-1,0,offsetof(struct r4300_core,icache_fill_index));
@@ -122,7 +122,7 @@ static void emit_itlb_native(uint32_t pc)
 }
 /* Resolve a same-page target's IF access before executing its delay slot.
  * R14 holds the selected successor for conditional and indirect branches. */
-static void emit_branch_prefetch(const struct ari64_config* config,unsigned char** cold_exit=nullptr)
+static void emit_branch_prefetch(const struct parallaxjit_config* config,unsigned char** cold_exit=nullptr)
 {
     if(!config->cache_timing||config->compat_issue_clock)return;
     emit_mem_imm(0xf7,0,0,RSP,-1,0,4,2);auto *uncached=emit_jump(4);
@@ -158,7 +158,7 @@ static void emit_branch_prefetch(const struct ari64_config* config,unsigned char
 /* Fetch state changes happen only after the current instruction's guards.
  * A region stays on one code page, so its first fetch establishes the exact
  * two-entry instruction micro-TLB hit/replacement state for later fetches. */
-static void emit_fetch_native(const struct ari64_config* config, unsigned index, unsigned start, unsigned base, int check_line, bool defer_base=false,size_t fetch_flag=4)
+static void emit_fetch_native(const struct parallaxjit_config* config, unsigned index, unsigned start, unsigned base, int check_line, bool defer_base=false,size_t fetch_flag=4)
 {
     unsigned cycles = base + r4300_issue_reservation(config->compat_issue_clock);
     if(!defer_base)emit_addimm(R13, cycles, R13);
@@ -195,7 +195,7 @@ static void emit_fetch_native(const struct ari64_config* config, unsigned index,
         patch_jump(plain,out);
         emit_state_imm(tag, key, 0);
         if(future&&!config->compat_issue_clock)emit_icache_prefetch_native(config,defer_base?0:cycles,(fetch_pc>>5)&511);
-        else emit_addimm(R13, 48, R13);
+        else emit_addimm(R13, R4300_ICACHE_FILL_CYCLES, R13);
         patch_jump(hit, out);
     }
     if(defer_base){
@@ -207,7 +207,7 @@ static void emit_fetch_native(const struct ari64_config* config, unsigned index,
     patch_jump(uncached, out);
     emit_icache_fill_wait_native(config,cycles);
     emit_write_buffer_drain_native(config,cycles);
-    emit_addimm(R13, 40, R13);
+    emit_addimm(R13, R4300_UNCACHED_FETCH_CYCLES, R13);
     patch_jump(done, out);
 }
 static void emit_pipeline_clear(void)
@@ -309,7 +309,7 @@ static void emit_mapped_cacheability(void)
 }
 #include "../fetch_cache.inc"
 static void emit_memory_native(uint32_t instruction, unsigned index,
-    const struct ari64_config* config, struct memory_exit* exit, int check_line,
+    const struct parallaxjit_config* config, struct memory_exit* exit, int check_line,
     uint32_t previous, int known)
 {
     enum r4300_opcode op = r4300_get_idec(instruction)->opcode;
@@ -494,10 +494,10 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         if (!write) {
             emit_imm_op(7, RDX, UINT32_C(0x00800000), 0);
             unsigned char* larger = emit_jump(3);
-            emit_movimm(31, RDX);
+            emit_movimm(R4300_UNCACHED_READ_CYCLES, RDX);
             unsigned char* bus_ready = emit_b();
-            patch_jump(larger, out); emit_movimm(38, RDX); patch_jump(bus_ready, out);
-        } else emit_movimm(38, RDX);
+            patch_jump(larger, out); emit_movimm(R4300_UNCACHED_DATA_CYCLES, RDX); patch_jump(bus_ready, out);
+        } else emit_movimm(R4300_UNCACHED_DATA_CYCLES, RDX);
         if(data_ready)patch_jump(data_ready,out);
         emit_fetch_native(config, index, exit->start, 1, check_line);
         emit_reg_op(0x01, RDX, R13, 0);

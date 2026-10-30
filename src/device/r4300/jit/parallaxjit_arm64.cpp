@@ -1,10 +1,10 @@
-/* Xbyak_aarch64 host emitter for the shared Ari64 frontend.
+/* Xbyak_aarch64 host emitter for the shared ParallaxJIT frontend.
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #include <xbyak_aarch64/xbyak_aarch64.h>
 #include <map>
 #include <memory>
 extern "C" {
-#include "ari64.h"
+#include "parallaxjit.h"
 #include "core/log.h"
 #include "device/r4300/r4300_core.h"
 #include "device/r4300/idec.h"
@@ -23,29 +23,29 @@ extern "C" {
 #include <unistd.h>
 #endif
 
-#if !defined(__aarch64__) && !defined(ARI64_CROSS_ASSEMBLE)
-#error Ari64 ARM64 requires an AArch64 compiler
+#if !defined(__aarch64__) && !defined(PARALLAXJIT_CROSS_ASSEMBLE)
+#error ParallaxJIT ARM64 requires an AArch64 compiler
 #endif
-#ifndef ARI64_ARM64_SEGMENT_BYTES
-#define ARI64_ARM64_SEGMENT_BYTES (512 * 1024)
+#ifndef PARALLAXJIT_ARM64_SEGMENT_BYTES
+#define PARALLAXJIT_ARM64_SEGMENT_BYTES (512 * 1024)
 #endif
 #define SEGMENTS 16
-#define ARENA_BYTES (SEGMENTS * ARI64_ARM64_SEGMENT_BYTES)
-struct ari64 {
+#define ARENA_BYTES (SEGMENTS * PARALLAXJIT_ARM64_SEGMENT_BYTES)
+struct parallaxjit {
     unsigned char* code;
     size_t used, page;
     uint64_t generation, stamps[SEGMENTS], blocks, native, bytes, calls;
 };
 /* The fault-assisted memory emitter is currently x86-64 only. */
-void* ari64_fault_guard(const struct ari64*) { return NULL; }
-void* ari64_fault_enter(struct ari64*) { return NULL; }
-void ari64_fault_leave(void*) {}
-uint64_t ari64_fault_count(const struct ari64*) { return 0; }
-void ari64_fault_resolve(struct ari64*) {}
+void* parallaxjit_fault_guard(const struct parallaxjit*) { return NULL; }
+void* parallaxjit_fault_enter(struct parallaxjit*) { return NULL; }
+void parallaxjit_fault_leave(void*) {}
+uint64_t parallaxjit_fault_count(const struct parallaxjit*) { return 0; }
+void parallaxjit_fault_resolve(struct parallaxjit*, struct r4300_core*, uint32_t) {}
 
-struct ari64* ari64_create(void)
+struct parallaxjit* parallaxjit_create(void)
 {
-    struct ari64* s = (struct ari64*)calloc(1, sizeof(*s));
+    struct parallaxjit* s = (struct parallaxjit*)calloc(1, sizeof(*s));
     if (!s) return NULL;
     #ifdef _WIN32
     SYSTEM_INFO info; GetSystemInfo(&info);
@@ -53,7 +53,7 @@ struct ari64* ari64_create(void)
 #else
     long page=sysconf(_SC_PAGESIZE);
 #endif
-    if (page <= 0 || ARI64_ARM64_SEGMENT_BYTES % page) { free(s); return NULL; }
+    if (page <= 0 || PARALLAXJIT_ARM64_SEGMENT_BYTES % page) { free(s); return NULL; }
     s->page = (size_t)page;
     #ifdef _WIN32
     s->code=(unsigned char*)VirtualAlloc(NULL,ARENA_BYTES,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
@@ -65,7 +65,7 @@ struct ari64* ari64_create(void)
     s->generation = s->stamps[0] = 1;
     return s;
 }
-void ari64_destroy(struct ari64* s)
+void parallaxjit_destroy(struct parallaxjit* s)
 {
     if(!s) return;
 #ifdef _WIN32
@@ -75,22 +75,22 @@ void ari64_destroy(struct ari64* s)
 #endif
     free(s);
 }
-uint64_t ari64_generation(const struct ari64* s) { return s->generation; }
-const uint64_t* ari64_entry_generation_ptr(const struct ari64* s, ari64_entry entry)
+uint64_t parallaxjit_generation(const struct parallaxjit* s) { return s->generation; }
+const uint64_t* parallaxjit_entry_generation_ptr(const struct parallaxjit* s, parallaxjit_entry entry)
 {
     uintptr_t offset = (uintptr_t)entry - (uintptr_t)(s ? s->code : NULL);
-    return s && entry && offset < ARENA_BYTES ? &s->stamps[offset / ARI64_ARM64_SEGMENT_BYTES] : NULL;
+    return s && entry && offset < ARENA_BYTES ? &s->stamps[offset / PARALLAXJIT_ARM64_SEGMENT_BYTES] : NULL;
 }
-int ari64_entry_valid(const struct ari64* s, ari64_entry entry, uint64_t generation)
+int parallaxjit_entry_valid(const struct parallaxjit* s, parallaxjit_entry entry, uint64_t generation)
 {
-    const uint64_t* stamp = ari64_entry_generation_ptr(s, entry);
+    const uint64_t* stamp = parallaxjit_entry_generation_ptr(s, entry);
     return stamp && generation && *stamp == generation;
 }
-void ari64_stats(const struct ari64* s, uint64_t* blocks, uint64_t* native)
+void parallaxjit_stats(const struct parallaxjit* s, uint64_t* blocks, uint64_t* native)
 {
     *blocks = s ? s->blocks : 0; *native = s ? s->native : 0;
 }
-void ari64_code_stats(const struct ari64* s, uint64_t stats[3])
+void parallaxjit_code_stats(const struct parallaxjit* s, uint64_t stats[3])
 {
     stats[0] = s ? s->bytes : 0; stats[1] = 0; stats[2] = s ? s->calls : 0;
 }

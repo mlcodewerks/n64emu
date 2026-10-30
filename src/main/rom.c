@@ -18,7 +18,7 @@
 #include "device/device.h"
 #include "device/r4300/jit_runtime.h"
 #include "main.h"
-#include "md5.h"
+#include <utils/md5.h>
 #include "osal/preproc.h"
 #include "rom.h"
 #include "util.h"
@@ -100,8 +100,8 @@ static void swap_copy_rom(void* dst, const void* src, size_t len, unsigned char*
 
 core_result open_rom(const unsigned char* romimage, unsigned int size)
 {
-    md5_state_t state;
-    md5_byte_t digest[16];
+    MD5_CTX state;
+    unsigned char digest[16];
     char buffer[256];
     unsigned char imagetype;
     int i;
@@ -123,9 +123,9 @@ core_result open_rom(const unsigned char* romimage, unsigned int size)
     memcpy(&ROM_HEADER, (uint8_t*)mem_base_u32(g_mem_base, MM_CART_ROM), sizeof(core_rom_header));
 
     /* Calculate MD5 hash  */
-    md5_init(&state);
-    md5_append(&state, (const md5_byte_t*)((uint8_t*)mem_base_u32(g_mem_base, MM_CART_ROM)), g_rom_size);
-    md5_finish(&state, digest);
+    MD5_Init(&state);
+    MD5_Update(&state, mem_base_u32(g_mem_base, MM_CART_ROM), g_rom_size);
+    MD5_Final(digest, &state);
     for ( i = 0; i < 16; ++i )
         sprintf(buffer+i*2, "%02X", digest[i]);
     buffer[32] = '\0';
@@ -170,18 +170,18 @@ core_result close_rom(void)
         core_log(CORE_LOG_INFO, "Cached CPU blocks: decoded=%" PRIu64 " restored=%" PRIu64,
             cache[0], cache[1]);
     }
-#ifdef HAVE_ARI64
+#ifdef HAVE_PARALLAXJIT
     if (g_dev.r4300.emumode == EMUMODE_DYNAREC) {
         uint64_t stats[4], optimized[2], code[3];
         r4300_jit_stats(&g_dev.r4300, stats);
         r4300_jit_optimization_stats(&g_dev.r4300, optimized);
-        core_log(CORE_LOG_INFO, "Ari64: blocks=%" PRIu64 " native=%" PRIu64
+        core_log(CORE_LOG_INFO, "ParallaxJIT: blocks=%" PRIu64 " native=%" PRIu64
             " entries=%" PRIu64 " commits=%" PRIu64,
             stats[0], stats[1], stats[2], stats[3]);
-        core_log(CORE_LOG_INFO, "Ari64 optimization: fast=%" PRIu64 " links=%" PRIu64 " direct=%" PRIu64,
+        core_log(CORE_LOG_INFO, "ParallaxJIT optimization: fast=%" PRIu64 " links=%" PRIu64 " direct=%" PRIu64,
             optimized[0], optimized[1], r4300_jit_direct_links(&g_dev.r4300));
         r4300_jit_code_stats(&g_dev.r4300, code);
-        core_log(CORE_LOG_INFO, "Ari64 linkage: bytes=%" PRIu64 " relative_calls=%" PRIu64 " absolute_calls=%" PRIu64,
+        core_log(CORE_LOG_INFO, "ParallaxJIT linkage: bytes=%" PRIu64 " relative_calls=%" PRIu64 " absolute_calls=%" PRIu64,
             code[0], code[1], code[2]);
     }
 #endif

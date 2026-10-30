@@ -33,7 +33,7 @@ static void emit_fpu_transfer(uint32_t instruction, enum r4300_opcode op)
  * Commit ordinary results here; exceptional outputs, enabled exceptions and
  * event boundaries retain the shared finish without repeating arithmetic. */
 static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
-    const struct ari64_config* config, unsigned char** exits, unsigned* exit_count)
+    const struct parallaxjit_config* config, unsigned char** exits, unsigned* exit_count)
 {
     unsigned fn = instruction & 63, fmt = (instruction >> 21) & 31;
     int integer = (fn >= 8 && fn <= 15) || fn == 36 || fn == 37;
@@ -105,7 +105,7 @@ static void emit_fpu_environment_end(void)
     JIT(ldrb(WReg(CACHE1),ptr(XReg(T2),XReg(ADDRESS))));
 }
 static void emit_fpu_save_fetch_flags() {}
-static void emit_fpu_native(uint32_t instruction,unsigned index,const struct ari64_config* config,
+static void emit_fpu_native(uint32_t instruction,unsigned index,const struct parallaxjit_config* config,
     unsigned char** exits,unsigned* exit_count,bool prefetched=false,unsigned fetch_start=0)
 {
     unsigned fmt=(instruction>>21)&31,fn=instruction&63;

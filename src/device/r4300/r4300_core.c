@@ -3,7 +3,6 @@
 #include "r4300_core.h"
 #ifdef __LIBRETRO__
 #include "renderer_options.h"
-#include "main/rom.h"
 #endif
 #include "jit_runtime.h"
 #if defined(COUNT_INSTR)
@@ -77,11 +76,9 @@ void poweron_r4300(struct r4300_core* r4300)
 #ifdef __LIBRETRO__
     r4300->cache_timing = renderer_settings.per_cycle_timing ? 1 :
         renderer_settings.fast_cpu_timing ? 2 : 0;
-    /* DK64's opening vine needs the compatibility issue envelope until the
-     * missing shared timing behavior is understood. Keep other ROMs on the
-     * measured rules, and preserve Fast's existing envelope. */
-    r4300->compat_issue_clock = !renderer_settings.per_cycle_timing ||
-        strcmp(ROM_PARAMS.headername, "DONKEY KONG 64") == 0;
+    /* Fast and Accurate share native issue/interlock timing. They differ in
+     * cache storage; only cache timing Off keeps the compatibility envelope. */
+    r4300->compat_issue_clock = r4300->cache_timing == 0;
 #endif
 
     r4300_jit_invalidate(r4300, 0, 0);

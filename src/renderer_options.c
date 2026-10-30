@@ -39,7 +39,7 @@ static const struct retro_variable options[] = {
     {"wtfn64_glrdp_vi_gamma_dither", "GLRDP VI gamma dithering (restart required); enabled|disabled"},
 #endif
     {"wtfn64_timing", "CPU cache timing (restart required); fast|off|accurate"},
-    {"wtfn64_rsp_hle", "RSP HLE (restart required); enabled|disabled"},
+    {"wtfn64_hle", "HLE level (restart required); RSP HLE|Off"},
     {"wtfn64_angrylion_threads", "SoftRDP rendering threads (restart required); 6|2|4|8|10|auto"},
     {"wtfn64_performance_cores", "Performance cores only (restart required); enabled|disabled"},
     {"wtfn64_angrylion_upscale", "SoftRDP upscaling (restart required); 1|2|4"},
@@ -104,7 +104,9 @@ void renderer_register_options(retro_environment_t environment)
             if (strstr(d->key, "angrylion")) d->category_key = "angrylion";
             else if (strstr(d->key, "glrdp")) d->category_key = "glrdp";
             else if (strstr(d->key, "parallel") || strstr(d->key, "ss_") || strstr(d->key, "native_tex_rect")) d->category_key = "parallel";
-            else if (strstr(d->key, "rsp_") || strstr(d->key, "lle_") || strstr(d->key, "_timing") || strstr(d->key, "wtfn64_cpu_")) d->category_key = "emulation";
+            else if (strstr(d->key, "rsp_") || strstr(d->key, "lle_") || strstr(d->key, "_timing") || strstr(d->key, "wtfn64_cpu_") || !strcmp(d->key, "wtfn64_hle")) d->category_key = "emulation";
+            if (!strcmp(d->key, "wtfn64_hle"))
+                d->info = "Off executes all RSP programs natively. RSP HLE accelerates supported graphics, audio and task microcode, with native fallback for unsupported programs. Works with every CPU cache timing setting, including Accurate. Restart content to apply.";
             if (!strcmp(d->key, "wtfn64_glrdp_blending"))
                 d->info = "Accurate uses the RDP divider and quantized blend factors. Fast uses arithmetic division with the same colour sources and factors; translucent edges may differ. Restart content to apply.";
             if (!strcmp(d->key, "wtfn64_glrdp_combiner"))
@@ -178,6 +180,10 @@ void renderer_register_options(retro_environment_t environment)
                 d->values[2].label = "Off";
             }
             d->default_value = d->values[0].value;
+            if (!strcmp(d->key, "wtfn64_hle")) {
+                d->values[0].label = "RSP HLE";
+                d->values[1].label = "Off";
+            }
             legacy_definitions[i].key = d->key;
             legacy_definitions[i].desc = d->desc;
             legacy_definitions[i].info = d->info;
@@ -229,7 +235,12 @@ void renderer_read_options(retro_environment_t env)
     v = value(env, "wtfn64_timing", "fast");
     s->per_cycle_timing = strcmp(v, "accurate") == 0;
     s->fast_cpu_timing = strcmp(v, "off") != 0 && strcmp(v, "no-cache") != 0;
-    s->rsp_hle = toggle(env, "wtfn64_rsp_hle", true);
+    /* Consult the old boolean only when the frontend has no level saved. */
+    v = value(env, "wtfn64_hle", "");
+    s->hle = (!strcmp(v, "Off") || !strcmp(v, "off")) ? HLE_OFF :
+        (!strcmp(v, "RSP HLE") || !strcmp(v, "rsp")) ? HLE_RSP :
+        toggle(env, "wtfn64_rsp_hle", true) ? HLE_RSP : HLE_OFF;
+    s->rsp_hle = s->hle != HLE_OFF;
     s->lle_graphics = s->lle_audio = !s->rsp_hle;
     s->component_timing = true;
 #ifdef HAVE_PARALLEL_RDP

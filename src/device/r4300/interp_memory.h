@@ -18,13 +18,13 @@
 #endif
 
 /* Interpreter-side TLB hit path. The existing translator remains the sole
- * miss/exception path, so refill behavior and NEW_DYNAREC validation stay
+ * miss/exception path, so refill behavior and JIT validation stay
  * unchanged. w == 1 selects the writable LUT; all other values use read LUT. */
 static osal_force_inline uint32_t interp_translate_address(struct r4300_core* r4300,
                                                            uint32_t address,
                                                            int w)
 {
-#if defined(NEW_DYNAREC)
+#if defined(JIT)
     if (INTERP_MEM_UNLIKELY(r4300->emumode == EMUMODE_DYNAREC))
         return virtual_to_physical_address(r4300, address, w);
 

@@ -1,5 +1,5 @@
-#ifndef ARI64_FPU_FLAGS_H
-#define ARI64_FPU_FLAGS_H
+#ifndef PARALLAXJIT_FPU_FLAGS_H
+#define PARALLAXJIT_FPU_FLAGS_H
 /* Exact finite lookup of host exception/rounding encodings. The existing
  * validation, guest exception handling and host environment restoration stay
  * in place; no floating-point result rule is relaxed. */

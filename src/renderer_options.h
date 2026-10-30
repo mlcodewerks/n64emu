@@ -6,11 +6,13 @@
 extern "C" {
 #endif
 enum renderer_type { RENDERER_SOFTRDP, RENDERER_PARALLEL, RENDERER_GLRDP };
+enum hle_level { HLE_OFF, HLE_RSP };
 enum controller_pak_option { CONTROLLER_PAK_NONE, CONTROLLER_PAK_MEMORY,
     CONTROLLER_PAK_RUMBLE, CONTROLLER_PAK_TRANSFER };
 struct renderer_settings {
     /* RSP execution is independent of CPU cache timing. */
     bool rsp_hle, lle_graphics, lle_audio;
+    enum hle_level hle;
     /* Derived from Off / Fast / Accurate. Component clocks
      * remain active; CPU timing selects none, tags, or full cache contents. */
     bool per_cycle_timing;

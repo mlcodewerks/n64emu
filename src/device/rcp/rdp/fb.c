@@ -6,6 +6,7 @@
 #include "core/log.h"
 #include "device/memory.h"
 #include "device/r4300/r4300_core.h"
+#include "device/r4300/fastmem.h"
 #include "device/rdram.h"
 #include "osal/preproc.h"
 #include "core/backend.h"
@@ -17,6 +18,48 @@ static osal_inline size_t fb_buffer_size(const core_framebuffer_info* fb_info)
     return fb_info->width * fb_info->height * fb_info->size;
 }
 
+static osal_inline void framebuffer_guard_changed(struct fb* fb, uint32_t address, uint32_t bytes)
+{
+    if (fb->mem && fb->mem->cpu_fastmem)
+        r4300_fastmem_notification_changed(fb->mem, address, bytes);
+}
+
+/* Only pure RAM pages may bypass a notification handler. Active GPU ownership
+ * and depth timing proofs stay guarded; the shared physical slots cover all
+ * KSEG/TLB aliases on both Windows VEH and Linux SIGSEGV paths. */
+static int framebuffer_fast_page(void* opaque, uint32_t address, int query)
+{
+    const struct fb* fb = opaque;
+    unsigned page = address >> 12;
+    if (page >= FB_DIRTY_PAGES_COUNT) return 0;
+    if (query == MEMORY_NOTIFICATION_READ_RELEASES_PAGE) {
+        if (!fb->dirty_page[page]) return 0;
+        if (fb->native_notifications) return 1;
+        for (unsigned i = 0; i < FB_INFOS_COUNT; ++i) {
+            const core_framebuffer_info* info = &fb->infos[i];
+            if (info->addr && address >= info->addr &&
+                (uint64_t)address < (uint64_t)info->addr + fb_buffer_size(info)) return 1;
+        }
+        return 0;
+    }
+    int write = query == MEMORY_NOTIFICATION_FAST_WRITE_PAGE;
+    uint64_t begin = (uint64_t)page << 12, end = begin + 4096;
+    if (write && fb->timing) for (unsigned i = 0; i < 8; ++i) {
+        const struct rdp_uniform_depth* u = &fb->timing->uniform[i];
+        uint64_t last = (uint64_t)u->address + (uint64_t)u->width * u->height * 2;
+        if (u->valid && begin < last && end > u->address) return 0;
+    }
+    if (fb->native_notifications)
+        return write ? !(fb->native_pages[page] & (CORE_FB_PAGE_WRITE | CORE_FB_PAGE_INVALIDATE)) : !fb->dirty_page[page];
+    if (!fb->infos[0].addr || (!write && !fb->dirty_page[page])) return 1;
+    for (unsigned i = 0; i < FB_INFOS_COUNT; ++i) {
+        const core_framebuffer_info* info = &fb->infos[i];
+        if (info->addr && begin < (uint64_t)info->addr + fb_buffer_size(info) && end > info->addr)
+            return 0;
+    }
+    return 1;
+}
+
 void pre_framebuffer_read(struct fb* fb, uint32_t address)
 {
     if (fb->native_notifications) {
@@ -26,6 +69,7 @@ void pre_framebuffer_read(struct fb* fb, uint32_t address)
             // A second image sharing the page must not lose its notification.
             renderer_framebuffer_read_range(page << CORE_FB_PAGE_SHIFT, 1u << CORE_FB_PAGE_SHIFT);
             fb->dirty_page[page] = 0;
+            framebuffer_guard_changed(fb, page << CORE_FB_PAGE_SHIFT, 1u << CORE_FB_PAGE_SHIFT);
         }
         return;
     }
@@ -50,6 +94,7 @@ void pre_framebuffer_read(struct fb* fb, uint32_t address)
         if ((address >= begin) && (address <= end) && (fb->dirty_page[address >> 12])) {
             renderer_framebuffer_read(address);
             fb->dirty_page[address >> 12] = 0;
+            framebuffer_guard_changed(fb, address & ~UINT32_C(4095), 4096);
         }
     }
 }
@@ -83,7 +128,7 @@ void pre_framebuffer_read_range(struct fb* fb, uint32_t address, uint32_t length
     }
 }
 
-void post_framebuffer_write(struct fb* fb, uint32_t address, uint32_t length)
+static void framebuffer_write_notification(struct fb* fb, uint32_t address, uint32_t length)
 {
     if (fb->timing && length) rdp_timing_invalidate_range(fb->timing, address, length);
     if (fb->native_notifications) {
@@ -135,6 +180,14 @@ void post_framebuffer_write(struct fb* fb, uint32_t address, uint32_t length)
     }
 }
 
+void post_framebuffer_write(struct fb* fb, uint32_t address, uint32_t length)
+{
+    framebuffer_write_notification(fb, address, length);
+    /* The callback can clear one-shot invalidation or discard a timing proof.
+     * Reclassify afterwards, while preserving outstanding SMC write guards. */
+    framebuffer_guard_changed(fb, address, length);
+}
+
 
 void init_fb(struct fb* fb,
              struct memory* mem,
@@ -145,6 +198,8 @@ void init_fb(struct fb* fb,
     fb->mem = mem;
     fb->rdram = rdram;
     fb->r4300 = r4300;
+    fb->mem->cpu_notification = (struct mem_handler){fb, read_rdram_fb, write_rdram_fb};
+    fb->mem->cpu_notification_query = framebuffer_fast_page;
 }
 
 void poweron_fb(struct fb* fb)
@@ -156,6 +211,7 @@ void poweron_fb(struct fb* fb)
     memset(fb->infos, 0, FB_INFOS_COUNT*sizeof(fb->infos[0]));
     fb->once = 1;
     memset(fb->timing_bytes, 0, sizeof(fb->timing_bytes));
+    framebuffer_guard_changed(fb, 0, RDRAM_MAX_SIZE);
 }
 
 void read_rdram_fb(void* opaque, uint32_t address, uint32_t* value)
@@ -275,7 +331,7 @@ void protect_framebuffers(struct fb* fb)
             apply_mem_mapping(fb->mem, &fb_mapping);
             if (fb->once) {
                 fb->once = 0;
-                invalidate_r4300_cached_code(fb->r4300, 0, 0);
+                if (!fb->mem->cpu_fastmem) invalidate_r4300_cached_code(fb->r4300, 0, 0);
             }
         }
     } else {
@@ -300,13 +356,14 @@ void protect_framebuffers(struct fb* fb)
             for (j = fb_mapping.begin >> 12; j <= (fb_mapping.end >> 12); ++j) {
                 fb->dirty_page[j] = 1;
             }
+            framebuffer_guard_changed(fb, fb_mapping.begin, (uint32_t)fb_buffer_size(&fb->infos[i]));
 
             /* disable dynarec "fast memory" code generation to avoid direct memory accesses */
             if (fb->once) {
                 fb->once = 0;
 
                 /* also need to invalidate cached code to regen non fast memory code path */
-                invalidate_r4300_cached_code(fb->r4300, 0, 0);
+                if (!fb->mem->cpu_fastmem) invalidate_r4300_cached_code(fb->r4300, 0, 0);
             }
         }
     }
@@ -324,7 +381,7 @@ void protect_framebuffers(struct fb* fb)
         apply_mem_mapping(fb->mem, &fb_mapping);
         if (fb->once) {
             fb->once = 0;
-            invalidate_r4300_cached_code(fb->r4300, 0, 0);
+            if (!fb->mem->cpu_fastmem) invalidate_r4300_cached_code(fb->r4300, 0, 0);
         }
     }
 

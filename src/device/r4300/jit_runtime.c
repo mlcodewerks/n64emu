@@ -9,8 +9,8 @@
 #include "interp_fpu_move.h"
 #include "interp_poll.h"
 #include "interp_thread_poll.h"
-#ifdef HAVE_ARI64
-#include "new_dynarec/ari64.h"
+#ifdef HAVE_PARALLAXJIT
+#include "jit/parallaxjit.h"
 #include "core/log.h"
 #include "core/types.h"
 #endif
@@ -19,8 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef HAVE_ARI64
-#error The CPU runtime requires an Ari64 host emitter
+#ifndef HAVE_PARALLAXJIT
+#error The CPU runtime requires an ParallaxJIT host emitter
 #endif
 
 #if defined(_MSC_VER) && defined(_M_X64)
@@ -135,7 +135,7 @@ enum ci_fast_op
 struct cached_instruction
 {
     uint32_t op;
-    uint8_t meta, cycles, fp_kind, ram_kind;
+    uint8_t meta, cycles, direct_kind, ram_kind;
 };
 
 struct cached_block
@@ -161,16 +161,16 @@ struct cached_block
      * for arithmetic, guarded RAM and direct COP1 dispatch. */
     struct cached_instruction instructions[CI_BLOCK_INSTRUCTIONS];
     r4300_op_handler handlers[CI_BLOCK_INSTRUCTIONS];
-#ifdef HAVE_ARI64
-    ari64_entry native_entry, native_one_entry, native_chain_entry;
+#ifdef HAVE_PARALLAXJIT
+    parallaxjit_entry native_entry, native_one_entry, native_chain_entry;
     uint64_t native_generation, native_one_generation;
     uint8_t native_link_replace;
-    struct ari64_link_cache native_links[2];
+    struct parallaxjit_link_cache native_links[2];
 #endif
     union {struct interp_ram_poll poll;struct interp_simple_poll simple_poll;};
     uint32_t source_words[CI_BLOCK_INSTRUCTIONS + 2];
     uint8_t source_count;
-#ifdef ARI64_PROFILE
+#ifdef PARALLAXJIT_PROFILE
     uint64_t profile_entries;
 #endif
 };
@@ -184,17 +184,17 @@ struct cached_set
 struct r4300_jit_state
 {
     struct r4300_fastmem* fastmem;
-#ifdef HAVE_ARI64
-    struct ari64* jit;
+#ifdef HAVE_PARALLAXJIT
+    struct parallaxjit* jit;
     /* Linked entries are derived from direct/indirect edge counts, so a hot
      * native tail updates one counter instead of three. Public totals agree. */
     uint64_t jit_dispatch_entries;
     uint64_t jit_fast_commits, jit_indirect_links;
     uint64_t jit_direct_links;
     uint64_t fetch_generation;
-    struct ari64_fetch_cache fetch_cache[32];
+    struct parallaxjit_fetch_cache fetch_cache[32];
     uint64_t jit_compile_misses[2], jit_verifications[2], jit_replacements;
-#ifdef ARI64_PROFILE
+#ifdef PARALLAXJIT_PROFILE
     uint64_t profile_slow[64], profile_special[64], profile_cop1[64];
     uint64_t profile_regions[33], profile_fpu[64];
 #endif
@@ -439,8 +439,9 @@ static int ci_is_ram_memory_opcode(enum r4300_opcode opcode)
     }
 }
 
-static uint8_t ci_classify_fp(uint32_t op)
+static uint8_t ci_classify_direct(uint32_t op)
 {
+    if ((op & UINT32_C(0xffc0f800)) == UINT32_C(0x40004800)) return 4; /* MFC0/DMFC0 Count */
     if ((op >> 26) != 17) return 0;
     unsigned fmt = (op >> 21) & 31, fn = op & 63;
     if (fmt == 16 || fmt == 17) {
@@ -836,15 +837,15 @@ static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r
 
 
     set->next_replace ^= 1;
-#ifdef HAVE_ARI64
+#ifdef HAVE_PARALLAXJIT
     if (state->jit && block->valid && block->virtual_pc != pc) ++state->jit_replacements;
 #endif
     block->valid = 0;
-#ifdef HAVE_ARI64
+#ifdef HAVE_PARALLAXJIT
     block->native_entry = block->native_one_entry = NULL;
     block->native_link_replace = 0;
     memset(block->native_links,0,sizeof(block->native_links));
-#ifdef ARI64_PROFILE
+#ifdef PARALLAXJIT_PROFILE
     block->profile_entries = 0;
 #endif
 #endif
@@ -887,7 +888,7 @@ static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r
         /* COP1 charges its extra latency in the handler after commit. All
          * other base latencies depend only on the encoded instruction. */
         block->instructions[i].cycles = (uint8_t)((op >> 26) == 17 ? 1 : r4300_base_cycles(op, 0));
-        block->instructions[i].fp_kind = ci_classify_fp(op);
+        block->instructions[i].direct_kind = ci_classify_direct(op);
         block->instructions[i].ram_kind = ci_classify_ram(opcode);
         block->instructions[i].meta = (uint8_t)(
             (ci_classify_fast_op(opcode, op) << CI_META_FAST_SHIFT) |
@@ -989,14 +990,14 @@ static CI_COLD_NOINLINE int ci_verify_dirty_block(struct r4300_core* r, struct c
     uint32_t instruction_image[1024];
     if(source)source=ci_instruction_source(r,pc,physical_page,instruction_image);
     if (!source || memcmp(source, block->source_words, block->source_count * sizeof(uint32_t))) {
-#ifdef HAVE_ARI64
+#ifdef HAVE_PARALLAXJIT
         ++r->jit->jit_verifications[1];
 #endif
         return 0;
     }
     if (block->epoch != r->jit->epoch || block->page_generation != r->jit->page_generation[physical_page]) {
         ++r->jit->restored_blocks;
-#ifdef HAVE_ARI64
+#ifdef HAVE_PARALLAXJIT
         ++r->jit->jit_verifications[0];
 #endif
     }
@@ -1134,25 +1135,44 @@ static int ci_virtual_to_physical_page_noexcept(struct r4300_core* r4300, uint32
 static int fastmem_ram_page(struct r4300_fastmem* f, uint32_t physical, int write)
 {
     if ((uint64_t)physical + 4096 > f->ram_size) return 0;
-    const struct mem_handler* h = &f->owner->mem->handlers[physical >> 16];
-    return h->opaque == f->owner->rdram &&
-        (write ? h->write32 == write_rdram_dram : h->read32 == read_rdram_dram);
+    const struct memory* mem = f->owner->mem;
+    const struct mem_handler* h = &mem->handlers[physical >> 16];
+    if (h->opaque == f->owner->rdram &&
+        (write ? h->write32 == write_rdram_dram : h->read32 == read_rdram_dram)) return 1;
+    const struct mem_handler* notification = &mem->cpu_notification;
+    return mem->cpu_notification_query && h->opaque == notification->opaque &&
+        (write ? h->write32 == notification->write32 : h->read32 == notification->read32) &&
+        mem->cpu_notification_query(notification->opaque, physical,
+            write ? MEMORY_NOTIFICATION_FAST_WRITE_PAGE : MEMORY_NOTIFICATION_FAST_READ_PAGE);
 }
 static void fastmem_unprotect_page(struct r4300_fastmem* f, uint32_t page)
 {
     f->physical_write[page] = fastmem_ram_page(f, page << 12, 1) ? f->ram + (uintptr_t)page * 4096 : f->guard;
 }
+static void fastmem_refresh_physical_page(struct r4300_fastmem* f, unsigned page)
+{
+    uint32_t physical = page << 12;
+    f->physical_read[page] = fastmem_ram_page(f, physical, 0) ? f->ram + physical : f->guard;
+    f->physical_write[page] = fastmem_ram_page(f, physical, 1) &&
+        !(f->owner->cached_code_pages && ((f->owner->cached_code_pages[page >> 6] >> (page & 63)) & 1)) ?
+        f->ram + physical : f->guard;
+}
+void r4300_fastmem_notification_changed(struct memory* mem, uint32_t address, uint32_t bytes)
+{
+    if (!mem) return;
+    struct r4300_fastmem* f = mem->cpu_fastmem;
+    if (!f || !bytes || address >= f->ram_size) return;
+    uint64_t end = (uint64_t)address + bytes;
+    if (end > f->ram_size) end = f->ram_size;
+    for (unsigned page = address >> 12; page <= (unsigned)((end - 1) >> 12); ++page)
+        fastmem_refresh_physical_page(f, page);
+}
 void r4300_fastmem_region_changed(struct memory* mem, uint16_t region)
 {
     struct r4300_fastmem* f = mem->cpu_fastmem;
     if (!f || region >= 128) return;
-    for (unsigned page = (unsigned)region * 16; page < ((unsigned)region + 1) * 16; ++page) {
-        uint32_t physical = page << 12;
-        f->physical_read[page] = fastmem_ram_page(f, physical, 0) ? f->ram + physical : f->guard;
-        f->physical_write[page] = fastmem_ram_page(f, physical, 1) &&
-            !(f->owner->cached_code_pages && ((f->owner->cached_code_pages[page >> 6] >> (page & 63)) & 1)) ?
-            f->ram + physical : f->guard;
-    }
+    for (unsigned page = (unsigned)region * 16; page < ((unsigned)region + 1) * 16; ++page)
+        fastmem_refresh_physical_page(f, page);
 }
 
 void r4300_fastmem_tlb_page(struct tlb* tlb, uint32_t page)
@@ -1203,7 +1223,7 @@ int r4300_jit_init(struct r4300_core* r4300)
     if (r4300->jit == NULL)
         return 0;
     unsigned set_count = CI_SET_COUNT;
-#ifdef HAVE_ARI64
+#ifdef HAVE_PARALLAXJIT
 #ifndef CI_JIT_SET_COUNT
 #define CI_JIT_SET_COUNT CI_CACHED_SET_COUNT
 #endif
@@ -1218,14 +1238,14 @@ int r4300_jit_init(struct r4300_core* r4300)
     r4300->jit->epoch = 1;
     r4300->cached_code_pages = r4300->jit->page_cached;
     r4300->code_page_generation = r4300->jit->page_generation;
-#ifdef HAVE_ARI64
+#ifdef HAVE_PARALLAXJIT
     if (r4300->emumode == EMUMODE_DYNAREC) {
-        r4300->jit->jit = ari64_create();
+        r4300->jit->jit = parallaxjit_create();
         if (!r4300->jit->jit) {
             r4300_jit_destroy(r4300);
             return 0;
         }
-        r4300->jit->fastmem = r4300_fastmem_create(r4300, ari64_fault_guard(r4300->jit->jit));
+        r4300->jit->fastmem = r4300_fastmem_create(r4300, parallaxjit_fault_guard(r4300->jit->jit));
     }
 #endif
     return 1;
@@ -1234,8 +1254,8 @@ int r4300_jit_init(struct r4300_core* r4300)
 void r4300_jit_destroy(struct r4300_core* r4300)
 {
     if (r4300->jit) r4300_fastmem_destroy(r4300->jit->fastmem);
-#ifdef HAVE_ARI64
-    if (r4300->jit) ari64_destroy(r4300->jit->jit);
+#ifdef HAVE_PARALLAXJIT
+    if (r4300->jit) parallaxjit_destroy(r4300->jit->jit);
 #endif
     if (r4300->jit) free(r4300->jit->sets);
     if (r4300->jit) free(r4300->jit->recent_blocks);
@@ -1253,12 +1273,12 @@ void r4300_jit_cache_stats(struct r4300_core* r, uint64_t stats[2])
 void r4300_jit_host_fault_stats(struct r4300_core* r, uint64_t stats[2])
 {
     stats[0] = r->jit && r->jit->fastmem != NULL;
-    stats[1] = r->jit ? ari64_fault_count(r->jit->jit) : 0;
+    stats[1] = r->jit ? parallaxjit_fault_count(r->jit->jit) : 0;
 }
 
 void r4300_jit_tlb_changed(struct r4300_core* r4300)
 {
-#ifdef HAVE_ARI64
+#ifdef HAVE_PARALLAXJIT
     struct r4300_jit_state* state=r4300->jit;
     if(state && ++state->fetch_generation==0) {
         state->fetch_generation=1;
@@ -1412,7 +1432,7 @@ static CI_FORCE_INLINE void ci_execute_one(struct r4300_core* r4300)
 
 }
 
-#ifdef HAVE_ARI64
+#ifdef HAVE_PARALLAXJIT
 /* Precise stubs retain the shared instruction ordering and delay-slot rules.
  * Native guards/timing commit in machine code. A memory stub writes back its
  * prefix before calling here, and reloads its allocation before resuming. */
@@ -1421,11 +1441,11 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
     struct cached_block* block = opaque;
     struct r4300_jit_state* state = r->jit;
     uint32_t pc = block->virtual_pc + i * 4;
-    if (state->fastmem) ari64_fault_resolve(state->jit);
+    if (state->fastmem) parallaxjit_fault_resolve(state->jit, r, i < block->count ? block->instructions[i].op : 0);
 
     unsigned count = (phase >> 8) & 63;
     if ((phase & 255) == 5) {
-#ifdef ARI64_PROFILE
+#ifdef PARALLAXJIT_PROFILE
         ++state->profile_regions[count];
 #endif
         for (unsigned n = 0; n < count; ++n)
@@ -1436,7 +1456,7 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
     /* A precise branch may already have executed a sequential slot. */
     if (i >= block->count) { ci_execute_one(r); return 0; }
     uint32_t op = block->instructions[i].op;
-#ifdef ARI64_PROFILE
+#ifdef PARALLAXJIT_PROFILE
     if (phase == 2) {
         ++state->profile_slow[op >> 26];
         if (!(op >> 26)) ++state->profile_special[op & 63];
@@ -1463,9 +1483,14 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
             state->pending_delay_valid = 1;
         }
         ++r->retired_ops;
-        if (block->instructions[i].fp_kind == 1) r4300_ops_fpu_arithmetic(r, op);
-        else if (block->instructions[i].fp_kind == 2) r4300_ops_fpu_compare(r, op);
-        else if (block->instructions[i].fp_kind == 3) interp_fpu_move(r, op);
+        if (block->instructions[i].direct_kind == 1) r4300_ops_fpu_arithmetic(r, op);
+        else if (block->instructions[i].direct_kind == 2) r4300_ops_fpu_compare(r, op);
+        else if (block->instructions[i].direct_kind == 3) interp_fpu_move(r, op);
+        else if (block->instructions[i].direct_kind == 4) {
+            uint32_t value = r4300_read_count(r);
+            r->regs[(op >> 16) & 31] = (op & (1u << 21)) ? (int64_t)value : (int64_t)(int32_t)value;
+            r->instruction_pc.addr += 4;
+        }
         else if (!interp_word_memory(r, op) && !interp_equal_branch(r, op, block->idle_end, ci_execute_one))
             block->handlers[i](r, op);
         state->pending_delay_valid = 0;
@@ -1482,7 +1507,7 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
            ci_mapping_matches(r, block);
 }
 
-static ari64_entry ci_jit_link(struct r4300_core* r)
+static parallaxjit_entry ci_jit_link(struct r4300_core* r)
 {
     if (breakloop || r->prefetch_valid || r->irq_writeback_pending || r->delay_slot || r->stop || (r->instruction_pc.addr & 3)) return NULL;
     struct r4300_jit_state* state = r->jit;
@@ -1494,13 +1519,13 @@ static ari64_entry ci_jit_link(struct r4300_core* r)
         next->epoch != state->epoch ||
         next->page_generation != state->page_generation[next->physical_page] ||
         !ci_mapping_matches(r, next) ||
-        !ari64_entry_valid(state->jit, next->native_entry, next->native_generation)) return NULL;
+        !parallaxjit_entry_valid(state->jit, next->native_entry, next->native_generation)) return NULL;
     struct cached_block* previous = state->previous_block;
     /* Fixed KSEG edges need no mapping load. Mapped edges guard the live LUT
      * entry in assembly; cache attributes remain live in the target body. */
     if (previous) {
         unsigned slot = previous->native_links[0].pc == pc ? 0 : previous->native_links[1].pc == pc ? 1 : previous->native_link_replace++ & 1;
-        struct ari64_link_cache* cache = &previous->native_links[slot];
+        struct parallaxjit_link_cache* cache = &previous->native_links[slot];
         cache->pc = pc; cache->epoch = state->epoch;
         cache->page_generation = state->page_generation[next->physical_page];
         cache->expected_entry = next->native_entry; cache->body = next->native_chain_entry;
@@ -1508,23 +1533,23 @@ static ari64_entry ci_jit_link(struct r4300_core* r)
         cache->current_page_generation = &state->page_generation[next->physical_page];
         cache->current_mapping = (pc & UINT32_C(0xc0000000)) == UINT32_C(0x80000000) ? NULL : &r->cp0.tlb.LUT_r[pc >> CI_PAGE_SHIFT];
         cache->mapping = cache->current_mapping ? *cache->current_mapping : 0;
-        cache->current_segment_generation = ari64_entry_generation_ptr(state->jit,next->native_entry);
+        cache->current_segment_generation = parallaxjit_entry_generation_ptr(state->jit,next->native_entry);
         cache->segment_generation = next->native_generation;
         cache->target_block = next;
         cache->profile_entries = NULL;
-#ifdef ARI64_PROFILE
+#ifdef PARALLAXJIT_PROFILE
         cache->profile_entries = &next->profile_entries;
 #endif
     }
     state->previous_block = next;
     ++state->jit_indirect_links;
-#ifdef ARI64_PROFILE
+#ifdef PARALLAXJIT_PROFILE
     ++next->profile_entries;
 #endif
     return next->native_chain_entry;
 }
 
-#ifdef ARI64_PROFILE
+#ifdef PARALLAXJIT_PROFILE
 static int ci_jit_fpu_prepare(struct r4300_core* r, uint32_t op, uint64_t inputs[3], uint64_t* commits)
 {
     ++r->jit->profile_fpu[op & 63];
@@ -1567,14 +1592,14 @@ static void ci_execute_jit(struct r4300_core* r, int one)
         (block->ram_poll == 2 && interp_thread_poll_advance(r, pc)) ||
         (block->ram_poll == 3 && interp_simple_poll_advance(r,&block->simple_poll)))) return;
 #endif
-    ari64_entry* entry = one ? &block->native_one_entry : &block->native_entry;
+    parallaxjit_entry* entry = one ? &block->native_one_entry : &block->native_entry;
     uint64_t* generation = one ? &block->native_one_generation : &block->native_generation;
-    if (!ari64_entry_valid(state->jit, *entry, *generation)) {
+    if (!parallaxjit_entry_valid(state->jit, *entry, *generation)) {
         ++state->jit_compile_misses[*entry != NULL];
         uint32_t ops[CI_BLOCK_INSTRUCTIONS];
         unsigned count = one ? 1 : block->count;
         for (unsigned i = 0; i < count; ++i) ops[i] = block->instructions[i].op;
-        struct ari64_config config = {block->virtual_pc, block->physical_page, r->cache_timing, one ? NULL : ci_jit_link,
+        struct parallaxjit_config config = {block->virtual_pc, block->physical_page, r->cache_timing, one ? NULL : ci_jit_link,
             block->delay_op, !one && block->has_delay, block->idle_end, &r->retired_ops, &state->jit_fast_commits,
             ci_jit_fpu_prepare, ci_jit_fpu_finish, one ? NULL : &block->native_chain_entry};
         config.compat_issue_clock = r->compat_issue_clock;
@@ -1584,26 +1609,26 @@ static void ci_execute_jit(struct r4300_core* r, int one)
         config.fetch_generation=&state->fetch_generation;
         config.fetch_cache=&state->fetch_cache[(block->virtual_pc>>12)&31];
         config.entries = NULL; config.linked_entries = NULL; config.direct_links = &state->jit_direct_links;
-#ifdef ARI64_PROFILE
+#ifdef PARALLAXJIT_PROFILE
         config.profile = 1;
 #endif
-        *entry = ari64_compile_optimized(state->jit, block, ops, count, ci_jit_step, &config);
-        *generation = ari64_generation(state->jit);
+        *entry = parallaxjit_compile_optimized(state->jit, block, ops, count, ci_jit_step, &config);
+        *generation = parallaxjit_generation(state->jit);
         if (!*entry) {
-            core_log(CORE_LOG_ERROR, "Ari64 executable code allocation/protection failed; stopping CPU");
+            core_log(CORE_LOG_ERROR, "ParallaxJIT executable code allocation/protection failed; stopping CPU");
             r->stop = 1;
             breakloop = true;
             return;
         }
     }
     ++state->jit_dispatch_entries;
-#ifdef ARI64_PROFILE
+#ifdef PARALLAXJIT_PROFILE
     ++block->profile_entries;
 #endif
     if (state->fastmem) {
-        void* previous_faults = ari64_fault_enter(state->jit);
+        void* previous_faults = parallaxjit_fault_enter(state->jit);
         (*entry)(r);
-        ari64_fault_leave(previous_faults);
+        parallaxjit_fault_leave(previous_faults);
     } else (*entry)(r);
 }
 
@@ -1612,23 +1637,23 @@ void r4300_jit_run(struct r4300_core* r) { while (!breakloop) ci_execute_jit(r, 
 void r4300_jit_stats(struct r4300_core* r, uint64_t stats[4])
 {
     struct r4300_jit_state* s = r->jit;
-    ari64_stats(s ? s->jit : NULL, &stats[0], &stats[1]);
+    parallaxjit_stats(s ? s->jit : NULL, &stats[0], &stats[1]);
     stats[2] = s ? s->jit_dispatch_entries + s->jit_indirect_links + s->jit_direct_links : 0;
     stats[3] = s ? r->retired_ops : 0;
-    if (s) core_log(CORE_LOG_INFO, "Ari64 cache: new=%llu recycled=%llu verified=%llu changed=%llu replaced=%llu",
+    if (s) core_log(CORE_LOG_INFO, "ParallaxJIT cache: new=%llu recycled=%llu verified=%llu changed=%llu replaced=%llu",
         (unsigned long long)s->jit_compile_misses[0], (unsigned long long)s->jit_compile_misses[1],
         (unsigned long long)s->jit_verifications[0], (unsigned long long)s->jit_verifications[1], (unsigned long long)s->jit_replacements);
-    if (s) core_log(CORE_LOG_INFO,"Ari64 links: direct=%llu",(unsigned long long)s->jit_direct_links);
-    if (s && s->fastmem) core_log(CORE_LOG_INFO,"Ari64 host faults: %llu",(unsigned long long)ari64_fault_count(s->jit));
-#ifdef ARI64_PROFILE
+    if (s) core_log(CORE_LOG_INFO,"ParallaxJIT links: direct=%llu",(unsigned long long)s->jit_direct_links);
+    if (s && s->fastmem) core_log(CORE_LOG_INFO,"ParallaxJIT host faults: %llu",(unsigned long long)parallaxjit_fault_count(s->jit));
+#ifdef PARALLAXJIT_PROFILE
     if (s) {
         for (unsigned i = 0; i < 64; ++i)
             if (s->profile_slow[i] || s->profile_special[i] || s->profile_cop1[i] || s->profile_fpu[i])
-                core_log(CORE_LOG_INFO,"Ari64 profile opcode %u: slow=%llu special=%llu cop1rs=%llu fpu=%llu", i,
+                core_log(CORE_LOG_INFO,"ParallaxJIT profile opcode %u: slow=%llu special=%llu cop1rs=%llu fpu=%llu", i,
                     (unsigned long long)s->profile_slow[i], (unsigned long long)s->profile_special[i],
                     (unsigned long long)s->profile_cop1[i], (unsigned long long)s->profile_fpu[i]);
         for (unsigned i = 1; i <= 32; ++i)
-            if (s->profile_regions[i]) core_log(CORE_LOG_INFO,"Ari64 profile guard count %u: %llu",i,(unsigned long long)s->profile_regions[i]);
+            if (s->profile_regions[i]) core_log(CORE_LOG_INFO,"ParallaxJIT profile guard count %u: %llu",i,(unsigned long long)s->profile_regions[i]);
         for (unsigned rank = 0; rank < 24; ++rank) {
             struct cached_block* best = NULL;
             for (unsigned set = 0; set <= s->set_mask; ++set)
@@ -1637,9 +1662,9 @@ void r4300_jit_stats(struct r4300_core* r, uint64_t stats[4])
                     if (b->valid && b->profile_entries && (!best || b->profile_entries > best->profile_entries)) best = b;
                 }
             if (!best) break;
-            core_log(CORE_LOG_INFO,"Ari64 profile block %08x count=%u entries=%llu",best->virtual_pc,best->count,(unsigned long long)best->profile_entries);
+            core_log(CORE_LOG_INFO,"ParallaxJIT profile block %08x count=%u entries=%llu",best->virtual_pc,best->count,(unsigned long long)best->profile_entries);
             for (unsigned n = 0; n < best->count; ++n)
-                core_log(CORE_LOG_INFO,"Ari64 profile instruction %08x %08x",best->virtual_pc + 4*n,best->instructions[n].op);
+                core_log(CORE_LOG_INFO,"ParallaxJIT profile instruction %08x %08x",best->virtual_pc + 4*n,best->instructions[n].op);
             best->profile_entries = 0;
         }
     }
@@ -1647,7 +1672,7 @@ void r4300_jit_stats(struct r4300_core* r, uint64_t stats[4])
 }
 void r4300_jit_code_stats(struct r4300_core* r, uint64_t stats[3])
 {
-    ari64_code_stats(r->jit ? r->jit->jit : NULL, stats);
+    parallaxjit_code_stats(r->jit ? r->jit->jit : NULL, stats);
 }
 void r4300_jit_optimization_stats(struct r4300_core* r, uint64_t stats[2])
 {
@@ -1677,12 +1702,12 @@ void run_r4300(struct r4300_core* r4300)
         r4300->pc = &r4300->instruction_pc;
         r4300->instruction_pc.addr = r4300->cp0.last_addr = r4300->start_address;
         if (!r4300_jit_init(r4300)) {
-            core_log(CORE_LOG_ERROR,"Ari64 initialization failed; stopping CPU");
+            core_log(CORE_LOG_ERROR,"ParallaxJIT initialization failed; stopping CPU");
             r4300->stop=1;
             breakloop=true;
             goto cpu_run_done;
         }
-        core_log(CORE_LOG_INFO,"CPU dynarec: " ARI64_BACKEND_NAME);
+        core_log(CORE_LOG_INFO,"CPU dynarec: " PARALLAXJIT_BACKEND_NAME);
         r4300->startup = 0;
     }
 

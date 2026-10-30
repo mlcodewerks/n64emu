@@ -93,10 +93,10 @@ uint32_t virtual_to_physical_address(struct r4300_core* r4300, uint32_t address,
     const struct tlb* tlb = &r4300->cp0.tlb;
     unsigned int addr = address >> 12;
 
-#ifdef NEW_DYNAREC
+#ifdef JIT
     if (r4300->emumode == EMUMODE_DYNAREC)
     {
-        intptr_t map = r4300->new_dynarec_hot_state.memory_map[addr];
+        intptr_t map = r4300->jit_hot_state.memory_map[addr];
         if ((tlb->LUT_w[addr]) && (w == 1))
         {
             assert(map == (((uintptr_t)r4300->rdram->dram + (uintptr_t)((tlb->LUT_w[addr] & 0xFFFFF000) - 0x80000000) - (address & 0xFFFFF000)) >> 2));
@@ -127,7 +127,7 @@ uint32_t virtual_to_physical_address(struct r4300_core* r4300, uint32_t address,
     //printf("tlb exception !!! @ %x, %x, add:%x\n", address, w, r4300->pc->addr);
     //getchar();
 
-#ifdef NEW_DYNAREC
+#ifdef JIT
     if(IgnoreTLBExceptions == 0) {
         /* False, Default Behaviour */
         TLB_refill_exception(r4300, address, w);
@@ -155,7 +155,7 @@ uint32_t virtual_to_physical_address(struct r4300_core* r4300, uint32_t address,
     } else {
         TLB_refill_exception(r4300, address, w);
     }
-#endif // NEW_DYNAREC
+#endif // JIT
 
     //return 0x80000000;
     return 0x00000000;

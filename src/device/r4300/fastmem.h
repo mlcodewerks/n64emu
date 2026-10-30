@@ -21,4 +21,5 @@ void r4300_fastmem_destroy(struct r4300_fastmem*);
 void r4300_fastmem_refresh(struct r4300_fastmem*);
 void r4300_fastmem_tlb_page(struct tlb*, uint32_t page);
 void r4300_fastmem_region_changed(struct memory*, uint16_t region);
+void r4300_fastmem_notification_changed(struct memory*, uint32_t address, uint32_t bytes);
 #endif

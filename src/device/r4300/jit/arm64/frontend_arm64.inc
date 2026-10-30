@@ -1,10 +1,10 @@
 
-static void emit_step_call(void* block,unsigned index,unsigned phase,ari64_step step)
+static void emit_step_call(void* block,unsigned index,unsigned phase,parallaxjit_step step)
 {
     emit_mov64(STATE,ARG1_REG); emit_movimm64((intptr_t)block,ARG2_REG);
     emit_movimm(index,ARG3_REG); emit_movimm(phase,ARG4_REG); emit_helper_call((const void*)step);
 }
-int ari64_has_native(const uint32_t* ops, unsigned count, uint32_t delay_op, unsigned has_delay, unsigned idle)
+int parallaxjit_has_native(const uint32_t* ops, unsigned count, uint32_t delay_op, unsigned has_delay, unsigned idle)
 {
     for (unsigned i = 0; i < count; ++i) {
         enum r4300_opcode op = r4300_get_idec(ops[i])->opcode;
@@ -14,7 +14,7 @@ int ari64_has_native(const uint32_t* ops, unsigned count, uint32_t delay_op, uns
         native_branch_opcode(r4300_get_idec(ops[count - 1])->opcode) &&
         native_opcode(r4300_get_idec(delay_op)->opcode);
 }
-static unsigned char* emit_step(void* block, unsigned index, unsigned phase, ari64_step step)
+static unsigned char* emit_step(void* block, unsigned index, unsigned phase, parallaxjit_step step)
 {
     emit_step_call(block, index, phase, step);
     emit_reg_op(0x85,T0,T0,0);
@@ -26,7 +26,7 @@ static unsigned char* emit_step(void* block, unsigned index, unsigned phase, ari
  * Commit locally while no event is due; the original helper still handles
  * exact event boundaries and all preparation faults. */
 static void emit_transfer_commit(void* block, unsigned index,
-    const struct ari64_config* config, ari64_step step,
+    const struct parallaxjit_config* config, parallaxjit_step step,
     unsigned char** exits, unsigned* exit_count)
 {
     emit_mem_imm(0x83, 1, 7, STATE, -1, 0, offsetof(struct r4300_core, cp0.cycle_count),0);
@@ -47,10 +47,10 @@ static void emit_transfer_commit(void* block, unsigned index,
 }
 
 #include "../fpu_sequence.inc"
-static ari64_entry compile_block(struct ari64* s, void* block,
-    const uint32_t* ops, unsigned count, ari64_step step, int optimized, const struct ari64_config* config)
+static parallaxjit_entry compile_block(struct parallaxjit* s, void* block,
+    const uint32_t* ops, unsigned count, parallaxjit_step step, int optimized, const struct parallaxjit_config* config)
 {
-    ari64_link link = config ? config->link : NULL;
+    parallaxjit_link link = config ? config->link : NULL;
     if (!s || !ops || !step || !count || count > MAX_INSTRUCTIONS) return NULL;
     optimized = optimized && config;
     uint32_t extended_ops[MAX_INSTRUCTIONS];
@@ -67,11 +67,11 @@ static ari64_entry compile_block(struct ari64* s, void* block,
         reserve += optimized && native_ram_opcode(r4300_get_idec(ops[i])->opcode) ? 8192 :
                    optimized && native_fpu_instruction(ops[i]) ? 4096 : 1024;
     reserve = (reserve+15) & ~(size_t)15;
-    if (reserve > ARI64_ARM64_SEGMENT_BYTES) return NULL;
-    if ((s->used % ARI64_ARM64_SEGMENT_BYTES) + reserve > ARI64_ARM64_SEGMENT_BYTES) {
-        s->used = ((s->used / ARI64_ARM64_SEGMENT_BYTES + 1) * ARI64_ARM64_SEGMENT_BYTES) % ARENA_BYTES;
-        if (!code_protect(s->code + s->used, ARI64_ARM64_SEGMENT_BYTES, 0)) return NULL;
-        s->stamps[s->used / ARI64_ARM64_SEGMENT_BYTES] = ++s->generation;
+    if (reserve > PARALLAXJIT_ARM64_SEGMENT_BYTES) return NULL;
+    if ((s->used % PARALLAXJIT_ARM64_SEGMENT_BYTES) + reserve > PARALLAXJIT_ARM64_SEGMENT_BYTES) {
+        s->used = ((s->used / PARALLAXJIT_ARM64_SEGMENT_BYTES + 1) * PARALLAXJIT_ARM64_SEGMENT_BYTES) % ARENA_BYTES;
+        if (!code_protect(s->code + s->used, PARALLAXJIT_ARM64_SEGMENT_BYTES, 0)) return NULL;
+        s->stamps[s->used / PARALLAXJIT_ARM64_SEGMENT_BYTES] = ++s->generation;
     }
     unsigned char* start = s->code + s->used;
     size_t page_start = s->used & ~(s->page - 1);
@@ -252,18 +252,18 @@ static ari64_entry compile_block(struct ari64* s, void* block,
     ++s->blocks;
     s->bytes += out - start;
     s->calls += compile_absolute_calls;
-    if (config && config->chain_entry) *config->chain_entry = (ari64_entry)(void*)chain_entry;
-    return (ari64_entry)(void*)start;
+    if (config && config->chain_entry) *config->chain_entry = (parallaxjit_entry)(void*)chain_entry;
+    return (parallaxjit_entry)(void*)start;
 }
 
-ari64_entry ari64_compile(struct ari64* s, void* block,
-    const uint32_t* ops, unsigned count, ari64_step step)
+parallaxjit_entry parallaxjit_compile(struct parallaxjit* s, void* block,
+    const uint32_t* ops, unsigned count, parallaxjit_step step)
 {
     try { return compile_block(s, block, ops, count, step, 0, NULL); }
     catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak_aarch64 emission failed: %s",error.what()); return NULL; }
 }
-ari64_entry ari64_compile_optimized(struct ari64* s, void* block,
-    const uint32_t* ops, unsigned count, ari64_step step, const struct ari64_config* config)
+parallaxjit_entry parallaxjit_compile_optimized(struct parallaxjit* s, void* block,
+    const uint32_t* ops, unsigned count, parallaxjit_step step, const struct parallaxjit_config* config)
 {
     try { return compile_block(s, block, ops, count, step, 1, config); }
     catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak_aarch64 emission failed: %s",error.what()); return NULL; }

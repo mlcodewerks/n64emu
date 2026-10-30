@@ -58,6 +58,16 @@ static osal_force_inline void cp0_step_cycles(struct cp0* cp0, unsigned int cycl
 #include "cache_timing.h"
 #include "pipeline.h"
 
+/* The Count transfer samples after issue and preserves MTC0's forwarding
+ * window. Shared by the interpreter and the direct JIT-side Count transfer. */
+static osal_force_inline uint32_t r4300_read_count(const struct r4300_core* r)
+{
+    if (!r->compat_issue_clock && r->count_write_valid &&
+        r4300_cpu_clock(r) - r->count_write_clock <= 2)
+        return r->count_write_value;
+    return r->cp0.regs[CP0_COUNT_REG];
+}
+
 static osal_force_inline unsigned int r4300_issue_reservation(unsigned int compatibility)
 {
     /* The native per-cycle model already includes issue in its base cost.
@@ -79,7 +89,7 @@ static osal_force_inline int r4300_begin_prefetched_instruction_cycles(struct r4
 {
     /* Compatibility timing absorbs interlocks in its reserved clock. Native
      * timing charges the actual interlock, with no unconditional second issue.
-     * Fast retains its compatibility issue envelope. */
+     * Both timed cache implementations use the native policy. */
     unsigned int issue = r4300_issue_reservation(r4300->compat_issue_clock);
     /* IF is two instructions ahead of the committing store. Capture the next
      * line now, but let older instructions retire while its fill is pending.

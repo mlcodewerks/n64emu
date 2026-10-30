@@ -45,11 +45,17 @@ benchmarks/rsp-optimizer/*
 benchmarks/cpu-optimizer/*
 !benchmarks/cpu-optimizer/*.py
 !benchmarks/cpu-optimizer/*.c
+!benchmarks/cpu-optimizer/*.cpp
 !benchmarks/cpu-optimizer/*.inc
 !benchmarks/cpu-optimizer/*.mk
 !benchmarks/cpu-optimizer/*.md
 !benchmarks/cpu-optimizer/n64-input.csv
 !benchmarks/cpu-optimizer/validation.json
+!benchmarks/cpu-optimizer/host-fault-validation.json
+!benchmarks/cpu-optimizer/accurate-fb-validation.json
+!benchmarks/cpu-optimizer/cache-final-validation.json
+!benchmarks/cpu-optimizer/jit-rename-validation.json
+!benchmarks/cpu-optimizer/md5-module-validation.json
 
 # Conker workload profiling, optimization checks, and compact results.
 !benchmarks/conker-optimizer/
@@ -76,10 +82,14 @@ benchmarks/conker-optimizer/*
 !benchmarks/timing-reference/
 benchmarks/timing-reference/*
 !benchmarks/timing-reference/*.c
+!benchmarks/timing-reference/*.h
+!benchmarks/timing-reference/*.mk
 !benchmarks/timing-reference/*.py
 !benchmarks/timing-reference/*.md
 !benchmarks/timing-reference/*.csv
 !benchmarks/timing-reference/timing-results.json
+!benchmarks/timing-reference/video-rdp-validation.json
+!benchmarks/timing-reference/rdp-games-validation.json
 
 # Authored SoftRDP profiling and exactness checks; generated data stays local.
 !benchmarks/softrdp/
@@ -140,16 +150,23 @@ benchmarks/conformance/*
 !benchmarks/conformance/validation.json
 !benchmarks/conformance/rdp-validation.json
 !benchmarks/conformance/rdp-vi-validation.json
+!benchmarks/conformance/rdp-disabled-vi-validation.json
 !benchmarks/conformance/shims/
 !benchmarks/conformance/shims/*.h
 
 !benchmarks/dk64-timing/
 benchmarks/dk64-timing/*
 !benchmarks/dk64-timing/*.c
+!benchmarks/dk64-timing/vine_trace.h
+!benchmarks/dk64-timing/interlock_control.h
 !benchmarks/dk64-timing/*.py
 !benchmarks/dk64-timing/*.mk
 !benchmarks/dk64-timing/*.md
 !benchmarks/dk64-timing/validation.json
+!benchmarks/dk64-timing/vine-disassembly-validation.json
+!benchmarks/dk64-timing/interlock-validation.json
+!benchmarks/dk64-timing/ifill-80-validation.json
+!benchmarks/dk64-timing/promoted-fill-validation.json
 !benchmarks/dk64-timing/refined-validation.json
 !benchmarks/dk64-timing/vine-bootstrap.csv
 !benchmarks/dk64-timing/vine-neutral.csv

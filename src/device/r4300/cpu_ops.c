@@ -2,8 +2,8 @@
 
 #include "cpu_ops.h"
 #include "jit_runtime.h"
-#ifdef HAVE_ARI64
-#include "new_dynarec/ari64.h"
+#ifdef HAVE_PARALLAXJIT
+#include "jit/parallaxjit.h"
 #endif
 #include "idec.h"
 #include "timing.h"
@@ -229,7 +229,7 @@ static PARALLAX_FORCE_INLINE uint32_t* interp_fast_mem_access(struct r4300_core*
         return (uint32_t*)((uint8_t*)r4300->mem->base + address);
     }
 
-#if defined(NEW_DYNAREC)
+#if defined(JIT)
     if (PARALLAX_UNLIKELY(r4300->emumode == EMUMODE_DYNAREC))
         return fast_mem_access(r4300, address);
 #endif
@@ -1473,13 +1473,8 @@ DECLARE_INSTRUCTION(TLBWI)
 
 DECLARE_INSTRUCTION(MFC0)
 {
-    uint64_t value = rfs==CP0_RANDOM_REG&&!r4300->compat_issue_clock?r4300_random(r4300):cp0_get_control(&r4300->cp0, rfs);
-    if(rfs==CP0_COUNT_REG&&!r4300->compat_issue_clock) {
-        /* MFC0 samples COUNT before this instruction's retirement boundary.
-         * The last MTC0 value forwards across its write-back window. */
-        if(r4300->count_write_valid&&r4300_cpu_clock(r4300)-r4300->count_write_clock<=2)
-            value=r4300->count_write_value;
-    }
+    uint64_t value = rfs==CP0_COUNT_REG?r4300_read_count(r4300):
+        rfs==CP0_RANDOM_REG&&!r4300->compat_issue_clock?r4300_random(r4300):cp0_get_control(&r4300->cp0, rfs);
     rrt = RS_OF(op) == 1 ? (int64_t)value : SE32(value);
     ADD_TO_PC(1);
 }
