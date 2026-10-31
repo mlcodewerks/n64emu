@@ -2,6 +2,7 @@
 #include "gl_loader.hpp"
 #include "n64_memory.hpp"
 #include "rdp_types.hpp"
+#include "framebuffer_storage.hpp"
 #include <algorithm>
 #include <array>
 #include <memory>
@@ -11,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 struct GLFramebuffer {
+    FramebufferStorage *storage = nullptr;
     GLuint fbo = 0, color = 0;
     GLuint alias_base_color = 0, alias_hidden = 0;
     std::uint64_t alias_serial = 0;
@@ -81,10 +83,13 @@ class GPUDepthBuffer {
         int width = 0;
         int height = 0;
         GLuint fbo[2]{};
+        // Z:0..17, DZ:18..21, coverage:22..24. GL4 additionally carries the
+        // pre-update DZ in bits 25..28 for a separate scaled color pass.
         GLuint state_texture[2]{};
         GLuint acceptance_texture[2]{};
         GLuint linear_depth_texture[2]{};
         int active = 0;
+        int buffer_count = 2;
         int changed_x = 0, changed_y = 0, changed_w = 0, changed_h = 0;
         bool initialized = false;
         bool gpu_dirty = false;
@@ -176,6 +181,7 @@ class GPUTMEM {
 
 class FramebufferManager {
   public:
+    void set_storage(FramebufferStorage *storage) { storage_ = storage; }
     static constexpr unsigned cpu_color_slots = 5;
     ~FramebufferManager();
     GLFramebuffer &bind_color_image(const RDPImage &, int, std::uint32_t z_address,
@@ -214,6 +220,7 @@ class FramebufferManager {
     }
 
   private:
+    FramebufferStorage *storage_ = nullptr;
     std::unordered_map<std::uint64_t, GLFramebuffer> buffers_;
     std::uint64_t serial_counter_ = 0;
     int max_texture_size_ = 0;

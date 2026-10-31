@@ -30,6 +30,8 @@ class RDPCommandParser {
     void feed(std::span<const std::uint8_t>);
     void execute(std::span<const std::uint8_t>);
     void discard_pending();
+    std::span<const std::uint8_t> pending_bytes() const { return pending_; }
+    void restore_pending(std::span<const std::uint8_t> bytes) { pending_.assign(bytes.begin(),bytes.end()); }
     RDPState &state() {
         return state_;
     }

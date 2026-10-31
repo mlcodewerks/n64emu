@@ -1,5 +1,6 @@
 #include "rdp_profile.hpp"
 #include "framebuffer_manager.hpp"
+#include "depth_codec.hpp"
 #include "rdp_tmem.hpp"
 #include "core/framebuffer_notifications.h"
 #include <stdexcept>
@@ -33,6 +34,12 @@ std::uint64_t framebuffer_byte_count(int width, int height, RDPImageSize size) {
 }
 
 void destroy_color_target(GLFramebuffer &framebuffer) {
+    if (framebuffer.storage) {
+        framebuffer.storage->release(framebuffer.color, framebuffer.fbo);
+        framebuffer.fbo = framebuffer.color = 0;
+        framebuffer.width = framebuffer.height = 0;
+        return;
+    }
     if (framebuffer.alias_base_color) glDeleteTextures(1, &framebuffer.alias_base_color);
     if (framebuffer.alias_hidden) glDeleteTextures(1, &framebuffer.alias_hidden);
     framebuffer.alias_base_color = framebuffer.alias_hidden = 0;
@@ -139,7 +146,7 @@ void FramebufferManager::synchronize_cpu_tracking(GLFramebuffer &active) {
         if (!f.gpu_dirty || f.raw_z)
             continue;
         GLRDP_PROFILE_SCOPE(color_retire);
-        if (!saved) {
+        if (!saved && !storage_) {
             glGetIntegerv(GL_FRAMEBUFFER_BINDING, &binding);
             glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
             glPixelStorei(GL_PACK_ALIGNMENT, 1);
@@ -161,6 +168,14 @@ void FramebufferManager::allocate_color(GLFramebuffer &framebuffer, int width, i
 
     framebuffer.width = width;
     framebuffer.height = height;
+
+    if (storage_) {
+        framebuffer.storage = storage_;
+        storage_->allocate(framebuffer.color, framebuffer.fbo, width, height);
+        framebuffer.cpu_dirty = true;
+        framebuffer.clear_gpu_written();
+        return;
+    }
 
     glGenTextures(1, &framebuffer.color);
     glBindTexture(GL_TEXTURE_2D, framebuffer.color);
@@ -214,7 +229,8 @@ GLFramebuffer &FramebufferManager::bind_color_image(const RDPImage &image, int r
     requested_scale = std::clamp(requested_scale, 1, 8);
 
     if (!max_texture_size_) {
-        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size_);
+        if (storage_) max_texture_size_ = storage_->maximum_texture_size();
+        else glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size_);
         max_texture_size_ = std::max(max_texture_size_, 1);
     }
     const int max_texture_size = max_texture_size_;
@@ -298,7 +314,7 @@ GLFramebuffer &FramebufferManager::bind_color_image(const RDPImage &image, int r
     // N64 Z/DZ state is maintained by GPUDepthBuffer in native-resolution
     // integer ping-pong textures. The color framebuffer deliberately has no
     // unrelated fixed-function depth attachment.
-    if (bind_gl) glBindFramebuffer(GL_FRAMEBUFFER, framebuffer.fbo);
+    if (bind_gl && !storage_) glBindFramebuffer(GL_FRAMEBUFFER, framebuffer.fbo);
 
     synchronize_cpu_tracking(framebuffer);
     return framebuffer;
@@ -451,10 +467,13 @@ void FramebufferManager::upload_from_rdram(GLFramebuffer &framebuffer, const N64
     framebuffer.rdram_snapshot.resize(std::size_t(bytes));
     memory.copy_be(framebuffer.address, framebuffer.rdram_snapshot.data(),
                    framebuffer.rdram_snapshot.size());
-    glBindTexture(GL_TEXTURE_2D, framebuffer.color);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, framebuffer.width, framebuffer.height, GL_RGBA,
-                    GL_UNSIGNED_BYTE, rgba.data());
+    if (storage_) storage_->upload(framebuffer.color, framebuffer.width, framebuffer.height, rgba.data());
+    else {
+        glBindTexture(GL_TEXTURE_2D, framebuffer.color);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, framebuffer.width, framebuffer.height, GL_RGBA,
+                       GL_UNSIGNED_BYTE, rgba.data());
+    }
     if (native_notifications_ && aliases_.ready() && framebuffer.size != RDPImageSize::Bits4 &&
         native_width <= max_texture_size_ && native_height <= max_texture_size_)
         aliases_.upload_base(framebuffer, memory, rgba.data());
@@ -515,9 +534,12 @@ void FramebufferManager::download_to_rdram(GLFramebuffer &framebuffer, N64Memory
     // Retain capacity across the many small framebuffer copies in Tennis/Golf.
     readback_pixels_.resize(std::size_t(read_width) * read_height * 4);
     auto &rgba = readback_pixels_;
-    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer.fbo);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(read_x, read_y, read_width, read_height, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    if (storage_) storage_->read(framebuffer.fbo, read_x, read_y, read_width, read_height, rgba.data());
+    else {
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer.fbo);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(read_x, read_y, read_width, read_height, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    }
 
     const bool unchanged =
         std::none_of(framebuffer.cpu_written.begin(), framebuffer.cpu_written.end(),
@@ -1179,40 +1201,8 @@ GPUDepthBuffer::~GPUDepthBuffer() {
     clear();
 }
 
-std::uint32_t GPUDepthBuffer::z_decompress_visible(std::uint16_t value) {
-    const std::uint32_t packed = (value >> 2) & 0x3fffu;
-    const unsigned exponent = (packed >> 11) & 7u;
-    const std::uint32_t mantissa = packed & 0x7ffu;
-    static constexpr std::uint8_t shifts[8] = {6, 5, 4, 3, 2, 1, 0, 0};
-    static constexpr std::uint32_t adds[8] = {
-        0x00000u, 0x20000u, 0x30000u, 0x38000u, 0x3c000u, 0x3e000u, 0x3f000u, 0x3f800u,
-    };
-    return ((mantissa << shifts[exponent]) + adds[exponent]) & kZMask;
-}
-
-std::uint16_t GPUDepthBuffer::z_compress_visible(std::uint32_t z, std::uint8_t dz_exponent) {
-    z &= kZMask;
-    const unsigned top = (z >> 11) & 0x7fu;
-    std::uint16_t compressed = 0;
-    if (top <= 0x3f)
-        compressed = std::uint16_t((z >> 4) & 0x1ffcu);
-    else if (top <= 0x5f)
-        compressed = std::uint16_t(((z >> 3) & 0x1ffcu) | 0x2000u);
-    else if (top <= 0x6f)
-        compressed = std::uint16_t(((z >> 2) & 0x1ffcu) | 0x4000u);
-    else if (top <= 0x77)
-        compressed = std::uint16_t(((z >> 1) & 0x1ffcu) | 0x6000u);
-    else if (top <= 0x7b)
-        compressed = std::uint16_t((z & 0x1ffcu) | 0x8000u);
-    else if (top <= 0x7d)
-        compressed = std::uint16_t(((z << 1) & 0x1ffcu) | 0xa000u);
-    else if (top == 0x7e)
-        compressed = std::uint16_t(((z << 2) & 0x1ffcu) | 0xc000u);
-    else
-        compressed = std::uint16_t(((z << 2) & 0x1ffcu) | 0xe000u);
-
-    return std::uint16_t(compressed | ((dz_exponent >> 2) & 3u));
-}
+std::uint32_t GPUDepthBuffer::z_decompress_visible(std::uint16_t value) { return glrdp_z_decompress(value); }
+std::uint16_t GPUDepthBuffer::z_compress_visible(std::uint32_t z,std::uint8_t dz) { return glrdp_z_compress(z,dz); }
 
 std::uint32_t GPUDepthBuffer::pack_state(std::uint32_t z, std::uint8_t dz_exponent,
                                          std::uint8_t coverage) {
@@ -1295,10 +1285,12 @@ bool GPUDepthBuffer::allocate_surface(Surface &surface, std::uint32_t address, i
     surface.width = width;
     surface.height = height;
     surface.active = 0;
+    surface.buffer_count = glrdp_image_load_store ? 1 : 2;
     if (surface.fbo[0]) {
         surface.changed_x = surface.changed_y = surface.changed_w = surface.changed_h = 0;
         surface.initialized = surface.gpu_dirty = surface.in_place = false;
-        for (auto fbo : surface.fbo) {
+        for (int i = 0; i < surface.buffer_count; ++i) {
+            const auto fbo = surface.fbo[i];
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             glFramebufferTexture2D(GL_FRAMEBUFFER, glrdp_combined_attachment(), GL_TEXTURE_2D, 0, 0);
             const GLenum buffers[4] = {GL_NONE, GL_NONE, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
@@ -1308,12 +1300,12 @@ bool GPUDepthBuffer::allocate_surface(Surface &surface, std::uint32_t address, i
         return true;
     }
 
-    glGenFramebuffers(2, surface.fbo);
-    glGenTextures(2, surface.state_texture);
-    glGenTextures(2, surface.acceptance_texture);
-    glGenTextures(2, surface.linear_depth_texture);
+    glGenFramebuffers(surface.buffer_count, surface.fbo);
+    glGenTextures(surface.buffer_count, surface.state_texture);
+    glGenTextures(surface.buffer_count, surface.acceptance_texture);
+    if (!glrdp_image_load_store) glGenTextures(surface.buffer_count, surface.linear_depth_texture);
 
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < surface.buffer_count; ++i) {
         glBindTexture(GL_TEXTURE_2D, surface.state_texture[i]);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, width, height, 0, GL_RED_INTEGER, GL_UNSIGNED_INT,
                      nullptr);
@@ -1330,14 +1322,15 @@ bool GPUDepthBuffer::allocate_surface(Surface &surface, std::uint32_t address, i
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-        glBindTexture(GL_TEXTURE_2D, surface.linear_depth_texture[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, (glrdp_gles3 ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24), width, height, 0, GL_DEPTH_COMPONENT,
-                     GL_FLOAT, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
+        if (surface.linear_depth_texture[i]) {
+            glBindTexture(GL_TEXTURE_2D, surface.linear_depth_texture[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, (glrdp_gles3 ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24), width, height, 0, GL_DEPTH_COMPONENT,
+                         GL_FLOAT, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
         glBindFramebuffer(GL_FRAMEBUFFER, surface.fbo[i]);
         glFramebufferTexture2D(GL_FRAMEBUFFER, glrdp_depth_attachment(), GL_TEXTURE_2D,
                                surface.state_texture[i], 0);
@@ -1361,17 +1354,19 @@ void GPUDepthBuffer::initialize_default(Surface &surface) {
     std::vector<std::uint32_t> states(pixels, kDefaultState);
     surface.visible_words.assign(pixels, 0);
     std::vector<std::uint8_t> accept(pixels, 0);
-    std::vector<float> linear(pixels, 1.0f);
-    for (int i = 0; i < 2; ++i) {
+    std::vector<float> linear(surface.linear_depth_texture[0] ? pixels : 0, 1.0f);
+    for (int i = 0; i < surface.buffer_count; ++i) {
         glBindTexture(GL_TEXTURE_2D, surface.state_texture[i]);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, surface.width, surface.height, GL_RED_INTEGER,
                         GL_UNSIGNED_INT, states.data());
         glBindTexture(GL_TEXTURE_2D, surface.acceptance_texture[i]);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, surface.width, surface.height, GL_RED_INTEGER,
                         GL_UNSIGNED_BYTE, accept.data());
-        glBindTexture(GL_TEXTURE_2D, surface.linear_depth_texture[i]);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, surface.width, surface.height, GL_DEPTH_COMPONENT,
-                        GL_FLOAT, linear.data());
+        if (surface.linear_depth_texture[i]) {
+            glBindTexture(GL_TEXTURE_2D, surface.linear_depth_texture[i]);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, surface.width, surface.height, GL_DEPTH_COMPONENT,
+                            GL_FLOAT, linear.data());
+        }
     }
     surface.visible_state = states;
     surface.gpu_dirty = false;
@@ -1384,7 +1379,8 @@ void GPUDepthBuffer::import_from_rdram(Surface &surface, const N64Memory &memory
     const std::size_t pixels = std::size_t(surface.width) * std::size_t(surface.height);
     std::vector<std::uint32_t> states(pixels, kDefaultState);
     surface.visible_words.resize(pixels);
-    std::vector<float> linear(upload ? pixels : 0, 1.0f);
+    const bool upload_linear = upload && surface.linear_depth_texture[0];
+    std::vector<float> linear(upload_linear ? pixels : 0, 1.0f);
 
     for (int y = 0; y < surface.height; ++y) {
         const int gl_y = surface.height - 1 - y;
@@ -1399,21 +1395,23 @@ void GPUDepthBuffer::import_from_rdram(Surface &surface, const N64Memory &memory
                 std::uint8_t(((packed & 3u) << 2) |
                              memory.read_hidden16(surface.address + std::uint32_t(n64_pixel * 2u)));
             states[gl_pixel] = pack_state(z, dz_exponent, 0);
-            if (upload) linear[gl_pixel] = float(z) / float(kMaxZ);
+            if (upload_linear) linear[gl_pixel] = float(z) / float(kMaxZ);
         }
     }
 
     std::vector<std::uint8_t> accept(upload ? pixels : 0, 0);
-    for (int i = 0; upload && i < 2; ++i) {
+    for (int i = 0; upload && i < surface.buffer_count; ++i) {
         glBindTexture(GL_TEXTURE_2D, surface.state_texture[i]);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, surface.width, surface.height, GL_RED_INTEGER,
                         GL_UNSIGNED_INT, states.data());
         glBindTexture(GL_TEXTURE_2D, surface.acceptance_texture[i]);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, surface.width, surface.height, GL_RED_INTEGER,
                         GL_UNSIGNED_BYTE, accept.data());
-        glBindTexture(GL_TEXTURE_2D, surface.linear_depth_texture[i]);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, surface.width, surface.height, GL_DEPTH_COMPONENT,
-                        GL_FLOAT, linear.data());
+        if (surface.linear_depth_texture[i]) {
+            glBindTexture(GL_TEXTURE_2D, surface.linear_depth_texture[i]);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, surface.width, surface.height, GL_DEPTH_COMPONENT,
+                            GL_FLOAT, linear.data());
+        }
     }
     surface.visible_state = std::move(states);
     // A full raw clear immediately replaces every texel, including acceptance
@@ -1476,10 +1474,22 @@ void GPUDepthBuffer::framebuffer_pages(std::uint8_t *pages, unsigned count) cons
 
 bool GPUDepthBuffer::begin_pass(Surface &surface, int x, int y, int width, int height,
                                 bool in_place, bool combined_color) {
-    if (!surface.initialized || !surface.fbo[0] || !surface.fbo[1])
+    if (!surface.initialized || !surface.fbo[0] || (surface.buffer_count == 2 && !surface.fbo[1]))
         return false;
     const int src = surface.active;
-    surface.in_place = in_place && glrdp_texture_barrier;
+    surface.in_place = glrdp_image_load_store || (in_place && glrdp_texture_barrier);
+    if (glrdp_image_load_store) {
+        if (!combined_color) {
+            // Rejected pixels must not retain a previous primitive's acceptance.
+            glBindFramebuffer(GL_FRAMEBUFFER, surface.fbo[src]);
+            const GLenum buffers[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+            glDrawBuffers(2, buffers);
+            glEnable(GL_SCISSOR_TEST); glScissor(x, y, width, height);
+            const GLuint zero[4] = {};
+            glClearBufferuiv(GL_COLOR, 1, zero);
+        }
+        return true;
+    }
     if (surface.in_place) {
         glrdp_texture_barrier();
         glBindFramebuffer(GL_FRAMEBUFFER, surface.fbo[src]);

@@ -2,6 +2,11 @@
 #include <cstdio>
 #include <cstring>
 bool glrdp_gles3 = false;
+bool glrdp_image_load_store = false;
+bool glrdp_fragment_interlock = false;
+decltype(glad_glBindImageTexture) glad_glBindImageTexture = nullptr;
+decltype(glad_glMemoryBarrier) glad_glMemoryBarrier = nullptr;
+decltype(glad_glFramebufferParameteri) glad_glFramebufferParameteri = nullptr;
 decltype(glad_glClearDepthf) glad_glClearDepthf = nullptr;
 GLRDPPrecisionQuery glrdp_precision_query = nullptr;
 GLRDPTextureBarrier glrdp_texture_barrier = nullptr;
@@ -102,6 +107,11 @@ decltype(glad_glViewport) glad_glViewport = nullptr;
     if (!glad_##name)                                                                              \
     return false
 bool load_gl33(retro_hw_get_proc_address_t resolver, bool gles3) {
+    glrdp_image_load_store = false;
+    glrdp_fragment_interlock = false;
+    glad_glBindImageTexture = nullptr;
+    glad_glMemoryBarrier = nullptr;
+    glad_glFramebufferParameteri = nullptr;
     if (!resolver)
         return false;
     LOAD(glGetString);
@@ -184,14 +194,14 @@ bool load_gl33(retro_hw_get_proc_address_t resolver, bool gles3) {
         glGetIntegerv(GL_NUM_EXTENSIONS, &count);
         for (GLint i = 0; get_string && i < count; ++i) {
             const auto *extension = reinterpret_cast<const char *>(get_string(GL_EXTENSIONS, i));
+            if (!std::strcmp(extension, "GL_ARB_fragment_shader_interlock"))
+                glrdp_fragment_interlock = true;
             const char *procedure =
                 !std::strcmp(extension, "GL_ARB_texture_barrier")  ? "glTextureBarrier"
                 : !std::strcmp(extension, "GL_NV_texture_barrier") ? "glTextureBarrierNV"
                                                                    : nullptr;
-            if (procedure) {
+            if (procedure && !glrdp_texture_barrier) {
                 glrdp_texture_barrier = reinterpret_cast<GLRDPTextureBarrier>(resolver(procedure));
-                if (glrdp_texture_barrier)
-                    break;
             }
         }
     }
@@ -226,6 +236,18 @@ bool load_gl33(retro_hw_get_proc_address_t resolver, bool gles3) {
         LOAD(glUniform1ui);
         LOAD(glUniform4i);
     }
+    if (!gles3 && (major > 4 || (major == 4 && minor >= 3))) {
+        glad_glBindImageTexture = reinterpret_cast<decltype(glad_glBindImageTexture)>(resolver("glBindImageTexture"));
+        glad_glMemoryBarrier = reinterpret_cast<decltype(glad_glMemoryBarrier)>(resolver("glMemoryBarrier"));
+        glad_glFramebufferParameteri = reinterpret_cast<decltype(glad_glFramebufferParameteri)>(resolver("glFramebufferParameteri"));
+        if (glad_glBindImageTexture && glad_glMemoryBarrier && glad_glFramebufferParameteri) {
+            GLint units = 0, fragment_units = 0;
+            glGetIntegerv(GL_MAX_IMAGE_UNITS, &units);
+            glGetIntegerv(GL_MAX_FRAGMENT_IMAGE_UNIFORMS, &fragment_units);
+            glrdp_image_load_store = units >= 3 && fragment_units >= 3;
+        }
+    }
+    glrdp_fragment_interlock &= glrdp_image_load_store;
     return true;
 }
 #undef LOAD

@@ -8,6 +8,10 @@
 #include "simd.h"
 #include "dps_model.h"
 #include "adapter_options.h"
+#ifdef HAVE_LEGACY_GPU
+#include "../../../../renderer_options.h"
+#include "../legacygpu/libretro_legacy.h"
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -127,6 +131,9 @@ void n64video_load_noise(const void *data)
     if (context && sr_load_state(context,data,sr_state_snapshot_size()) != SR_OK)
         msg_warning("SoftRDP: incompatible renderer state");
     sr_field_output_reset(&fields);
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer))legacygpu_reset();
+#endif
 }
 uint8_t *n64video_hidden_store(size_t *size) { if (size) *size = sizeof(hidden); return hidden; }
 uint32_t n64video_flush_count(void) { return context ? sr_get_debug_stats(context).submitted_batches : 0; }

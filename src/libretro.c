@@ -30,6 +30,9 @@
 
 #include "core/frontend.h"
 #include "device/rcp/rdp/softrdp/softrdp_video.h"
+#ifdef HAVE_LEGACY_GPU
+#include "device/rcp/rdp/legacygpu/libretro_legacy.h"
+#endif
 #include "renderer_options.h"
 #ifdef HAVE_GLRDP
 #include "device/rcp/rdp/glrdp/libretro_glrdp.h"
@@ -429,6 +432,9 @@ static bool request_vulkan_context(void)
 static struct retro_hw_render_callback gl_hw;
 static void gl_context_reset(void)
 {
+#ifdef HAVE_D3D11
+    if (renderer_settings.renderer == RENDERER_DX11) { glrdp_dx11_context_reset(environ_cb); return; }
+#endif
     glrdp_context_reset(&gl_hw);
 }
 static void gl_context_destroy(void) { glrdp_context_destroy(); }
@@ -439,6 +445,15 @@ static bool request_gl_context(void)
     gl_hw.context_destroy = gl_context_destroy;
     gl_hw.bottom_left_origin = true;
     gl_hw.cache_context = false;
+#ifdef HAVE_D3D11
+    if (renderer_settings.renderer == RENDERER_DX11) {
+        gl_hw.context_type = RETRO_HW_CONTEXT_DIRECT3D;
+        gl_hw.version_major = 11;
+        gl_hw.bottom_left_origin = false;
+        glrdp_dx11_negotiate(environ_cb);
+        return environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER, &gl_hw);
+    }
+#endif
     return glrdp_request_context(environ_cb, &gl_hw);
 }
 #endif
@@ -527,10 +542,16 @@ bool retro_load_game(const struct retro_game_info *game)
     renderer_read_options(environ_cb);
     if (log_cb)
         log_cb(RETRO_LOG_INFO, "Renderer: %s, upscale %ux, performance cores %s.\n",
-                renderer_settings.renderer == RENDERER_SOFTRDP ? "SoftRDP" : renderer_settings.renderer == RENDERER_GLRDP ? "GLRDP" : "paraLLEl-RDP",
+                renderer_settings.renderer == RENDERER_SOFTRDP ? "SoftRDP" : renderer_settings.renderer == RENDERER_GL2 ? "GL2 GPU" : renderer_settings.renderer == RENDERER_D3D9 ? "D3D9 GPU" : renderer_settings.renderer == RENDERER_DX11 ? "DX11" : renderer_native_gpu(renderer_settings.renderer) ? "GLRDP" : "paraLLEl-RDP",
                 renderer_settings.upscale, renderer_settings.performance_only ? "only" : "unrestricted");
     performance_cores_init();
     performance_cores_set_enabled(renderer_settings.performance_only);
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer) && !legacygpu_request_context(environ_cb,renderer_settings.renderer==RENDERER_D3D9)){
+        if(log_cb)log_cb(RETRO_LOG_ERROR,"Legacy GPU: compatible GL2/D3D9 frontend required.\n");
+        return false;
+    }
+#endif
 #ifdef HAVE_PARALLEL_RDP
     if (renderer_settings.renderer == RENDERER_PARALLEL && !request_vulkan_context())
     {
@@ -539,9 +560,9 @@ bool retro_load_game(const struct retro_game_info *game)
     }
 #endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP && !request_gl_context())
+    if (renderer_native_gpu(renderer_settings.renderer) && !request_gl_context())
     {
-        if (log_cb) log_cb(RETRO_LOG_ERROR, "GLRDP requires a GL3.3 or GLES3 frontend context; content load rejected.\n");
+        if (log_cb) log_cb(RETRO_LOG_ERROR, "Selected GPU RDP backend requires a compatible frontend graphics context; content load rejected.\n");
         return false;
     }
 #endif
@@ -638,13 +659,13 @@ void retro_run(void)
     performance_emulation_enter(&emulation_affinity);
     sync_begin();
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) glrdp_begin_frame();
+    if (renderer_native_gpu(renderer_settings.renderer)) glrdp_begin_frame();
 #endif
     const bool first_frame = initializing;
     const int64_t audio_start_clock = g_dev.r4300.cp0.count_clock;
     run_emulation_frame();
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) glrdp_end_frame();
+    if (renderer_native_gpu(renderer_settings.renderer)) glrdp_end_frame();
 #endif
     /* The frontend must pace these same guest fields, rather than advancing
      * a nominal 60/50 fields per wall-clock second for every VI mode. */
@@ -677,8 +698,13 @@ void retro_run(void)
                 vk_frame_height() ? vk_frame_height() : 480, 0);
     else
 #endif
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer))
+        video_cb(libretro_swap_buffer?RETRO_HW_FRAME_BUFFER_VALID:NULL,640,480,0);
+    else
+#endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP)
+    if (renderer_native_gpu(renderer_settings.renderer))
         video_cb(libretro_swap_buffer ? RETRO_HW_FRAME_BUFFER_VALID : NULL, 640, 480, 0);
     else
 #endif
@@ -725,13 +751,24 @@ size_t retro_get_memory_size(unsigned type)
 
 size_t retro_serialize_size(void)
 {
-    return 16788288 + 1024 + 4 + RDP_TOTAL_EXTRA_STATE_BYTES;
+    size_t base=16788288 + 1024 + 4 + RDP_TOTAL_EXTRA_STATE_BYTES;
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer))base+=legacygpu_state_size();
+#endif
+    return base;
 }
 
 bool retro_serialize(void *data, size_t size)
 {
     if (!g_EmulatorRunning || !data || size < retro_serialize_size()) return false;
-    return main_statesave(data) != 0;
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer)&&!legacygpu_materialize())return false;
+#endif
+    if(!main_statesave(data))return false;
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer))legacygpu_save_state((uint8_t*)data+16788288+1024+4+RDP_TOTAL_EXTRA_STATE_BYTES);
+#endif
+    return true;
 }
 
 bool retro_unserialize(const void *data, size_t size)
@@ -743,7 +780,15 @@ bool retro_unserialize(const void *data, size_t size)
     size_t extra = version >= 0x00012100 ? RDP_TOTAL_EXTRA_STATE_BYTES : version >= 0x00012000 ? RDP_LEGACY_TOTAL_EXTRA_STATE_BYTES + RDP_CPU_V132_STATE_BYTES : version >= 0x00011f00 ? RDP_LEGACY_TOTAL_EXTRA_STATE_BYTES + RDP_CPU_V131_STATE_BYTES : version >= 0x00011b00 ? RDP_LEGACY_TOTAL_EXTRA_STATE_BYTES : version >= 0x00011a00 ? RDP_EXTRA_STATE_BYTES : version >= 0x00010e00 ? 151552 : version >= 0x00010d00 ? 20480 : version >= 0x00010c00 ? 16384 :
                    version >= 0x00010b00 ? 8192 : version >= 0x00010200 ? 4096 : 0;
     if (size < 16788288 + 1024 + 4 + extra) return false;
-    return main_stateload(data) != 0;
+    if(!main_stateload(data))return false;
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer)){
+        const size_t base=16788288+1024+4+RDP_TOTAL_EXTRA_STATE_BYTES;
+        if(size>=base+legacygpu_state_size())legacygpu_load_state((const uint8_t*)data+base);
+        else legacygpu_reset();
+    }
+#endif
+    return true;
 }
 
 // Needed to be able to detach controllers for Lylat Wars multiplayer
@@ -839,11 +884,14 @@ void renderer_process_display_list(void)
 
 void renderer_process_commands(void)
 {
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer)){legacygpu_process_commands();return;}
+#endif
 #ifdef HAVE_PARALLEL_RDP
     if (renderer_settings.renderer == RENDERER_PARALLEL) { vk_process_commands(); return; }
 #endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) { glrdp_process_commands(); return; }
+    if (renderer_native_gpu(renderer_settings.renderer)) { glrdp_process_commands(); return; }
 #endif
     n64video_process_list();
 }
@@ -852,11 +900,14 @@ void renderer_close_content(void)
 {
     if (!renderer_open) return;
     renderer_open = false;
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer)){legacygpu_close();return;}
+#endif
 #ifdef HAVE_PARALLEL_RDP
     if (renderer_settings.renderer == RENDERER_PARALLEL) { vk_destroy(); return; }
 #endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) {
+    if (renderer_native_gpu(renderer_settings.renderer)) {
         glrdp_close();
         return;
     }
@@ -866,6 +917,12 @@ void renderer_close_content(void)
 
 int renderer_open_content(void)
 {
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer)){
+        if(!legacygpu_open(gfx_info.RDRAM,*gfx_info.RDRAM_SIZE))return 0;
+        renderer_open=true;return 1;
+    }
+#endif
 #ifdef HAVE_PARALLEL_RDP
     if (renderer_settings.renderer == RENDERER_PARALLEL)
     {
@@ -876,7 +933,7 @@ int renderer_open_content(void)
     }
 #endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) {
+    if (renderer_native_gpu(renderer_settings.renderer)) {
         if (!glrdp_open()) return 0;
         renderer_open = true;
         return 1;
@@ -914,11 +971,14 @@ int renderer_open_content(void)
 
 void renderer_present(void)
 {
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer)){legacygpu_scanout();return;}
+#endif
 #ifdef HAVE_PARALLEL_RDP
     if (renderer_settings.renderer == RENDERER_PARALLEL) { vk_rasterize(); return; }
 #endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) { glrdp_present(); return; }
+    if (renderer_native_gpu(renderer_settings.renderer)) { glrdp_present(); return; }
 #endif
     n64video_update_screen();
 }
@@ -933,35 +993,52 @@ void renderer_vi_status_changed(void) {}
 void renderer_vi_width_changed(void) {}
 
 void renderer_framebuffer_write(unsigned int addr, unsigned int size) {
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer)){legacygpu_framebuffer_write(addr,size);return;}
+#endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) glrdp_fb_write(addr, size);
+    if (renderer_native_gpu(renderer_settings.renderer)) glrdp_fb_write(addr, size);
 #endif
 }
 
 void renderer_framebuffer_read(unsigned int addr) {
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer)){
+        legacygpu_framebuffer_read(addr,4);return;
+    }
+#endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) glrdp_fb_read(addr);
+    if (renderer_native_gpu(renderer_settings.renderer)) glrdp_fb_read(addr);
 #endif
 }
 
 void renderer_framebuffer_info(void *pinfo) {
     memset(pinfo, 0, 6 * sizeof(core_framebuffer_info));
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer)){legacygpu_framebuffer_info(pinfo);return;}
+#endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) glrdp_fb_info(pinfo);
+    if (renderer_native_gpu(renderer_settings.renderer)) glrdp_fb_info(pinfo);
 #endif
 }
 
 int renderer_framebuffer_pages(uint8_t *pages, unsigned count) {
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer))return legacygpu_framebuffer_pages(pages,count);
+#endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) return glrdp_fb_pages(pages, count);
+    if (renderer_native_gpu(renderer_settings.renderer)) return glrdp_fb_pages(pages, count);
 #endif
     (void)pages; (void)count;
     return 0;
 }
 
 void renderer_framebuffer_read_range(unsigned address, unsigned size) {
+#ifdef HAVE_LEGACY_GPU
+    if(renderer_legacy_gpu(renderer_settings.renderer)){legacygpu_framebuffer_read(address,size);return;}
+#endif
 #ifdef HAVE_GLRDP
-    if (renderer_settings.renderer == RENDERER_GLRDP) { glrdp_fb_read_range(address, size); return; }
+    if (renderer_native_gpu(renderer_settings.renderer)) { glrdp_fb_read_range(address, size); return; }
 #endif
     (void)size;
     renderer_framebuffer_read(address);

@@ -722,8 +722,9 @@ static SR_ALWAYS_INLINE sr_result render_segment_impl(sr_memory *memory,
         /* Chroma keying rewrites the colour and the alpha the alpha stage uses;
          * only the full instances contain it (kernel_span.key). */
         int32_t key_alpha = -1;
-        if (full && span->key)
+        if (full && span->key) {
             key_alpha = stage_chroma_key(&span->ops[1], regs, color->key_width, &pixel);
+        }
 
         const uint8_t blend_shade = span->blend_shade_dither
             ? stage_blend_shade_alpha((uint8_t)shade.a,

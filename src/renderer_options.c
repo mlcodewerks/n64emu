@@ -9,46 +9,62 @@ struct renderer_settings renderer_settings;
 #define RENDERERS_BASE "softrdp"
 #endif
 #ifdef HAVE_GLRDP
-#define RENDERERS RENDERERS_BASE "|glrdp"
+#ifdef HAVE_D3D11
+#define RENDERERS_MODERN RENDERERS_BASE "|glrdp|dx11"
 #else
-#define RENDERERS RENDERERS_BASE
+#define RENDERERS_MODERN RENDERERS_BASE "|glrdp"
+#endif
+#else
+#define RENDERERS_MODERN RENDERERS_BASE
+#endif
+#ifdef HAVE_LEGACY_GPU
+#ifdef HAVE_D3D9
+#define RENDERERS RENDERERS_MODERN "|gl2|d3d9"
+#else
+#define RENDERERS RENDERERS_MODERN "|gl2"
+#endif
+#else
+#define RENDERERS RENDERERS_MODERN
 #endif
 /* Legacy options are supported by every libretro frontend; first value is default.
  * Settings are latched at content load, keeping renderer resources and RDRAM intact. */
 static const struct retro_variable options[] = {
     {"wtfn64_renderer", "Renderer (restart required); " RENDERERS},
+#ifdef HAVE_LEGACY_GPU
+    {"wtfn64_legacy_upscale", "GL2/D3D9 internal upscaling (restart required); 1|2|4"},
+#endif
 #ifdef HAVE_GLRDP
-    {"wtfn64_glrdp_upscale", "GLRDP internal upscaling (restart required); 1|2|4|8"},
-    {"wtfn64_glrdp_blending", "GLRDP blending accuracy (restart required); accurate|fast"},
-    {"wtfn64_glrdp_combiner", "GLRDP combiner accuracy (restart required); accurate|fast"},
-    {"wtfn64_glrdp_texture_filter", "GLRDP texture filtering (restart required); native|point"},
-    {"wtfn64_glrdp_texcoords", "GLRDP texture coordinate accuracy (restart required); accurate|fast"},
-    {"wtfn64_glrdp_shading", "GLRDP shade interpolation (restart required); accurate|fast"},
-    {"wtfn64_glrdp_shader_specialization", "GLRDP shader specialization (restart required); disabled|enabled"},
-    {"wtfn64_glrdp_texture_lod", "GLRDP texture LOD (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_color_dither", "GLRDP RGB dithering (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_alpha_dither", "GLRDP alpha dithering (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_vi_filter", "GLRDP VI filters (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_deinterlace", "GLRDP deinterlacing (restart required); weave|bob"},
-    {"wtfn64_glrdp_coverage", "GLRDP coverage sampling (restart required); full|reduced|2x|off"},
-    {"wtfn64_glrdp_vi_aa", "GLRDP VI antialiasing (restart required); full|reduced|off"},
-    {"wtfn64_glrdp_vi_restore", "GLRDP VI dedithering (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_vi_divot", "GLRDP VI divot filter (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_vi_resample", "GLRDP VI resampling (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_vi_gamma", "GLRDP VI gamma correction (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_vi_gamma_dither", "GLRDP VI gamma dithering (restart required); enabled|disabled"},
+    {"wtfn64_glrdp_upscale", "GPU RDP internal upscaling (restart required); 1|2|4|8"},
+    {"wtfn64_glrdp_blending", "GPU RDP blending accuracy (restart required); accurate|fast"},
+    {"wtfn64_glrdp_combiner", "GPU RDP combiner accuracy (restart required); accurate|fast"},
+    {"wtfn64_glrdp_texture_filter", "GPU RDP texture filtering (restart required); native|point"},
+    {"wtfn64_glrdp_texcoords", "GPU RDP texture coordinate accuracy (restart required); accurate|fast"},
+    {"wtfn64_glrdp_shading", "GPU RDP shade interpolation (restart required); accurate|fast"},
+    {"wtfn64_glrdp_shader_specialization", "GPU RDP shader specialization (restart required); disabled|enabled"},
+    {"wtfn64_glrdp_texture_lod", "GPU RDP texture LOD (restart required); enabled|disabled"},
+    {"wtfn64_glrdp_color_dither", "GPU RDP RGB dithering (restart required); enabled|disabled"},
+    {"wtfn64_glrdp_alpha_dither", "GPU RDP alpha dithering (restart required); enabled|disabled"},
+    {"wtfn64_glrdp_vi_filter", "GPU RDP VI filters (restart required); enabled|disabled"},
+    {"wtfn64_glrdp_deinterlace", "GPU RDP deinterlacing (restart required); weave|bob"},
+    {"wtfn64_glrdp_coverage", "GPU RDP coverage sampling (restart required); full|reduced|2x|off"},
+    {"wtfn64_glrdp_vi_aa", "GPU RDP VI antialiasing (restart required); full|reduced|off"},
+    {"wtfn64_glrdp_vi_restore", "GPU RDP VI dedithering (restart required); enabled|disabled"},
+    {"wtfn64_glrdp_vi_divot", "GPU RDP VI divot filter (restart required); enabled|disabled"},
+    {"wtfn64_glrdp_vi_resample", "GPU RDP VI resampling (restart required); enabled|disabled"},
+    {"wtfn64_glrdp_vi_gamma", "GPU RDP VI gamma correction (restart required); enabled|disabled"},
+    {"wtfn64_glrdp_vi_gamma_dither", "GPU RDP VI gamma dithering (restart required); enabled|disabled"},
 #endif
     {"wtfn64_timing", "CPU cache timing (restart required); fast|off|accurate"},
     {"wtfn64_hle", "HLE level (restart required); RSP HLE|Off"},
-    {"wtfn64_angrylion_threads", "SoftRDP rendering threads (restart required); 6|2|4|8|10|auto"},
+    {"wtfn64_angrylion_threads", "CPU RDP rendering threads (restart required); 6|2|4|8|10|auto"},
     {"wtfn64_performance_cores", "Performance cores only (restart required); enabled|disabled"},
     {"wtfn64_angrylion_upscale", "SoftRDP upscaling (restart required); 1|2|4"},
 #ifdef HAVE_PARALLEL_RDP
     {"wtfn64_parallel_upscale", "paraLLEl-RDP upscaling (restart required); 1|2|4|8"},
 #endif
-    {"wtfn64_vi_filter", "SoftRDP/paraLLEl-RDP VI filtering (restart required); enabled|disabled"},
-    {"wtfn64_vi_dedither", "SoftRDP/paraLLEl-RDP VI dedithering (restart required); enabled|disabled"},
-    {"wtfn64_vi_blur", "SoftRDP/paraLLEl-RDP VI divot filter (restart required); enabled|disabled"},
+    {"wtfn64_vi_filter", "VI filtering (restart required); enabled|disabled"},
+    {"wtfn64_vi_dedither", "VI dedithering (restart required); enabled|disabled"},
+    {"wtfn64_vi_blur", "VI divot filter (restart required); enabled|disabled"},
     {"wtfn64_crop_overscan", "Crop overscan (restart required); disabled|enabled"},
     {"wtfn64_angrylion_deinterlace", "SoftRDP deinterlacing (restart required); weave|bob"},
     {"wtfn64_native_lod", "Native texture LOD (restart required); enabled|disabled"},
@@ -75,7 +91,7 @@ void renderer_register_options(retro_environment_t environment)
         {"video", "Video", "Renderer selection and shared presentation options."},
         {"input", "Controllers", "Controller accessories."},
 #ifdef HAVE_GLRDP
-        {"glrdp", "GLRDP", "Native GPU RDP rendering with OpenGL 3.3 or OpenGL ES 2.0."},
+        {"glrdp", "GPU RDP", "RDP accuracy and VI controls for GLRDP and DX11."},
 #endif
         {"angrylion", "SoftRDP", "Software RDP rendering and synchronization."},
 #ifdef HAVE_PARALLEL_RDP
@@ -101,6 +117,8 @@ void renderer_register_options(retro_environment_t environment)
             d->desc = descriptions[i];
             d->info = "Changes take effect when content is restarted.";
             d->category_key = "video";
+            if(!strcmp(d->key,"wtfn64_renderer"))
+                d->info="GLRDP, DX11, GL2 and D3D9 render RDP primitives on the GPU. Legacy APIs use dedicated shaders and framebuffer workarounds. Restart content to apply.";
             if (strstr(d->key, "angrylion")) d->category_key = "angrylion";
             else if (strstr(d->key, "glrdp")) d->category_key = "glrdp";
             else if (strstr(d->key, "parallel") || strstr(d->key, "ss_") || strstr(d->key, "native_tex_rect")) d->category_key = "parallel";
@@ -159,6 +177,10 @@ void renderer_register_options(retro_environment_t environment)
                 next = strchr(p, '|');
                 if (next) *next++ = 0;
                 d->values[j++].value = p;
+                if(!strcmp(d->key,"wtfn64_renderer")) {
+                    if(!strcmp(p,"gl2"))d->values[j-1].label="OpenGL 2 GPU";
+                    if(!strcmp(p,"d3d9"))d->values[j-1].label="Direct3D 9 GPU";
+                }
                 if (!strcmp(d->key, "wtfn64_timing"))
                     d->values[j - 1].label = !strcmp(p, "off") ? "Off" :
                         !strcmp(p, "accurate") ? "Accurate" : "Fast";
@@ -247,9 +269,19 @@ void renderer_read_options(retro_environment_t env)
     if (strcmp(value(env, "wtfn64_renderer", "softrdp"), "parallel-rdp") == 0)
         s->renderer = RENDERER_PARALLEL;
 #endif
+#ifdef HAVE_LEGACY_GPU
+    if (!strcmp(value(env,"wtfn64_renderer","softrdp"),"gl2"))s->renderer=RENDERER_GL2;
+#ifdef HAVE_D3D9
+    if (!strcmp(value(env,"wtfn64_renderer","softrdp"),"d3d9"))s->renderer=RENDERER_D3D9;
+#endif
+#endif
 #ifdef HAVE_GLRDP
     if (!strcmp(value(env, "wtfn64_renderer", "softrdp"), "glrdp"))
         s->renderer = RENDERER_GLRDP;
+#ifdef HAVE_D3D11
+    if (!strcmp(value(env, "wtfn64_renderer", "softrdp"), "dx11"))
+        s->renderer = RENDERER_DX11;
+#endif
     s->glrdp = glrdp_default_config();
     s->glrdp.blending = !strcmp(value(env, "wtfn64_glrdp_blending", "accurate"), "fast") ?
         GLRDP_ARITHMETIC_FAST : GLRDP_ARITHMETIC_ACCURATE;
@@ -284,8 +316,9 @@ void renderer_read_options(retro_environment_t env)
     s->performance_only = toggle(env, "wtfn64_performance_cores", true);
     s->upscale = s->renderer == RENDERER_SOFTRDP ?
         scale(env, "wtfn64_angrylion_upscale", 4) : scale(env, "wtfn64_parallel_upscale", 8);
-    if (s->renderer == RENDERER_GLRDP)
+    if (renderer_native_gpu(s->renderer))
         s->upscale = scale(env, "wtfn64_glrdp_upscale", 8);
+    if(renderer_legacy_gpu(s->renderer))s->upscale=scale(env,"wtfn64_legacy_upscale",4);
     s->vi_filter = toggle(env, "wtfn64_vi_filter", true);
     s->dedither = toggle(env, "wtfn64_vi_dedither", true);
     s->blur = toggle(env, "wtfn64_vi_blur", true);

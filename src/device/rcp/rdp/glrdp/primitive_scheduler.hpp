@@ -9,6 +9,15 @@ class PrimitiveScheduler {
     static constexpr unsigned max_queued = 256;
     std::vector<std::vector<unsigned>> groups;
     void clear() { groups.clear(); write_only_groups_.clear(); }
+    // Ordered fragment interlock serializes all same-pixel reads and writes
+    // inside the draw. Keep API order and pack records without a CPU graph.
+    void append_ordered(unsigned index, unsigned capacity) {
+        if (groups.empty() || groups.back().size() == capacity) {
+            groups.emplace_back();
+            write_only_groups_.push_back(false);
+        }
+        groups.back().push_back(index);
+    }
     void append(const std::vector<PrimitiveFootprint> &previous,
                 const PrimitiveFootprint &incoming, unsigned capacity) {
         if (incoming.independent_write && !groups.empty() &&

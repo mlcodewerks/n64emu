@@ -5,8 +5,12 @@
 #include "rdp_parser.hpp"
 #include "rdp_renderer.hpp"
 #include "renderer_options.h"
+#ifdef HAVE_D3D11
+#include "d3d11_gpu.hpp"
+#endif
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <memory>
 #include <vector>
 extern "C" {
@@ -55,7 +59,7 @@ bool glrdp_context_reset(const retro_hw_render_callback *callback) {
     }
     if (log_cb)
         log_cb(RETRO_LOG_INFO, "GLRDP: %s; %s.\n", glGetString(GL_VERSION),
-               gles3 ? "native GLES3 RDP" : "native GL 3.3 RDP");
+               gles3 ? "native GLES3 RDP" : glrdp_image_load_store ? "native GL4.3 image RDP" : "native GL3.3 RDP");
     if (log_cb) {
         const auto &c = renderer_settings.glrdp;
         const char *levels[] = {"off", "reduced", "full", "2x"};
@@ -74,8 +78,9 @@ bool glrdp_context_reset(const retro_hw_render_callback *callback) {
                "GLRDP tradeoffs = texcoords=%s lod=%u color_dither=%u alpha_dither=%u.\n",
                c.accurate_texcoords ? "accurate" : "fast", unsigned(c.texture_lod),
                unsigned(c.color_dither), unsigned(c.alpha_dither));
-        log_cb(RETRO_LOG_INFO, "GLRDP shader controls = shading=%s specialization=%u.\n",
-               c.accurate_shading ? "accurate" : "fast", unsigned(c.specialize_shaders));
+        log_cb(RETRO_LOG_INFO, "GLRDP shader controls = shading=%s specialization=%u image_storage=%u fragment_interlock=%u.\n",
+               c.accurate_shading ? "accurate" : "fast", unsigned(c.specialize_shaders),
+               unsigned(glrdp_image_load_store), unsigned(glrdp_fragment_interlock));
     }
     try {
         // Compile before emulation starts. RDRAM is bound by glrdp_open;
@@ -87,9 +92,21 @@ bool glrdp_context_reset(const retro_hw_render_callback *callback) {
     }
     return ready;
 }
+#ifdef HAVE_D3D11
+bool glrdp_dx11_context_reset(retro_environment_t environment) {
+    try {
+        ready = glrdp_dx11_initialize(environment);
+        if (!ready) { error("DX11 context", "requires an immediate D3D11 context, feature level 11.0 and the D3D11.1 runtime"); return false; }
+        ready = initialize_renderer();
+        if (log_cb) log_cb(RETRO_LOG_INFO, "GLRDP: native Direct3D 11 RDP / Shader Model 5.0.\n");
+    } catch (const std::exception &e) { error("DX11 context reset", e.what()); ready = false; }
+    return ready;
+}
+#endif
 void glrdp_context_destroy() {
     frame_guard.reset();
     if (renderer) {
+        ContextGuard guard;
         // Parser/TMEM state survives a frontend context recreation. Preserve
         // GPU-only bytes while the old context is still current and readable.
         if (parser) renderer->materialize_tmem(parser->state());
@@ -97,6 +114,9 @@ void glrdp_context_destroy() {
         renderer.reset();
     }
     ready = false;
+#ifdef HAVE_D3D11
+    if (glrdp_dx11) glrdp_dx11_shutdown();
+#endif
 }
 bool glrdp_open() {
     if (!ready) {
@@ -135,6 +155,11 @@ bool glrdp_open() {
 }
 void glrdp_close() {
     if (renderer) {
+        ContextGuard guard;
+        if (std::getenv("GLRDP_BENCH_DUMP_RAM"))
+            for (const auto &[key, f] : renderer->framebuffers().buffers())
+                std::fprintf(stderr, "GPU framebuffer range = %08x bytes=%u raw_z=%u\n", f.address,
+                    unsigned(f.native_width * f.native_height * (f.size == RDPImageSize::Bits32 ? 4 : 2)), unsigned(f.raw_z));
         renderer->shutdown();
         renderer.reset();
     }
@@ -180,6 +205,9 @@ void glrdp_begin_frame() {
     if (!ready)
         return;
     try {
+#ifdef HAVE_D3D11
+        if (glrdp_dx11) glrdp_dx11_prepare_frame();
+#endif
         if (!frame_guard) frame_guard = std::make_unique<GLStateGuard>();
     } catch (const std::exception &e) {
         error("frame state", e.what());
@@ -187,7 +215,13 @@ void glrdp_begin_frame() {
 }
 void glrdp_end_frame() {
     if (renderer) renderer->flush();
+#ifdef HAVE_D3D11
+    if (glrdp_dx11 && frame_guard) glrdp_dx11_prepare_present(libretro_swap_buffer);
+#endif
     frame_guard.reset();
+#ifdef HAVE_D3D11
+    if (glrdp_dx11) glrdp_dx11_present();
+#endif
 }
 void glrdp_present() {
     GLRDP_PROFILE_SCOPE(present);
@@ -197,7 +231,12 @@ void glrdp_present() {
         ContextGuard guard;
         renderer->synchronize_cpu_writes();
         auto present = [&](auto &gpu) {
-            gpu.set_output_framebuffer(GLuint(hw.get_current_framebuffer()));
+            GLuint output = 0;
+#ifdef HAVE_D3D11
+            if (!glrdp_dx11)
+#endif
+                output = GLuint(hw.get_current_framebuffer());
+            gpu.set_output_framebuffer(output);
             gpu.present(parser->state(), *gfx_info.VI_STATUS_REG,
                         *gfx_info.VI_ORIGIN_REG & 0xffffff, *gfx_info.VI_WIDTH_REG,
                         *gfx_info.VI_H_START_REG, *gfx_info.VI_V_START_REG,

@@ -1,5 +1,8 @@
 #include "rdp_profile.hpp"
 #include "gl_state_guard.hpp"
+#ifdef HAVE_D3D11
+#include "d3d11_gpu.hpp"
+#endif
 
 #include <algorithm>
 
@@ -14,6 +17,9 @@ void restore_enable(GLenum capability, GLboolean enabled) {
 } // namespace
 
 GLStateGuard::GLStateGuard() {
+#ifdef HAVE_D3D11
+    if ((dx11_ = glrdp_dx11)) { glrdp_dx11_begin(); return; }
+#endif
     GLRDP_PROFILE_SCOPE(state_save);
     nested_ = guard_active;
     if (nested_)
@@ -53,6 +59,18 @@ GLStateGuard::GLStateGuard() {
         glGetIntegerv(GL_SAMPLER_BINDING, &texture_units_[unit].sampler);
     }
     glActiveTexture(GLenum(active_texture_));
+
+    if (glrdp_image_load_store) {
+        for (unsigned unit = 0; unit < image_units_.size(); ++unit) {
+            auto &image = image_units_[unit];
+            glGetIntegeri_v(GL_IMAGE_BINDING_NAME, unit, &image.name);
+            glGetIntegeri_v(GL_IMAGE_BINDING_LEVEL, unit, &image.level);
+            glGetIntegeri_v(GL_IMAGE_BINDING_LAYERED, unit, &image.layered);
+            glGetIntegeri_v(GL_IMAGE_BINDING_LAYER, unit, &image.layer);
+            glGetIntegeri_v(GL_IMAGE_BINDING_ACCESS, unit, &image.access);
+            glGetIntegeri_v(GL_IMAGE_BINDING_FORMAT, unit, &image.format);
+        }
+    }
 
     glGetIntegerv(GL_VIEWPORT, viewport_.data());
     glGetIntegerv(GL_SCISSOR_BOX, scissor_box_.data());
@@ -112,10 +130,20 @@ GLStateGuard::GLStateGuard() {
 }
 
 GLStateGuard::~GLStateGuard() {
+#ifdef HAVE_D3D11
+    if (dx11_) { glrdp_dx11_end(); return; }
+#endif
     GLRDP_PROFILE_SCOPE(state_restore);
     if (nested_)
         return;
     guard_active = false;
+    if (glrdp_image_load_store) {
+        for (unsigned unit = 0; unit < image_units_.size(); ++unit) {
+            const auto &image = image_units_[unit];
+            glBindImageTexture(unit, GLuint(image.name), image.level, GLboolean(image.layered),
+                               image.layer, GLenum(image.access), GLenum(image.format));
+        }
+    }
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GLuint(draw_framebuffer_));
     glBindFramebuffer(GL_READ_FRAMEBUFFER, GLuint(read_framebuffer_));

@@ -5,7 +5,13 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-enum renderer_type { RENDERER_SOFTRDP, RENDERER_PARALLEL, RENDERER_GLRDP };
+enum renderer_type { RENDERER_SOFTRDP, RENDERER_PARALLEL, RENDERER_GLRDP, RENDERER_DX11, RENDERER_GL2, RENDERER_D3D9 };
+static inline bool renderer_legacy_gpu(enum renderer_type type) {
+    return type == RENDERER_GL2 || type == RENDERER_D3D9;
+}
+static inline bool renderer_native_gpu(enum renderer_type type) {
+    return type == RENDERER_GLRDP || type == RENDERER_DX11;
+}
 enum hle_level { HLE_OFF, HLE_RSP };
 enum controller_pak_option { CONTROLLER_PAK_NONE, CONTROLLER_PAK_MEMORY,
     CONTROLLER_PAK_RUMBLE, CONTROLLER_PAK_TRANSFER };

@@ -4,6 +4,14 @@
 // Resolve only through the frontend's current context.
 bool load_gl33(retro_hw_get_proc_address_t resolver, bool gles3);
 extern bool glrdp_gles3;
+// Desktop GL4.3 only: image load/store plus attachmentless rasterization.
+extern bool glrdp_image_load_store;
+extern bool glrdp_fragment_interlock;
+inline void glrdp_image_barrier() {
+    if (glrdp_image_load_store)
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT |
+                        GL_FRAMEBUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);
+}
 // GLES draw-buffer slots must match attachment indices.
 inline GLenum glrdp_depth_attachment() { return glrdp_gles3 ? GL_COLOR_ATTACHMENT2 : GL_COLOR_ATTACHMENT0; }
 inline GLenum glrdp_acceptance_attachment() { return glrdp_gles3 ? GL_COLOR_ATTACHMENT3 : GL_COLOR_ATTACHMENT1; }

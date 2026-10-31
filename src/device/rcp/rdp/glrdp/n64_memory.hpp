@@ -121,6 +121,8 @@ class N64Memory {
     std::size_t size() const {
         return size_;
     }
+    std::uint8_t *hidden_data() { return hidden_.data(); }
+    std::size_t hidden_size() const { return hidden_.size(); }
 
   private:
     template<bool Swapped>

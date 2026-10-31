@@ -66,7 +66,9 @@ static SR_ALWAYS_INLINE rdp_color stage_dither_rgb(rdp_color color, uint8_t mode
                                                    uint32_t x, uint32_t y,
                                                    uint32_t noise)
 {
-    if (mode == 3u) return color;
+    if (mode == 3u) {
+        return color;
+    }
     if (mode == 2u) {
         color.r = stage_dither_component(color.r, (uint8_t)(noise & 7u));
         color.g = stage_dither_component(color.g, (uint8_t)((noise >> 3) & 7u));
@@ -160,8 +162,9 @@ static SR_ALWAYS_INLINE rdp_color stage_blend_cycle(const rdp_blend_state *s,
         break;
     }
     if (final_cycle && c->factor_a == 0u && c->factor_b == 0u &&
-        pixel_alpha >= 0xffu)
+        pixel_alpha >= 0xffu) {
         return x;
+    }
     uint32_t a = raw_a >> 3;
     uint32_t raw_b = stage_blend_factor_b(c->factor_b, raw_a, memory) >> 3;
     /*
@@ -223,18 +226,22 @@ static SR_ALWAYS_INLINE rdp_color stage_blend(const rdp_blend_state *s,
         pixel = stage_blend_cycle(s, &s->program.cycle[0],
                                   (rdp_blender_op)s->program.operation[0], pixel,
                                   pixel_alpha, memory, shade_alpha, false, blend_shift);
-        if (color_on_coverage && !coverage_wrap)
+        if (color_on_coverage && !coverage_wrap) {
             return stage_blend_color_source(final->color_b, s, pixel, memory);
-        if (!blend_enable)
+        }
+        if (!blend_enable) {
             return stage_blend_color_source(final->color_a, s, pixel, memory);
+        }
         return stage_blend_cycle(s, &s->program.cycle[1],
                                  (rdp_blender_op)s->program.operation[1], pixel,
                                  pixel_alpha, memory, shade_alpha, true, blend_shift);
     }
-    if (color_on_coverage && !coverage_wrap)
+    if (color_on_coverage && !coverage_wrap) {
         return stage_blend_color_source(final->color_b, s, pixel, memory);
-    if (!blend_enable)
+    }
+    if (!blend_enable) {
         return stage_blend_color_source(final->color_a, s, pixel, memory);
+    }
     return stage_blend_cycle(s, &s->program.cycle[0],
                              (rdp_blender_op)s->program.operation[0], pixel,
                              pixel_alpha, memory, shade_alpha, true, blend_shift);

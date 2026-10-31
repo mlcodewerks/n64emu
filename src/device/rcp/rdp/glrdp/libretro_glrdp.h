@@ -6,6 +6,10 @@
 extern "C" {
 #endif
 bool glrdp_context_reset(const struct retro_hw_render_callback *hw);
+#ifdef HAVE_D3D11
+bool glrdp_dx11_context_reset(retro_environment_t environment);
+void glrdp_dx11_negotiate(retro_environment_t environment);
+#endif
 void glrdp_context_destroy(void);
 bool glrdp_open(void);
 void glrdp_close(void);

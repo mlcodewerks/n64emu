@@ -44,6 +44,7 @@ class RDPRenderer {
         std::uint64_t queues = 0, queue_flushes = 0, state_flushes = 0;
         std::uint64_t immediate_raw_z = 0, immediate_alias = 0, immediate_depth = 0, immediate_texture = 0;
         std::uint64_t metadata_writes = 0, write_flushes = 0;
+        std::uint64_t image_draws = 0, feedback_copies = 0, interlock_draws = 0;
     };
     const SubmissionStats &submission_stats() const { return stats_; }
     unsigned batch_capacity() const { return primitive_uniforms_.capacity; }
@@ -99,14 +100,17 @@ class RDPRenderer {
     GLFramebuffer *batch_target_ = nullptr;
     GPUDepthBuffer::Surface *batch_depth_ = nullptr;
     GLuint batch_program_ = 0;
+    bool batch_interlock_ = false;
     bool batch_writes_z_ = false, batch_reads_color_ = false;
     SubmissionStats stats_;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> cpu_writes_;
     void primitive_geometry(const std::vector<GLVertex> &);
     void bind_primitive_pipeline(GLuint);
-    void submit_records(const PrimitiveUniforms::Slot *, unsigned);
+    void submit_records(const PrimitiveUniforms::Slot *, unsigned, bool publish_images = true,
+                        bool ordered_images = false);
+    GLuint select_draw_program(bool ordered) const;
     void bind_tiles();
-    void flush_batch(const std::vector<PrimitiveUniforms::Slot> &, const std::vector<PrimitiveBounds> &);
+    void flush_legacy_batch(const std::vector<PrimitiveUniforms::Slot> &, const std::vector<PrimitiveBounds> &);
     bool pending_batch_overlaps(std::uint32_t address, std::uint32_t size) const;
     void texture_read_range(std::uint32_t address, std::uint32_t size);
     void export_depth_range(std::uint32_t address, std::uint32_t size);
@@ -144,8 +148,12 @@ class RDPRenderer {
     FramebufferManager fb_;
     GPUDepthBuffer gpu_depth_;
     GLuint generic_program_ = 0, specialized_program_ = 0;
+    GLuint ordered_generic_program_ = 0, ordered_specialized_program_ = 0;
     std::uint32_t specialized_key_ = 0;
     GLuint program_ = 0, present_program_ = 0, final_present_program_ = 0, vao_ = 0, vbo_ = 0;
+    GLuint image_fbo_ = 0, default_depth_image_ = 0;
+    int image_width_ = 0, image_height_ = 0;
+    void bind_image_target(const GLFramebuffer &, const GPUDepthBuffer::Surface *, bool native);
     GLRDPConfig config_ = glrdp_reference_config();
     VIFieldHistory field_history_;
     GLuint post_fbo_ = 0, post_color_ = 0, post_depth_ = 0;
@@ -181,7 +189,7 @@ class RDPRenderer {
                                bool depth_acceptance_enable, bool raw_z_fill,
                                std::uint32_t primitive_noise_seed,
                                bool combined_depth_color = false);
-    void issue_geometry(const std::vector<GLVertex> &vertices, bool rectangle);
+    void issue_geometry(const std::vector<GLVertex> &vertices, bool rectangle, bool publish_images = true);
     bool ensure_post_target(int, int);
     bool ensure_vi_target(int, int);
     void draw_final_present();

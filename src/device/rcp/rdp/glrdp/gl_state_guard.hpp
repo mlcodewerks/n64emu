@@ -14,6 +14,7 @@ class GLStateGuard {
     GLStateGuard &operator=(const GLStateGuard &) = delete;
 
   private:
+    bool dx11_ = false;
     bool nested_ = false;
     struct TextureUnitState {
         GLint texture_2d = 0;
@@ -37,6 +38,10 @@ class GLStateGuard {
 
     GLint active_texture_ = GL_TEXTURE0;
     std::array<TextureUnitState, 12> texture_units_{};
+    struct ImageUnitState {
+        GLint name = 0, level = 0, layered = 0, layer = 0, access = GL_READ_ONLY, format = GL_R8;
+    };
+    std::array<ImageUnitState, 3> image_units_{};
 
     std::array<GLint, 4> viewport_{};
     std::array<GLint, 4> scissor_box_{};

@@ -24,6 +24,12 @@ static inline bool glrdp_request_context(retro_environment_t environment,
             es = false;
     }
     for (unsigned attempt = 0; attempt < 2; ++attempt, es = !es) {
+        if (!es) {
+            hw->context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
+            hw->version_major = 4;
+            hw->version_minor = 3;
+            if (environment(RETRO_ENVIRONMENT_SET_HW_RENDER, hw)) return true;
+        }
         hw->context_type = es ? RETRO_HW_CONTEXT_OPENGLES3 : RETRO_HW_CONTEXT_OPENGL_CORE;
         hw->version_major = 3;
         hw->version_minor = es ? 0 : 3;
