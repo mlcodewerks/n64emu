@@ -67,6 +67,7 @@ struct r4300_jit_state;
 
 
 enum {
+    EMUMODE_INTERPRETER      = 0,
     EMUMODE_DYNAREC          = 2,
 };
 

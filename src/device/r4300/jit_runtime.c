@@ -11,17 +11,17 @@
 #include "interp_thread_poll.h"
 #ifdef HAVE_PARALLAXJIT
 #include "jit/parallaxjit.h"
+#endif
 #include "core/log.h"
 #include "core/types.h"
+#ifdef PARALLAX_USF
+#include "usf/internal.h"
 #endif
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef HAVE_PARALLAXJIT
-#error The CPU runtime requires an ParallaxJIT host emitter
-#endif
 
 #if defined(_MSC_VER) && defined(_M_X64)
 #include <intrin.h>
@@ -1216,6 +1216,10 @@ void r4300_fastmem_destroy(struct r4300_fastmem* f)
 
 int r4300_jit_init(struct r4300_core* r4300)
 {
+#ifndef HAVE_PARALLAXJIT
+    (void)r4300;
+    return 1;
+#else
     if (r4300->jit != NULL)
         return 1;
 
@@ -1249,6 +1253,7 @@ int r4300_jit_init(struct r4300_core* r4300)
     }
 #endif
     return 1;
+#endif
 }
 
 void r4300_jit_destroy(struct r4300_core* r4300)
@@ -1273,7 +1278,11 @@ void r4300_jit_cache_stats(struct r4300_core* r, uint64_t stats[2])
 void r4300_jit_host_fault_stats(struct r4300_core* r, uint64_t stats[2])
 {
     stats[0] = r->jit && r->jit->fastmem != NULL;
+#ifdef HAVE_PARALLAXJIT
     stats[1] = r->jit ? parallaxjit_fault_count(r->jit->jit) : 0;
+#else
+    stats[1] = 0;
+#endif
 }
 
 void r4300_jit_tlb_changed(struct r4300_core* r4300)
@@ -1572,6 +1581,9 @@ static int ci_jit_fpu_finish(struct r4300_core* r, uint32_t op, uint64_t bits, u
 
 static void ci_execute_jit(struct r4300_core* r, int one)
 {
+#ifdef PARALLAX_USF
+    if (parallax_usf_yield()) { breakloop = true; return; }
+#endif
     if(r->prefetch_valid||r->irq_writeback_pending){r4300_ops_execute_one(r);return;}
     /* A delay slot remains one precise instruction, never a nested native
      * compilation that could recycle the caller's executable arena. */
@@ -1707,12 +1719,26 @@ void run_r4300(struct r4300_core* r4300)
             breakloop=true;
             goto cpu_run_done;
         }
+#ifdef HAVE_PARALLAXJIT
         core_log(CORE_LOG_INFO,"CPU dynarec: " PARALLAXJIT_BACKEND_NAME);
+#else
+        core_log(CORE_LOG_INFO,"CPU backend: portable interpreter");
+#endif
         r4300->startup = 0;
     }
 
+#ifdef HAVE_PARALLAXJIT
     r4300->execute_one=r4300_jit_execute_one;
     r4300_jit_run(r4300);
+#else
+    r4300->execute_one=r4300_ops_execute_one;
+    while (!breakloop && !r4300->stop) {
+#ifdef PARALLAX_USF
+        if (!(r4300->retired_ops & 65535) && parallax_usf_yield()) { breakloop = true; break; }
+#endif
+        r4300_ops_execute_one(r4300);
+    }
+#endif
 cpu_run_done: ;
 
 #ifdef OSAL_SSE

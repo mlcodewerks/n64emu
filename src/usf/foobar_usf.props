@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <UseParallaxUSF Condition="'$(UseParallaxUSF)' == '' and ('$(Platform)' == 'Win32' or '$(Platform)' == 'x64')">true</UseParallaxUSF>
+    <UseParallaxUSF Condition="'$(UseParallaxUSF)' == ''">false</UseParallaxUSF>
+    <ParallaxUSFRoot Condition="'$(ParallaxUSFRoot)' == ''">@PARALLAX_ROOT@</ParallaxUSFRoot>
+    <ParallaxUSFDirectory Condition="'$(ParallaxUSFDirectory)' == ''">$(ParallaxUSFRoot)\build\usf\$(Platform)</ParallaxUSFDirectory>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(UseParallaxUSF)' == 'true'">
+    <ClCompile>
+      <PreprocessorDefinitions>PARALLAX_USF_COMPONENT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(ParallaxUSFDirectory);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>parallax_usf.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <DelayLoadDLLs>parallax_usf.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup Condition="'$(UseParallaxUSF)' == 'true'">
+    <ClCompile Include="$(MSBuildThisFileDirectory)parallax_usf_delay.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+  </ItemGroup>
+  <Target Name="CheckParallaxUSF" BeforeTargets="PrepareForBuild" Condition="'$(UseParallaxUSF)' == 'true'">
+    <Error Condition="!Exists('$(ParallaxUSFDirectory)\parallax_usf.lib') or !Exists('$(ParallaxUSFDirectory)\parallax_usf.dll')"
+           Text="Build the $(Platform) Parallax USF library into $(ParallaxUSFDirectory), or set UseParallaxUSF=false to build lazyusf2." />
+  </Target>
+  <Target Name="CopyParallaxUSF" AfterTargets="Build" Condition="'$(UseParallaxUSF)' == 'true'">
+    <Copy SourceFiles="$(ParallaxUSFDirectory)\parallax_usf.dll" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

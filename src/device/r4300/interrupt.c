@@ -3,6 +3,9 @@
 #define PARALLAX_CORE_PROTOTYPES 1
 
 #include "interrupt.h"
+#ifdef PARALLAX_USF
+#include "usf/internal.h"
+#endif
 
 #ifdef __MINGW32__
 #define _CRT_RAND_S
@@ -224,6 +227,9 @@ void remove_event(struct interrupt_queue* q, int type)
 
 void schedule_compare(struct cp0* cp0)
 {
+#ifdef PARALLAX_USF
+    if (!parallax_usf_compare_enabled()) { remove_event(&cp0->q, COMPARE_INT); return; }
+#endif
     int64_t delta = (uint32_t)(cp0->regs[CP0_COMPARE_REG] - cp0->regs[CP0_COUNT_REG]);
 
     remove_event(&cp0->q, COMPARE_INT);

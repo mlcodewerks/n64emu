@@ -1,9 +1,12 @@
-#ifdef DEBUG_JIT
+#if defined(PARALLAX_RSP_INTERPRETER)
+#include "rsp_interpreter.hpp"
+#elif defined(DEBUG_JIT)
 #include "debug_rsp.hpp"
 #else
 #include "rsp_jit.hpp"
 #endif
 #include <stdint.h>
+#include <cstring>
 #include "dpc_bridge.h"
 #include "hle_boot_probe.hpp"
 
@@ -22,7 +25,9 @@ extern "C" {
 namespace RSP
 {
 rsp_memory rsp;
-#ifdef DEBUG_JIT
+#if defined(PARALLAX_RSP_INTERPRETER)
+RSP::Interpreter cpu;
+#elif defined(DEBUG_JIT)
 RSP::CPU cpu;
 #else
 RSP::JIT::CPU cpu;
@@ -228,7 +233,12 @@ extern "C"
 #if defined(__LIBRETRO__) && !defined(DEBUG_JIT)
         RSP::cpu.set_cycle_timing(renderer_component_timing());
         core_log(CORE_LOG_INFO,"RSP backend: %s; component timing %s",
-                     renderer_settings.rsp_hle ? "HLE with native fallback" : "JIT LLE",
+                     renderer_settings.rsp_hle ? "HLE with native fallback" :
+#ifdef PARALLAX_RSP_INTERPRETER
+                     "portable LLE",
+#else
+                     "JIT LLE",
+#endif
                      renderer_component_timing() ? "on" : "off");
 #endif
 	}

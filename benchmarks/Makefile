@@ -9,6 +9,9 @@ endif
 
 all: benchmark
 
+usf_checks: usf_checks.c ../src/usf/usf.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ usf_checks.c $(LDLIBS)
+
 # Requires EGL and GLES2 headers/libraries; runs shader and device checks on a pbuffer.
 legacy_gles2_checks: legacy_gles2_checks.cpp $(wildcard ../src/device/rcp/rdp/legacygpu/*.hpp) ../src/device/rcp/rdp/legacygpu/gles2_gpu.cpp ../src/device/rcp/rdp/legacygpu/legacy_shaders.cpp ../src/device/rcp/rdp/legacygpu/raster_shaders.cpp
 	$(CXX) -std=c++17 -O2 -fno-fast-math -o $@ legacy_gles2_checks.cpp ../src/device/rcp/rdp/legacygpu/gles2_gpu.cpp ../src/device/rcp/rdp/legacygpu/legacy_shaders.cpp ../src/device/rcp/rdp/legacygpu/raster_shaders.cpp -lEGL -lGLESv2

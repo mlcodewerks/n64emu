@@ -24,7 +24,11 @@ void init_r4300(struct r4300_core* r4300, struct memory* mem, struct mi_controll
 {
 
     (void)emumode;
+#ifdef HAVE_PARALLAXJIT
     r4300->emumode = EMUMODE_DYNAREC;
+#else
+    r4300->emumode = EMUMODE_INTERPRETER;
+#endif
     init_cp0(&r4300->cp0, interrupt_handlers);
     init_cp1(&r4300->cp1);
 

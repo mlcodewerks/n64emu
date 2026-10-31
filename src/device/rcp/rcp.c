@@ -1,5 +1,8 @@
 
 #include "rcp.h"
+#ifdef PARALLAX_USF
+#include "usf/internal.h"
+#endif
 #include <string.h>
 #include "core/audio.h"
 #include "device/memory.h"
@@ -113,12 +116,24 @@ static void do_dma(struct ai_controller* ai, struct ai_dma* dma, int64_t start)
 
     ai->last_read = dma->length;
 
+
     if (ai->delayed_carry) dma->address += 0x2000;
 
     if (((dma->address + dma->length) & 0x1FFF) == 0)
         ai->delayed_carry = 1;
     else
         ai->delayed_carry = 0;
+
+#ifdef PARALLAX_USF
+    /* USF streams are captured at DMA submission, as in lazyusf2. The DAC
+     * scheduler still drives the guest's AI interrupts and FIFO status. */
+    size_t ram_size = ai->ri->rdram->dram_size;
+    uint32_t address = dma->address & 0x7ffff8;
+    size_t bytes = dma->length;
+    if (address < ram_size && bytes <= ram_size-address)
+        ai->iaout->push_samples(ai->aout,(uint8_t*)ai->ri->rdram->dram+address,bytes);
+    ai->last_read = 0;
+#endif
 
     /* schedule end of dma event */
     cp0_update_count(ai->mi->r4300);
@@ -139,6 +154,10 @@ static void fifo_push(struct ai_controller* ai)
         ai->fifo[1].address = ai->regs[AI_DRAM_ADDR_REG] & UINT32_C(0x00fffff8);
         ai->fifo[1].length = ai->regs[AI_LEN_REG] & ~UINT32_C(7);
         ai->fifo[1].duration = duration;
+#ifdef PARALLAX_USF
+        if (!parallax_usf_fifo_enabled()) do_dma(ai,&ai->fifo[1],ai_clock(ai));
+        else
+#endif
         ai->regs[AI_STATUS_REG] |= AI_STATUS_FULL;
     }
     else

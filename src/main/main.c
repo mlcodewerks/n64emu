@@ -11,6 +11,9 @@
 
 
 #include "core/log.h"
+#ifdef PARALLAX_USF
+#include "usf/internal.h"
+#endif
 #include "core/types.h"
 #include "core/audio.h"
 #include "core/clock.h"
@@ -918,7 +921,11 @@ void main_prerun(void)
                 g_start_address,
                 &g_dev.ai, &g_libretro_audio_backend,
                 si_dma_duration,
+#ifdef PARALLAX_USF
+                parallax_usf_rdram_size(),
+#else
                 0x800000, /* Expansion Pak is always installed (8 MiB). */
+#endif
                 joybus_devices, ijoybus_devices,
                 vi_clock_from_tv_standard(ROM_PARAMS.systemtype), vi_expected_refresh_rate_from_tv_standard(ROM_PARAMS.systemtype),
                 NULL, &g_iclock_ctime_plus_delta,

@@ -18,6 +18,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 */
 #ifndef WTFN64_RSP_TIMING_HPP
 #define WTFN64_RSP_TIMING_HPP
+#include <cstdint>
 
 // Straight-line JIT timing: predecessor stages at region entries remain unmodeled.
 // Taken-branch redirect clocks are emitted by the JIT after delay slots. Scalar/vector pairs share one issue clock when Ares permits it.

@@ -218,6 +218,22 @@ static void emu_step_initialize(void)
     core_bind_backends();
 }
 
+#ifdef PARALLAX_USF
+void main_prerun(void);
+int parallax_usf_prepare(void)
+{
+    if (!load_game_successful) return 0;
+    emu_step_initialize();
+    if (initializing) { main_prerun(); initializing = false; }
+    return g_EmulatorRunning;
+}
+void parallax_usf_step(void)
+{
+    main_run();
+    ai_flush_samples(&g_dev.ai);
+}
+#endif
+
 void run_emulation_frame()
 {
     if (initializing)
@@ -944,6 +960,9 @@ int renderer_open_content(void)
     struct n64video_config config;
     n64video_config_init(&config);
     config.parallel = true;
+#ifdef PARALLAX_USF
+    config.parallel = false;
+#endif
     config.num_workers = renderer_settings.threads;
     config.upscale = renderer_settings.upscale;
     config.dithering = true;

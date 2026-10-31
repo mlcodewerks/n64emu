@@ -7,6 +7,15 @@ LLE ?= 0
 HAVE_PARALLEL_RSP ?= 1
 HAVE_PARALLEL_RDP ?= 1
 HAVE_GLRDP ?= 1
+CPU_BACKEND ?= auto
+RSP_BACKEND ?= auto
+USF ?= 0
+ifeq (,$(filter $(CPU_BACKEND),auto interpreter))
+$(error CPU_BACKEND must be auto or interpreter)
+endif
+ifeq (,$(filter $(RSP_BACKEND),auto jit interpreter))
+$(error RSP_BACKEND must be auto, jit or interpreter)
+endif
 
 SYSTEM_MINIZIP ?= 0
 SYSTEM_LIBPNG ?= 0
@@ -82,10 +91,42 @@ endif
 endif
 
 ifeq (,$(ARCH))
-   ARCH = $(shell uname -m)
+   ARCH = $(firstword $(subst -, ,$(shell $(CC) -dumpmachine)))
+   ifeq (,$(ARCH))
+      ARCH = $(shell uname -m)
+   endif
+endif
+
+ifneq (,$(filter amd64,$(ARCH)))
+override ARCH := x86_64
+endif
+ifeq ($(ARCH),arm64)
+override ARCH := aarch64
+endif
+
+# Normalize explicit 32-bit targets before selecting native emitters.
+ifneq (,$(filter x86 i386 i486 i586 i686,$(ARCH)))
+override ARCH := x86
+CPUFLAGS += -m32 -msse2 -mfpmath=sse
+endif
+ifneq (,$(filter arm arm32 armv7 armv7l armhf,$(ARCH)))
+override ARCH := arm
+CPUFLAGS += -march=armv7-a -mfpu=neon -mfloat-abi=hard
+endif
+ifeq ($(RSP_BACKEND),auto)
+ifneq (,$(filter x86 arm,$(ARCH)))
+RSP_BACKEND := interpreter
+else
+RSP_BACKEND := jit
+endif
 endif
 
 # Target Dynarec
+ifneq (,$(filter x86 arm,$(ARCH)))
+ifeq ($(RSP_BACKEND),jit)
+$(error RSP JIT requires x86-64 or AArch64; use RSP_BACKEND=interpreter on $(ARCH))
+endif
+endif
 WITH_DYNAREC ?= $(ARCH)
 
 PIC = 1
@@ -504,18 +545,14 @@ else
    TARGET := $(TARGET_NAME)_libretro.dll
    LDFLAGS += -shared -Wl,--version-script=$(ROOT_DIR)/src/link.T
 
-   ifeq ($(MSYSTEM),MINGW64)
-      CC ?= x86_64-w64-mingw32-gcc
-      CXX ?= x86_64-w64-mingw32-g++
-      WITH_DYNAREC = x86_64
+   WITH_DYNAREC = $(ARCH)
+   ifeq ($(ARCH),x86_64)
       COREFLAGS += -DWIN64 #-DPARALLAX_NETPLAY
       ASFLAGS = -f win64 -d WIN64
       PIC = 1
-   else ifeq ($(MSYSTEM),MINGW32)
-      CC ?= i686-w64-mingw32-gcc
-      CXX ?= i686-w64-mingw32-g++
-      WITH_DYNAREC = x86
+   else ifeq ($(ARCH),x86)
       COREFLAGS += -DWIN32
+      LDFLAGS += -static
       PIC = 1
       ASFLAGS = -f win32 -d WIN32 -d LEADING_UNDERSCORE
    endif
@@ -542,6 +579,18 @@ endif
 HAVE_GLES2_RDP ?= $(if $(filter 1,$(GLES) $(GLES3) $(FORCE_GLES) $(FORCE_GLES3)),1,0)
 HAVE_GL2_RDP ?= $(if $(filter 1,$(GLES) $(GLES3) $(FORCE_GLES) $(FORCE_GLES3)),0,1)
 HAVE_D3D9 ?= 0
+ifeq ($(USF),1)
+override HAVE_PARALLEL_RDP := 0
+override HAVE_GLRDP := 0
+override HAVE_GL2_RDP := 0
+override HAVE_GLES2_RDP := 0
+override HAVE_D3D9 := 0
+COREFLAGS += -DPARALLAX_USF
+TARGET := $(subst parallax_libretro,parallax_usf,$(TARGET))
+ifneq (,$(findstring win,$(platform)))
+LDFLAGS += -static -Wl,--out-implib,$(TARGET:.dll=.lib) -Wl,--output-def,$(TARGET:.dll=.def)
+endif
+endif
 
 include Makefile.common
 
@@ -619,9 +668,18 @@ endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
 # ParallaxJIT emitter, runtime layout and optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):gl2=$(HAVE_GL2_RDP):gles2=$(HAVE_GLES2_RDP):d3d9=$(HAVE_D3D9):headless=$(HEADLESS_BENCHMARK):$(WITH_DYNAREC):parallaxjit-only-v1:debug=$(DEBUG):profile=$(PARALLAXJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):gl2=$(HAVE_GL2_RDP):gles2=$(HAVE_GLES2_RDP):d3d9=$(HAVE_D3D9):headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(PARALLAXJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
+# Wrapper invocations must leave the child's configuration stamp intact.
+CONFIG_WRAPPERS := x86 arm32 usf usf-x86 usf-arm32 rpi4 rpi5
+ifneq ($(strip $(MAKECMDGOALS)),)
+ifeq (,$(filter-out $(CONFIG_WRAPPERS),$(MAKECMDGOALS)))
+SKIP_CPU_CONFIG := 1
+endif
+endif
+ifneq ($(SKIP_CPU_CONFIG),1)
 ifneq ($(strip $(file <$(CPU_JIT_CONFIG))),$(CPU_JIT_CONFIG_VALUE))
 $(file >$(CPU_JIT_CONFIG),$(CPU_JIT_CONFIG_VALUE))
+endif
 endif
 $(OBJECTS): $(CPU_JIT_CONFIG)
 CXXFLAGS    += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(GLFLAGS) $(DYNAFLAGS)
@@ -649,6 +707,17 @@ all: $(TARGET)
 .PHONY: rpi4 rpi5
 rpi4 rpi5:
 	$(MAKE) platform=$@ all
+.PHONY: x86 arm32 usf usf-x86 usf-arm32
+x86:
+	$(MAKE) ARCH=x86 HAVE_GLRDP=0 HAVE_PARALLEL_RDP=0 all
+arm32:
+	$(MAKE) platform=unix ARCH=arm FORCE_GLES=1 HAVE_GLRDP=0 HAVE_PARALLEL_RDP=0 all
+usf:
+	$(MAKE) USF=1 all
+usf-x86:
+	$(MAKE) USF=1 ARCH=x86 all
+usf-arm32:
+	$(MAKE) USF=1 platform=unix ARCH=arm HAVE_PARALLEL_RDP=0 all
 $(CORE_DIR)/src/device/r4300/cpu_ops.o: $(addprefix $(CORE_DIR)/src/device/r4300/,fpu_arithmetic.h fpu_compare.h fpu_native.h interp_fpu_move.h)
 $(CORE_DIR)/src/device/r4300/jit_runtime.o $(CORE_DIR)/src/device/r4300/cpu_ops.o: $(addprefix $(CORE_DIR)/src/device/r4300/,interp_fpu_move.h interp_thread_poll.h)
 $(CORE_DIR)/src/device/r4300/fpu_native.o: $(addprefix $(CORE_DIR)/src/device/r4300/,fpu_native.h fpu_neon.h cp1.h)
