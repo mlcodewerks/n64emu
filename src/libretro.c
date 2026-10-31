@@ -542,13 +542,15 @@ bool retro_load_game(const struct retro_game_info *game)
     renderer_read_options(environ_cb);
     if (log_cb)
         log_cb(RETRO_LOG_INFO, "Renderer: %s, upscale %ux, performance cores %s.\n",
-                renderer_settings.renderer == RENDERER_SOFTRDP ? "SoftRDP" : renderer_settings.renderer == RENDERER_GL2 ? "GL2 GPU" : renderer_settings.renderer == RENDERER_D3D9 ? "D3D9 GPU" : renderer_settings.renderer == RENDERER_DX11 ? "DX11" : renderer_native_gpu(renderer_settings.renderer) ? "GLRDP" : "paraLLEl-RDP",
+                renderer_settings.renderer == RENDERER_SOFTRDP ? "SoftRDP" : renderer_settings.renderer == RENDERER_GL2 ? "GL2 GPU" : renderer_settings.renderer == RENDERER_GLES2 ? "GLES2 GPU" : renderer_settings.renderer == RENDERER_D3D9 ? "D3D9 GPU" : renderer_settings.renderer == RENDERER_DX11 ? "DX11" : renderer_native_gpu(renderer_settings.renderer) ? "GLRDP" : "paraLLEl-RDP",
                 renderer_settings.upscale, renderer_settings.performance_only ? "only" : "unrestricted");
     performance_cores_init();
     performance_cores_set_enabled(renderer_settings.performance_only);
 #ifdef HAVE_LEGACY_GPU
-    if(renderer_legacy_gpu(renderer_settings.renderer) && !legacygpu_request_context(environ_cb,renderer_settings.renderer==RENDERER_D3D9)){
-        if(log_cb)log_cb(RETRO_LOG_ERROR,"Legacy GPU: compatible GL2/D3D9 frontend required.\n");
+    if(renderer_legacy_gpu(renderer_settings.renderer) && !legacygpu_request_context(environ_cb,
+        renderer_settings.renderer==RENDERER_D3D9 ? LEGACYGPU_D3D9 :
+        renderer_settings.renderer==RENDERER_GLES2 ? LEGACYGPU_GLES2 : LEGACYGPU_GL2)){
+        if(log_cb)log_cb(RETRO_LOG_ERROR,"Legacy GPU: frontend does not support the selected GL2/GLES2/D3D9 context.\n");
         return false;
     }
 #endif

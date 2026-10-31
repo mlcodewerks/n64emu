@@ -17,21 +17,27 @@ struct renderer_settings renderer_settings;
 #else
 #define RENDERERS_MODERN RENDERERS_BASE
 #endif
-#ifdef HAVE_LEGACY_GPU
-#ifdef HAVE_D3D9
-#define RENDERERS RENDERERS_MODERN "|gl2|d3d9"
+#ifdef HAVE_GL2_RDP
+#define RENDERERS_GL2 RENDERERS_MODERN "|gl2"
 #else
-#define RENDERERS RENDERERS_MODERN "|gl2"
+#define RENDERERS_GL2 RENDERERS_MODERN
 #endif
+#ifdef HAVE_D3D9
+#define RENDERERS_D3D9 RENDERERS_GL2 "|d3d9"
 #else
-#define RENDERERS RENDERERS_MODERN
+#define RENDERERS_D3D9 RENDERERS_GL2
+#endif
+#ifdef HAVE_GLES2_RDP
+#define RENDERERS RENDERERS_D3D9 "|gles2"
+#else
+#define RENDERERS RENDERERS_D3D9
 #endif
 /* Legacy options are supported by every libretro frontend; first value is default.
  * Settings are latched at content load, keeping renderer resources and RDRAM intact. */
 static const struct retro_variable options[] = {
     {"wtfn64_renderer", "Renderer (restart required); " RENDERERS},
 #ifdef HAVE_LEGACY_GPU
-    {"wtfn64_legacy_upscale", "GL2/D3D9 internal upscaling (restart required); 1|2|4"},
+    {"wtfn64_legacy_upscale", "Legacy GPU internal upscaling (restart required); 1|2|4"},
 #endif
 #ifdef HAVE_GLRDP
     {"wtfn64_glrdp_upscale", "GPU RDP internal upscaling (restart required); 1|2|4|8"},
@@ -118,7 +124,7 @@ void renderer_register_options(retro_environment_t environment)
             d->info = "Changes take effect when content is restarted.";
             d->category_key = "video";
             if(!strcmp(d->key,"wtfn64_renderer"))
-                d->info="GLRDP, DX11, GL2 and D3D9 render RDP primitives on the GPU. Legacy APIs use dedicated shaders and framebuffer workarounds. Restart content to apply.";
+                d->info="GLRDP, DX11, GL2, GLES2 and D3D9 render RDP primitives on the GPU. Legacy APIs use dedicated shaders and framebuffer workarounds. Restart content to apply.";
             if (strstr(d->key, "angrylion")) d->category_key = "angrylion";
             else if (strstr(d->key, "glrdp")) d->category_key = "glrdp";
             else if (strstr(d->key, "parallel") || strstr(d->key, "ss_") || strstr(d->key, "native_tex_rect")) d->category_key = "parallel";
@@ -178,6 +184,7 @@ void renderer_register_options(retro_environment_t environment)
                 if (next) *next++ = 0;
                 d->values[j++].value = p;
                 if(!strcmp(d->key,"wtfn64_renderer")) {
+                    if(!strcmp(p,"gles2"))d->values[j-1].label="OpenGL ES 2 GPU";
                     if(!strcmp(p,"gl2"))d->values[j-1].label="OpenGL 2 GPU";
                     if(!strcmp(p,"d3d9"))d->values[j-1].label="Direct3D 9 GPU";
                 }
@@ -269,8 +276,13 @@ void renderer_read_options(retro_environment_t env)
     if (strcmp(value(env, "wtfn64_renderer", "softrdp"), "parallel-rdp") == 0)
         s->renderer = RENDERER_PARALLEL;
 #endif
-#ifdef HAVE_LEGACY_GPU
+#ifdef HAVE_GLES2_RDP
+    if (!strcmp(value(env,"wtfn64_renderer","softrdp"),"gles2"))s->renderer=RENDERER_GLES2;
+#endif
+#ifdef HAVE_GL2_RDP
     if (!strcmp(value(env,"wtfn64_renderer","softrdp"),"gl2"))s->renderer=RENDERER_GL2;
+#endif
+#ifdef HAVE_LEGACY_GPU
 #ifdef HAVE_D3D9
     if (!strcmp(value(env,"wtfn64_renderer","softrdp"),"d3d9"))s->renderer=RENDERER_D3D9;
 #endif

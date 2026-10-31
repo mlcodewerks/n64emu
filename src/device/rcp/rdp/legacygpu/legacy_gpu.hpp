@@ -48,11 +48,13 @@ class Device : public FramebufferStorage {
 using Proc = void (*)();
 using Resolver = Proc (*)(const char *);
 std::unique_ptr<Device> make_gl2(Resolver resolver, bool force_power_of_two = false);
+std::unique_ptr<Device> make_gles2(Resolver resolver);
 #ifdef _WIN32
 std::unique_ptr<Device> make_d3d9(IDirect3DDevice9 *device, bool force_power_of_two = false,
                                   bool force_square = false, Proc compiler = nullptr);
 #endif
 std::string fragment_shader(Kernel kernel, bool hlsl);
+std::string fragment_shader(Kernel kernel, ShaderDialect dialect);
 void validate_images(const Image &a, const Image &b, unsigned limit);
 unsigned storage_extent(unsigned logical, bool power_of_two);
 } // namespace glrdp::legacy

@@ -25,6 +25,7 @@ std::unique_ptr<RasterRenderer> renderer;
 std::unique_ptr<RDPCommandParser> parser;
 N64Memory rdram_memory;
 bool d3d = false, ready = false, opened = false;
+legacygpu_backend backend = LEGACYGPU_GL2;
 std::vector<std::uint8_t> commands;
 #ifdef HAVE_D3D9
 const retro_hw_render_interface_d3d9 *iface = nullptr;
@@ -123,8 +124,20 @@ void context_reset() {
 #endif
         } else {
             if (!hardware.get_proc_address || !hardware.get_current_framebuffer)
-                throw std::runtime_error("GL2 frontend callbacks unavailable");
-            device = make_gl2(reinterpret_cast<Resolver>(hardware.get_proc_address));
+                throw std::runtime_error("Legacy GL frontend callbacks unavailable");
+            if (backend == LEGACYGPU_GLES2) {
+#ifdef HAVE_GLES2_RDP
+                device = make_gles2(reinterpret_cast<Resolver>(hardware.get_proc_address));
+#else
+                throw std::runtime_error("GLES2 was not compiled for this platform");
+#endif
+            } else {
+#ifdef HAVE_GL2_RDP
+                device = make_gl2(reinterpret_cast<Resolver>(hardware.get_proc_address));
+#else
+                throw std::runtime_error("GL2 was not compiled for this platform");
+#endif
+            }
         }
         {
             Session session;
@@ -154,15 +167,21 @@ unsigned registers_size() {
     return n;
 }
 } // namespace
-extern "C" bool legacygpu_request_context(retro_environment_t env, bool d3d9) {
+extern "C" bool legacygpu_request_context(retro_environment_t env, legacygpu_backend selected) {
     environment = env;
-    d3d = d3d9;
+    backend = selected;
+    d3d = selected == LEGACYGPU_D3D9;
     hardware = {};
     hardware.context_reset = context_reset;
     hardware.context_destroy = context_destroy;
     hardware.cache_context = false;
     hardware.bottom_left_origin = !d3d;
-    hardware.context_type = d3d ? RETRO_HW_CONTEXT_D3D9 : RETRO_HW_CONTEXT_OPENGL;
+    hardware.context_type = backend == LEGACYGPU_GLES2 ? RETRO_HW_CONTEXT_OPENGLES2 : RETRO_HW_CONTEXT_OPENGL;
+#ifdef HAVE_D3D9
+    if (d3d) hardware.context_type = RETRO_HW_CONTEXT_D3D9;
+#else
+    if (d3d) return false;
+#endif
     hardware.version_major = d3d ? 9 : 2;
     if (env(RETRO_ENVIRONMENT_SET_HW_RENDER, &hardware))
         return true;

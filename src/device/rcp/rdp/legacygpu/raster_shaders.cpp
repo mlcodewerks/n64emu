@@ -2,6 +2,7 @@
 #include "legacy_gpu.hpp"
 #include <cstdlib>
 #include <string>
+#include <regex>
 namespace glrdp::legacy {
 RasterKey raster_key(const RasterDraw &draw) {
     RasterKey key{};
@@ -46,7 +47,9 @@ uniform sampler2D memory_color,tile0,tile1,old_depth,new_depth,noise_tex,recipro
     s += "#define LOD_PASS " + std::to_string(pass == RasterShader::LOD) + "\n";
     s += "#define TEXEL0_PASS " + std::to_string(pass == RasterShader::Texel0) + "\n";
     s += "#define TEXEL1_PASS " + std::to_string(pass == RasterShader::Texel1) + "\n";
-    s += "#define SHADE_PASS " + std::to_string(pass == RasterShader::Shade) + "\n";
+    s += "#define SHADE_PASS " + std::to_string(pass == RasterShader::Shade || pass == RasterShader::Candidate) + "\n";
+    s += "#define COVERAGE_ALPHA_PASS " + std::to_string(pass == RasterShader::CoverageAlpha) + "\n";
+    s += "#ifndef GLES2_PIPELINE\n#define GLES2_PIPELINE 0\n#endif\n";
     s += "#define ALPHA0_PASS " + std::to_string(pass == RasterShader::Alpha0) + "\n";
     s += "#define DEPTH_PASS " + std::to_string(pass == RasterShader::Depth) + "\n";
     s += "#define VI_PASS " + std::to_string(pass == RasterShader::Present) + "\n";
@@ -713,6 +716,9 @@ V4 raster_pixel(V2 p){
 #else
     V2 anchor;float cvg=coverage(p,anchor),geometric=cvg;
     V4 pixel;
+#if GLES2_PIPELINE
+    pixel=frame(combined_color,p*max(c[29].z,1.0),c[0]);
+#else
 #if DEPTH_PASS
     if(c[1].x<2.0&&c[27].y<0.5&&c[27].w<0.5&&c[28].w<0.5)pixel=V4(0.0,0.0,0.0,255.0);
     else
@@ -721,7 +727,13 @@ V4 raster_pixel(V2 p){
     if(c[1].x<2.0)pixel=frame(combined_color,p*max(c[29].z,1.0),c[0]);else
 #endif
     pixel=shade_pixel(p,anchor,geometric,false);
+#endif
     V4 memory=c[41].z>0.5?frame(memory_color,floor(p)*max(c[29].z,1.0)+V2(0.5,0.5)*max(c[29].z,1.0),c[0]):V4(0.0,0.0,0.0,255.0);
+#if GLES2_PIPELINE && !COVERAGE_ALPHA_PASS
+    V4 alpha_metadata=frame(coverage_alpha,p*max(c[29].z,1.0),c[0]);
+    if(alpha_metadata.a<128.0)discard;
+    cvg=alpha_metadata.r;pixel.a=alpha_metadata.g;
+#else
     if(c[1].x<2.0){
         if(c[28].w>0.5){V3 distance=abs(pixel.rgb-c[42].rgb),range=max(c[43].rgb,V3(1.0,1.0,1.0));if(distance.r<=range.r&&distance.g<=range.g&&distance.b<=range.b)discard;}
         float alpha_value=pixel.a==255.0?256.0:pixel.a;
@@ -750,6 +762,12 @@ V4 raster_pixel(V2 p){
         if((c[27].w==1.0||c[27].w==3.0)&&compare_alpha<alpha)discard;
         if(cvg<0.5&&c[26].x>0.5)discard;
     }else if(c[1].x<3.0){if(c[29].w==2.0)pixel.a=rem(pixel.a,2.0)>0.5?255.0:0.0;if(c[27].w>0.0&&pixel.a<1.0)discard;}
+#endif
+#if COVERAGE_ALPHA_PASS
+    float sa=c[41].w>0.5?shade_values(p,anchor,geometric).a:clamp(floor(span_value(c[10],anchor)),0.0,255.0);
+    float dm=matrix_value(floor(p),c[28].x==1.0||c[28].x==3.0),da=c[28].y==3.0?0.0:(c[28].y==2.0?rem(hash_noise(floor(p)),8.0):(c[28].y==1.0?7.0-dm:dm));
+    return V4(cvg,pixel.a,min(sa+da,255.0),255.0)/255.0;
+#else
 #if !DEPTH_PASS
     if(c[1].x>=2.0&&c[45].x<0.5){
         if(c[29].w==2.0)pixel.a=pixel.a>128.0?255.0:32.0;
@@ -765,8 +783,13 @@ V4 raster_pixel(V2 p){
 #else
     if(c[45].x>0.5)return pixel/255.0;
     V4 accepted=frame(new_depth,floor(p)*max(c[29].z,1.0)+V2(0.5,0.5)*max(c[29].z,1.0),c[40]);if(accepted.a<128.0)discard;
-    float cv=rem(accepted.a,8.0),shade_alpha=c[41].w>0.5?shade_values(p,anchor,geometric).a:clamp(floor(span_value(c[10],anchor)),0.0,255.0);
+    float cv=rem(accepted.a,8.0);
+#if GLES2_PIPELINE
+    float shade_alpha=alpha_metadata.b;
+#else
+    float shade_alpha=c[41].w>0.5?shade_values(p,anchor,geometric).a:clamp(floor(span_value(c[10],anchor)),0.0,255.0);
     float amatrix=matrix_value(floor(p),c[28].x==1.0||c[28].x==3.0),adither=c[28].y==3.0?0.0:(c[28].y==2.0?rem(hash_noise(floor(p)),8.0):(c[28].y==1.0?7.0-amatrix:amatrix));shade_alpha=min(shade_alpha+adither,255.0);
+#endif
     if(c[1].x<2.0){
         cvg=min(cvg,floor(accepted.b/64.0)*4.0+rem(floor(accepted.a/32.0),4.0));
         if(cvg<0.5&&c[26].x>0.5)discard;
@@ -789,6 +812,7 @@ V4 raster_pixel(V2 p){
         else pixel.a=c[29].w>2.5?cv*32.0:floor((cv+1.0)*255.0/8.0+0.5);
     }else if(c[1].x<3.0)pixel.a=255.0;
     return pixel/255.0;
+#endif
 #endif
 #endif
 }
@@ -849,6 +873,59 @@ V4 raster_pixel(V2 p){
                                                         "," + std::to_string(v[3]) + "))");
         }
     }
+    return s;
+}
+
+std::string raster_fragment_shader(RasterShader pass, ShaderDialect dialect, const RasterDraw *draw) {
+    if (dialect != ShaderDialect::GLSLES100)
+        return raster_fragment_shader(pass, dialect == ShaderDialect::HLSL3, draw);
+    auto s = raster_fragment_shader(pass, false, draw);
+    s.replace(0, s.find('\n') + 1,
+              "#version 100\nprecision highp float;\nprecision highp sampler2D;\n"
+              "varying highp vec2 pixel_position;\n#define GLES2_PIPELINE 1\n");
+    const auto declaration = s.find("uniform vec4 c[112];");
+    s.replace(declaration, std::string("uniform vec4 c[112];").size(), R"(
+uniform sampler2D draw_state;
+uniform sampler2D coverage_alpha;
+float state_scalar(float i) {
+    vec2 p=vec2(mod(i,16.0),floor(i/16.0));
+    vec4 b=floor(texture2D(draw_state,(p+0.5)/vec2(16.0,32.0))*255.0+0.5);
+    float exponent=mod(b.a,128.0)*2.0+floor(b.b/128.0);
+    if(exponent==0.0)return 0.0;
+    float mantissa=mod(b.b,128.0)*65536.0+b.g*256.0+b.r;
+    return (b.a>=128.0?-1.0:1.0)*(1.0+mantissa/8388608.0)*exp2(exponent-127.0);
+}
+vec4 C(float i) { return vec4(state_scalar(i*4.0),state_scalar(i*4.0+1.0),
+                             state_scalar(i*4.0+2.0),state_scalar(i*4.0+3.0)); }
+)");
+    s = std::regex_replace(s, std::regex(R"(c\[([0-9]+)\])"), "C($1.0)");
+    s = std::regex_replace(s, std::regex(R"(\bpacked\b)"), "packed_byte");
+    const std::string coordinate = "vec2(gl_FragCoord.x,C(103.0).y-gl_FragCoord.y)";
+    s.replace(s.find(coordinate), coordinate.size(), "pixel_position");
+    if (pass == RasterShader::Candidate) {
+        const auto at = s.find("#define SPLIT_TEXTURES 1");
+        s.replace(at, std::string("#define SPLIT_TEXTURES 1").size(), "#define SPLIT_TEXTURES 0");
+    }
+    // Fetch each packet vector once per fragment, rather than repeating four
+    // byte-texture reads at every helper call. Unused globals are eliminated.
+    std::string declarations, initialize;
+    for (unsigned i = 0; i < 112; ++i) {
+        const auto access = "C(" + std::to_string(i) + ".0)";
+        const auto name = "state_" + std::to_string(i);
+        std::size_t at = 0;
+        bool used = false;
+        while ((at = s.find(access, at)) != std::string::npos) {
+            s.replace(at, access.size(), name);
+            at += name.size(); used = true;
+        }
+        if (used) {
+            declarations += "vec4 " + name + ";\n";
+            initialize += name + "=" + access + ";\n";
+        }
+    }
+    const auto header = s.find("#define V2");
+    s.insert(header, declarations);
+    s.insert(s.find("void main(){") + std::string("void main(){").size(), initialize);
     return s;
 }
 } // namespace glrdp::legacy

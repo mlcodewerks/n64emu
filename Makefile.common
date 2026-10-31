@@ -107,9 +107,40 @@ $(PARALLEL_RDP_IMPLEMENTATION)/parallel-rdp/command_ring.o: $(CORE_DIR)/src/devi
 $(CORE_DIR)/src/device/rcp/rdp/parallel_imp.o: $(CORE_DIR)/src/renderer_options.h $(CORE_DIR)/src/device/rcp/rdp/performance_cores.h
 endif
 
-ifeq ($(HAVE_GLRDP),1)
 GLRDP_DIR = $(CORE_DIR)/src/device/rcp/rdp/glrdp
-SOURCES_CXX += $(addprefix $(GLRDP_DIR)/,libretro_glrdp.cpp gl_loader.cpp gl_state_guard.cpp framebuffer_manager.cpp rdp_parser.cpp rdp_tmem.cpp rdp_renderer.cpp)
+ifneq (,$(filter 1,$(HAVE_GLRDP) $(HAVE_GL2_RDP) $(HAVE_GLES2_RDP) $(HAVE_D3D9)))
+# FramebufferManager's storage interface is shared by modern and legacy devices.
+SOURCES_CXX += $(addprefix $(GLRDP_DIR)/,gl_loader.cpp framebuffer_manager.cpp rdp_parser.cpp rdp_tmem.cpp)
+$(addprefix $(GLRDP_DIR)/,gl_loader.o framebuffer_manager.o rdp_parser.o rdp_tmem.o): CXXFLAGS += -std=c++20 -O3 -fno-fast-math
+endif
+
+ifneq (,$(filter 1,$(HAVE_GL2_RDP) $(HAVE_GLES2_RDP) $(HAVE_D3D9)))
+LEGACY_GPU_DIR = $(CORE_DIR)/src/device/rcp/rdp/legacygpu
+SOURCES_CXX += $(addprefix $(LEGACY_GPU_DIR)/,libretro_legacy.cpp raster_renderer.cpp raster_shaders.cpp legacy_shaders.cpp)
+COREFLAGS += -DHAVE_LEGACY_GPU
+ifeq ($(HAVE_GL2_RDP),1)
+SOURCES_CXX += $(LEGACY_GPU_DIR)/gl2_gpu.cpp
+COREFLAGS += -DHAVE_GL2_RDP
+ifneq (,$(findstring win,$(platform)))
+LDFLAGS += -lopengl32
+else
+LDFLAGS += $(GL_LIB)
+endif
+endif
+ifeq ($(HAVE_GLES2_RDP),1)
+SOURCES_CXX += $(LEGACY_GPU_DIR)/gles2_gpu.cpp
+COREFLAGS += -DHAVE_GLES2_RDP
+# GLES symbols are resolved through the frontend; no desktop GL linkage needed.
+endif
+ifeq ($(HAVE_D3D9),1)
+SOURCES_CXX += $(LEGACY_GPU_DIR)/d3d9_gpu.cpp
+COREFLAGS += -DHAVE_D3D9
+endif
+$(addprefix $(LEGACY_GPU_DIR)/,libretro_legacy.o raster_renderer.o raster_shaders.o legacy_shaders.o gl2_gpu.o gles2_gpu.o d3d9_gpu.o): CXXFLAGS += -std=c++20 -O3 -fno-fast-math
+endif
+
+ifeq ($(HAVE_GLRDP),1)
+SOURCES_CXX += $(addprefix $(GLRDP_DIR)/,libretro_glrdp.cpp gl_state_guard.cpp rdp_renderer.cpp)
 COREFLAGS += -DHAVE_GLRDP
 ifneq (,$(filter 1,$(GLES) $(GLES3) $(FORCE_GLES) $(FORCE_GLES3)))
 COREFLAGS += -DGLRDP_DEFAULT_GLES3

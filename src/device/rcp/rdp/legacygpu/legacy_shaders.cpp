@@ -169,4 +169,11 @@ V4 shade(V2 p) {
               : "void main() { gl_FragColor = shade(uv); }\n";
     return s;
 }
+std::string fragment_shader(Kernel kernel, ShaderDialect dialect) {
+    auto s = fragment_shader(kernel, dialect == ShaderDialect::HLSL3);
+    if (dialect == ShaderDialect::GLSLES100)
+        s.replace(0, s.find('\n') + 1,
+                  "#version 100\nprecision highp float;\nprecision highp sampler2D;\n");
+    return s;
+}
 } // namespace glrdp::legacy

@@ -19,6 +19,7 @@ linker.list
 /cpu_fpu_diff.exe
 /cpu_timing.exe
 benchmarks/*
+!benchmarks/legacy_gles2_checks.cpp
 !benchmarks/ai_timing_trace.h
 !benchmarks/ai_timing_trace.mk
 !benchmarks/f1_intro.py

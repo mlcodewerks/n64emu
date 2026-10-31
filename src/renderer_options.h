@@ -5,9 +5,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-enum renderer_type { RENDERER_SOFTRDP, RENDERER_PARALLEL, RENDERER_GLRDP, RENDERER_DX11, RENDERER_GL2, RENDERER_D3D9 };
+enum renderer_type { RENDERER_SOFTRDP, RENDERER_PARALLEL, RENDERER_GLRDP, RENDERER_DX11, RENDERER_GL2, RENDERER_D3D9, RENDERER_GLES2 };
 static inline bool renderer_legacy_gpu(enum renderer_type type) {
-    return type == RENDERER_GL2 || type == RENDERER_D3D9;
+    return type == RENDERER_GL2 || type == RENDERER_D3D9 || type == RENDERER_GLES2;
 }
 static inline bool renderer_native_gpu(enum renderer_type type) {
     return type == RENDERER_GLRDP || type == RENDERER_DX11;

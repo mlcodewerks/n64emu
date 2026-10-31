@@ -5,6 +5,7 @@
 #include <vector>
 
 namespace glrdp::legacy {
+enum class ShaderDialect { GLSL110, GLSLES100, HLSL3 };
 using Float4 = std::array<float, 4>;
 // Resolved command state, not resolved pixels. All sample tests, attribute
 // interpolation, texture filtering, combining, Z and blending run in shaders.
@@ -36,7 +37,9 @@ enum class RasterShader {
     Alpha0,
     Texel0,
     Texel1,
-    LOD
+    LOD,
+    CoverageAlpha,
+    Candidate
 };
 struct TextureDraw {
     RasterShader shader = RasterShader::LoadTMEM;
@@ -49,4 +52,5 @@ struct TextureDraw {
 using RasterKey = std::array<unsigned char, 62>;
 RasterKey raster_key(const RasterDraw &);
 std::string raster_fragment_shader(RasterShader, bool hlsl, const RasterDraw *specialize = nullptr);
+std::string raster_fragment_shader(RasterShader, ShaderDialect, const RasterDraw *specialize = nullptr);
 } // namespace glrdp::legacy

@@ -6,7 +6,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-bool legacygpu_request_context(retro_environment_t environment, bool d3d9);
+enum legacygpu_backend { LEGACYGPU_GL2, LEGACYGPU_D3D9, LEGACYGPU_GLES2 };
+bool legacygpu_request_context(retro_environment_t environment, enum legacygpu_backend backend);
 bool legacygpu_context_ready(void);
 bool legacygpu_open(uint8_t *rdram, unsigned bytes);
 void legacygpu_close(void);

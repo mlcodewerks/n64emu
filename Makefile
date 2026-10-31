@@ -538,6 +538,11 @@ ifeq ($(STATIC_LINKING), 1)
    endif
 endif
 
+# Legacy devices can also be selected explicitly on a desktop build.
+HAVE_GLES2_RDP ?= $(if $(filter 1,$(GLES) $(GLES3) $(FORCE_GLES) $(FORCE_GLES3)),1,0)
+HAVE_GL2_RDP ?= $(if $(filter 1,$(GLES) $(GLES3) $(FORCE_GLES) $(FORCE_GLES3)),0,1)
+HAVE_D3D9 ?= 0
+
 include Makefile.common
 
 ifeq ($(HAVE_NEON), 1)
@@ -614,7 +619,7 @@ endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
 # ParallaxJIT emitter, runtime layout and optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):headless=$(HEADLESS_BENCHMARK):$(WITH_DYNAREC):parallaxjit-only-v1:debug=$(DEBUG):profile=$(PARALLAXJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):gl2=$(HAVE_GL2_RDP):gles2=$(HAVE_GLES2_RDP):d3d9=$(HAVE_D3D9):headless=$(HEADLESS_BENCHMARK):$(WITH_DYNAREC):parallaxjit-only-v1:debug=$(DEBUG):profile=$(PARALLAXJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
 ifneq ($(strip $(file <$(CPU_JIT_CONFIG))),$(CPU_JIT_CONFIG_VALUE))
 $(file >$(CPU_JIT_CONFIG),$(CPU_JIT_CONFIG_VALUE))
 endif
