@@ -1,0 +1,46 @@
+{
+  "date": "2026-11-01",
+  "track": "27b Air Force One.miniusf",
+  "track_sha256": "ab0a3c93aed0bba4713e55f8e6eacdc13e16474b4e38190e2e85dfa4d89d3aab",
+  "library": "NUS-NPDE-USA.usflib",
+  "library_sha256": "0f414f451e33d27bfe6c61d4ba66cb0bc977a0b25912859cbf7bb3c096e039c3",
+  "tags": { "length_seconds": 350, "fade_seconds": 5, "compare": true, "fifo_full": true },
+  "native_sample_rate": 22018,
+  "full_native_decode": {
+    "seconds": 355,
+    "frames": 7816390,
+    "nonzero_samples": 15627016,
+    "peak": 18369,
+    "rms": 2744.780,
+    "pcm_fnv1a64": "c6efe8792d0e5998",
+    "x64_hle_elapsed_seconds": 45.708,
+    "x86_hle_elapsed_seconds": 221.479,
+    "x86_and_x64_hashes_match": true,
+    "note": "Raw decoder output; the calling player applies tag-based fading."
+  },
+  "first_five_seconds": {
+    "native_frames": 110090,
+    "native_pcm_fnv1a64": "70fec898c5abf7e0",
+    "native_wav_sha256": "6fc70f0cbea14864cd94f7f6be9f13c6cb606f191f8819361a381663292476b1",
+    "matching_configurations": ["x64 HLE enabled", "x64 LLE", "x86 HLE enabled", "x86 LLE"],
+    "resampled_rate": 48000,
+    "resampled_frames": 240000,
+    "resampled_pcm_fnv1a64": "7a98ac2a24a40be4",
+    "resampled_wav_sha256": "52db8ae0e71f0dbadbfd48318f27aebfb56469df52c3166ae00fbfa5320c2c87",
+    "x86_and_x64_resampled_bytes_match": true
+  },
+  "restart_skip": "A one-second window at two seconds matches sequential decoding, native and 48 kHz, on x86/x64.",
+  "portable_usf_cpu_timing": "Legacy two-COUNT-tick instruction clock; FIFO-tagged AI/DAC timing retained.",
+  "other_checks": [
+    "x86 libretro load, CPU/VI execution, RAM exposure and unload",
+    "135168 portable RSP vector transfers plus scalar/branch/timeslice checks",
+    "Synthetic 4/8 MB USF states, sparse ROM/save uploads, contexts, restart and resampling",
+    "MSVC x86/x64 import libraries and delay-loading from beside the component",
+    "ARM32 libretro GLES2 and USF cross-builds (ELF32 ARM EABI hard-float)"
+  ],
+  "limitations": [
+    "ARM32 playback has not been exercised on hardware.",
+    "Complete foo_input_usf component build requires the missing SDK/dependency files, including zlib sources.",
+    "Trimming/coverage instrumentation is unsupported."
+  ]
+}

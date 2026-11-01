@@ -1,0 +1,41 @@
+# GitLab CI/CD for Windows and Linux n64emu libretro builds.
+
+.core-defs:
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive
+    CORENAME: n64emu
+    USF: "0"
+
+include:
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/windows-x64-mingw.yml'
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/windows-i686-mingw.yml'
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/linux-x64.yml'
+  - project: 'libretro-infrastructure/ci-templates'
+    file: '/linux-i686.yml'
+
+stages:
+  - build-prepare
+  - build-shared
+
+libretro-build-windows-x64:
+  extends:
+    - .libretro-windows-x64-mingw-make-default
+    - .core-defs
+
+libretro-build-windows-i686:
+  extends:
+    - .libretro-windows-i686-mingw-make-default
+    - .core-defs
+
+libretro-build-linux-x64:
+  extends:
+    - .libretro-linux-x64-make-default
+    - .core-defs
+
+libretro-build-linux-i686:
+  extends:
+    - .libretro-linux-i686-make-default
+    - .core-defs

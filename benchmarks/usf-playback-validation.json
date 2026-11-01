@@ -1,0 +1,147 @@
+{
+  "date": "2026-11-01",
+  "failure_before_fix": "Fighters Destiny, Tsumi to Batsu and Pilotwings 64 Birdman exhausted the CPU budget before audio. Mischief Makers later exhausted the budget after its first buffers; Pokemon Stadium produced silence. Super Mario 64 Dire, Dire Docks exhausted the budget after 6144 frames because a subnormal envelope operand raised FPE and stopped the audio thread.",
+  "fix": [
+    "Use the ripper's PI interrupt timing in USF builds: immediate without both compare/FIFO tags; ROM-to-RAM length/8 or 0x1000 ticks otherwise.",
+    "Clear the saved AI interrupt when discarding the saved DMA.",
+    "Schedule initial FIFO busy completion from the restored AI length and DAC divider instead of one tick.",
+    "Use the legacy USF two-COUNT-tick instruction clock consistently in native code, precise exits and delay slots.",
+    "Complete legacy SI and AI transfers without hardware delays unless the rip opts into them.",
+    "Acknowledge startup graphics tasks with SP/DP completion stubs even when audio HLE is disabled; omit every RDP renderer and graphics walker from USF builds.",
+    "In USF builds, interpret the ripper's BREAK idle-wait markers as advance-to-next-event operations, including in branch delay slots, instead of raising breakpoint exceptions.",
+    "Allow subnormal arithmetic operands, results and conversions with gradual underflow in USF builds, matching legacy rippers. Preserve hardware FPU traps and flush behavior in normal emulator builds."
+  ],
+  "tracks": [
+    {
+      "file": "Fighters Destiny/sparse05.miniusf",
+      "sha256": "5d331d9ce6fa225afff5cb0efc7e3703093ed889a756da0140764b8a87f3bbc0",
+      "library": "NUS-NKAE-USA.usflib",
+      "library_sha256": "eafec6e9f9941fddd06ce975efcc2c91600e22a3511338adaeff2ddb0abdf7ca",
+      "native_rate": 22047,
+      "x64_hle_120_seconds": {
+        "frames": 2645640,
+        "nonzero_samples": 5286244,
+        "pcm_fnv1a64": "3bb142a618033c03"
+      },
+      "x64_lle_30_seconds_pcm_fnv1a64": "848cb2010c14e9fb",
+      "x86_x64_hle_5_seconds_pcm_fnv1a64": "2500d936ab524eca",
+      "x64_48000_hz_5_seconds_pcm_fnv1a64": "9ed6fc2f97bc02cc"
+    },
+    {
+      "file": "Tsumi to Batsu/10 Ally Risker's.miniusf",
+      "sha256": "ee9df849a41f1e6b28e866d01c069c5552426737a94dcd5a0835a7726a7d9b2e",
+      "library": "NUS-NGUJ-JPN.usflib",
+      "library_sha256": "c70fbc614bc487aa565cce985dfb863f303c76912f040bde59e0096c3df341fc",
+      "native_rate": 22047,
+      "length_seconds": 177,
+      "fade_seconds": 8,
+      "x64_hle_185_seconds": {
+        "frames": 4078695,
+        "nonzero_samples": 8153874,
+        "pcm_fnv1a64": "c841330efe1eeca7"
+      },
+      "x86_x64_hle_and_x64_lle_5_seconds_pcm_fnv1a64": "226968b6e7a0a70c",
+      "x64_48000_hz_5_seconds_pcm_fnv1a64": "7312eb323ac6397f"
+    },
+    {
+      "file": "Mischief Makers/03 To1.miniusf",
+      "sha256": "9d0d1407f3f1c202bb2b33166810398f2e31153c32e114754d83606b07cd117a",
+      "library": "NUS-NTME-USA.usflib",
+      "library_sha256": "76bff8932c2ba32a47dbca3bbcc16b42c27294f8cbbaa580bcc75a3bb24613a3",
+      "native_rate": 22047,
+      "length_seconds": 94.5,
+      "fade_seconds": 7,
+      "x86_x64_hle_101_5_seconds": {
+        "frames": 2237770,
+        "nonzero_samples": 4474794,
+        "pcm_fnv1a64": "0eea406fe2c5dbf8"
+      },
+      "x86_x64_hle_lle_and_interpreter_5_seconds_pcm_fnv1a64": "72ecd1f10aa86185"
+    },
+    {
+      "file": "Pokemon Stadium/26 Free Battle.miniusf",
+      "sha256": "d9fea3bbfe1aa5e89e066c8fdf29ea2774acaa278205c647470164d1eb88bd6f",
+      "library": "NUS-CP2J-JPN.usflib",
+      "library_sha256": "3b46dd0b0878de7612772680b50e5025c361659f7f29f95aeaa1ec835f051f7c",
+      "native_rate": 32006,
+      "length_seconds": 76,
+      "fade_seconds": 10,
+      "x86_x64_hle_86_seconds": {
+        "frames": 2752516,
+        "nonzero_samples": 5502794,
+        "pcm_fnv1a64": "8dbc59d6bb110100"
+      },
+      "x86_x64_hle_and_interpreter_5_seconds_pcm_fnv1a64": "2d409c8574eba3ed",
+      "x86_x64_lle_and_interpreter_5_seconds_pcm_fnv1a64": "f99de4d63bc488b3"
+    },
+    {
+      "file": "Pilotwings 64/26 Birdman.miniusf",
+      "sha256": "1c1afb20e3a23f81b193a731646b160fd2e84951dd39f171481297a22fdc04e7",
+      "library": "NUS-NPWE-USA.usflib",
+      "library_sha256": "0810e3195955028e9ac133e4dccafcb213157cf65a6bf831f5f420c7da0dcf43",
+      "failure_pc": "80203ed0: BREAK in the delay slot of JAL 80203f4c",
+      "native_rate": 22047,
+      "length_seconds": 415,
+      "fade_seconds": 5,
+      "x86_x64_hle_420_seconds": {
+        "frames": 9259740,
+        "nonzero_samples": 18514567,
+        "pcm_fnv1a64": "9dbbc7b058bdeb84"
+      },
+      "x86_x64_hle_x86_lle_and_x64_interpreter_5_seconds_pcm_fnv1a64": "5a4f89079d412f39",
+      "x64_lle_30_seconds_pcm_fnv1a64": "cf51888b55c86229",
+      "x64_48000_hz_5_seconds_pcm_fnv1a64": "28b9845cf5f1f256"
+    },
+    {
+      "file": "Super Mario 64/09a Dire, Dire Docks.miniusf",
+      "sha256": "9ee8c3facd57a531d1d109052c158bdbb5b2d808928a11baf5a8f58cafe90585",
+      "library": "NUS-NSME-USA.usflib",
+      "library_sha256": "a7ea41bc293e9d04500cbbf03921d4db2247777adb2a355c4521170098d806b1",
+      "failure_pc": "8031cd34: MUL.S f18,f6,f8 with f6=004b2ff9 and f8=3eb504e6 raises hardware unimplemented-operation FPE",
+      "native_rate": 32006,
+      "length_seconds": 193,
+      "fade_seconds": 4,
+      "x86_x64_hle_and_x64_lle_197_seconds": {
+        "frames": 6305182,
+        "nonzero_samples": 12558172,
+        "pcm_fnv1a64": "681900c6b1b50ba3"
+      },
+      "x64_interpreter_10_seconds_pcm_fnv1a64": "de80038576c804da",
+      "x64_hle_and_x86_lle_5_seconds_pcm_fnv1a64": "d6c167be8b1f41c6",
+      "x64_48000_hz_5_seconds_pcm_fnv1a64": "463df6927afe5834"
+    }
+  ],
+  "checks": [
+    "Restart and skip reproduce sequential PCM at two seconds in every file-level run.",
+    "Synthetic PI completion and stale AI interrupt regression checks pass on x86/x64; the previous x86 decoder fails the new PI check.",
+    "Perfect Dark Air Force One retains its previous five-second PCM hash 70fec898c5abf7e0.",
+    "Reference lazyusf2 independently decodes all inputs; reference PCM equality is not asserted.",
+    "The previous Perfect Dark (355 s), Fighters Destiny (120 s) and Tsumi to Batsu (185 s) full-length PCM hashes are unchanged with the audio-only x64 build.",
+    "Synthetic instruction-clock, immediate SI and graphics-task completion regressions pass with audio HLE both enabled and disabled, on x86 and x64.",
+    "Standalone and JAL-delay-slot BREAK regressions verify event-time advancement and continued PCM with audio HLE enabled and disabled on x86/x64 JITs and the x64 CPU interpreter. The pre-fix interpreter decoder fails the standalone BREAK regression.",
+    "After the BREAK change, the five-second Perfect Dark, Fighters Destiny, Tsumi to Batsu, Mischief Makers and Pokemon Stadium PCM hashes remain unchanged.",
+    "Ten raw-result gradual-underflow regressions cover single/double arithmetic, inexact underflow, integer conversion and precision conversion, with FS disabled/enabled, on x86/x64 JITs and the x64 CPU interpreter. The pre-fix x64 decoder fails the first regression.",
+    "The non-USF FPU header preprocesses to identical tokens before and after the subnormal change. Six previous tracks, including Birdman, retain their five-second PCM hashes.",
+    "MSVC x86/x64 import libraries and actual delay-loaded consumers link and run successfully.",
+    "Sixteen Windows/Linux/Pi build configurations pass Make dry runs; USF compile lists contain no RDP, display-list or image/video decoder sources. Six unsupported configurations are rejected."
+  ],
+  "audio_only_windows_build_bytes": {
+    "x64_before": 18791065,
+    "x64_after": 2196811,
+    "x86_before": 20207465,
+    "x86_after": 2147445
+  },
+  "jit32_checks": {
+    "x86_cpu_native_cases": 76800,
+    "x86_cpu_tail_links": 100000,
+    "x86_cpu_segment_recycling": "passed",
+    "arm32_cpu_native_cases_under_emulation": 76800,
+    "arm32_rsp_scalar_cases_under_emulation": 21504,
+    "arm32_aapcs32_eight_argument_calls": "passed",
+    "arm32_neon_cop2_memory_cases_under_emulation": 70688,
+    "rsp_checks": "Existing scalar, branch, helper, timeslice, invalidation, vector-transfer and fused-vector differential suites pass on x86 and x64.",
+    "linux_cross_builds": ["ELF32 ARMv7 EABI hard-float", "ELF64 AArch64"],
+    "limitation": "ARM Linux playback has not been tested on hardware."
+  },
+  "media": "Inputs, captures, reference sources and binaries remain local and ignored."
+}
