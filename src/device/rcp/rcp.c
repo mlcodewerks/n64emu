@@ -1,6 +1,6 @@
 
 #include "rcp.h"
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
 #include "usf/internal.h"
 #endif
 #include <string.h>
@@ -22,7 +22,7 @@
 #include "main/main.h"
 #include "core/backend.h"
 #include <core/frontend.h>
-#define PARALLAX_CORE_PROTOTYPES 1
+#define N64EMU_CORE_PROTOTYPES 1
 #include <stdint.h>
 #include <string.h>
 #define __STDC_FORMAT_MACROS
@@ -60,7 +60,7 @@ static int64_t ai_count_deadline(const struct ai_controller* ai, int64_t clock)
 
 static void ai_emit_idle(struct ai_controller* ai, int64_t now)
 {
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     /* A USF stream contains submitted DMA buffers, not DAC idle time. */
     ai->idle_clock = now;
     ai->idle_phase = 0;
@@ -130,7 +130,7 @@ static void do_dma(struct ai_controller* ai, struct ai_dma* dma, int64_t start)
     else
         ai->delayed_carry = 0;
 
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     /* USF streams are captured at DMA submission, as in lazyusf2. The DAC
      * scheduler still drives the guest's AI interrupts and FIFO status. */
     size_t ram_size = ai->ri->rdram->dram_size;
@@ -144,10 +144,10 @@ static void do_dma(struct ai_controller* ai, struct ai_dma* dma, int64_t start)
     /* schedule end of dma event */
     cp0_update_count(ai->mi->r4300);
     struct cp0* cp0 = &ai->mi->r4300->cp0;
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     /* Older rips omit the idle-thread context and expect an immediate AI
      * completion. _enablefifofull opts into the timed, two-entry FIFO. */
-    if (!parallax_usf_fifo_enabled()) {
+    if (!n64emu_usf_fifo_enabled()) {
         add_interrupt_event_count(cp0, AI_INT, cp0->regs[CP0_COUNT_REG]);
         return;
     }
@@ -168,8 +168,8 @@ static void fifo_push(struct ai_controller* ai)
         ai->fifo[1].address = ai->regs[AI_DRAM_ADDR_REG] & UINT32_C(0x00fffff8);
         ai->fifo[1].length = ai->regs[AI_LEN_REG] & ~UINT32_C(7);
         ai->fifo[1].duration = duration;
-#ifdef PARALLAX_USF
-        if (!parallax_usf_fifo_enabled()) do_dma(ai,&ai->fifo[1],ai_clock(ai));
+#ifdef N64EMU_USF
+        if (!n64emu_usf_fifo_enabled()) do_dma(ai,&ai->fifo[1],ai_clock(ai));
         else
 #endif
         ai->regs[AI_STATUS_REG] |= AI_STATUS_FULL;
@@ -478,9 +478,9 @@ int validate_pi_request(struct pi_controller* pi)
 static unsigned int pi_dma_duration(const struct pi_controller* pi, uint32_t address,
                                     uint32_t length, int cart_to_dram)
 {
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     /* Trimmed USFs retain the paths visited with the ripper's PI scheduler. */
-    if (!parallax_usf_compare_enabled() || !parallax_usf_fifo_enabled())
+    if (!n64emu_usf_compare_enabled() || !n64emu_usf_fifo_enabled())
         return 0;
     return cart_to_dram && address >= 0x10000000 && address < 0x1fc00000
         ? length / 8 : 0x1000;
@@ -794,9 +794,9 @@ static void copy_pif_rdram(struct si_controller* si)
 
 static unsigned int si_duration(struct si_controller* si, int read)
 {
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     (void)si; (void)read;
-    return parallax_usf_compare_enabled() && parallax_usf_fifo_enabled() ? 0x900 : 0;
+    return n64emu_usf_compare_enabled() && n64emu_usf_fifo_enabled() ? 0x900 : 0;
 #else
     if (si->dma_duration) return si->dma_duration; 
     unsigned clocks = read ? 13600 : 4065;

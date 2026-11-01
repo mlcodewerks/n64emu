@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_DEVICE_R4300_JIT_RUNTIME_H
-#define PARALLAX_DEVICE_R4300_JIT_RUNTIME_H
+#ifndef N64EMU_DEVICE_R4300_JIT_RUNTIME_H
+#define N64EMU_DEVICE_R4300_JIT_RUNTIME_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -15,7 +15,7 @@ void r4300_jit_invalidate(struct r4300_core* r4300, uint32_t address, size_t siz
 void r4300_jit_tlb_changed(struct r4300_core* r4300);
 void r4300_jit_cache_stats(struct r4300_core*, uint64_t stats[2]);
 void r4300_jit_host_fault_stats(struct r4300_core*, uint64_t stats[2]);
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
 void r4300_jit_execute_one(struct r4300_core* r4300);
 void r4300_jit_run(struct r4300_core* r4300);
 void r4300_jit_stats(struct r4300_core* r4300, uint64_t stats[4]);
@@ -24,4 +24,4 @@ uint64_t r4300_jit_direct_links(struct r4300_core* r4300);
 void r4300_jit_code_stats(struct r4300_core*, uint64_t stats[3]);
 #endif
 
-#endif /* PARALLAX_DEVICE_R4300_JIT_RUNTIME_H */
+#endif /* N64EMU_DEVICE_R4300_JIT_RUNTIME_H */

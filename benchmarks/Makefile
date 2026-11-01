@@ -56,7 +56,7 @@ clean:
 
 # VFS-aware frontend; archived benchmark executables remain unchanged.
 gameplay_benchmark_native: benchmark.c frontend_vfs.h gl_context.h input_script.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -DPARALLAX_TEST_VFS -DM64P_BENCH_OPTIONAL_DEBUG -o $@ benchmark.c $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DN64EMU_TEST_VFS -DM64P_BENCH_OPTIONAL_DEBUG -o $@ benchmark.c $(LDLIBS)
 
 native_vfs_checks: native_vfs_checks.c ../src/core/file.c ../src/core/file.h ../src/main/util.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -D__LIBRETRO__ -I../src -I../custom -I../deps -ffunction-sections -fdata-sections native_vfs_checks.c ../src/core/file.c ../src/main/util.c -Wl,--gc-sections -lm -o $@

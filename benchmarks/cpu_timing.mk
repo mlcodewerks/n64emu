@@ -20,7 +20,7 @@ $(OUT)/cpu_fpu_native.o: $(CPU)/fpu_native.c $(CPU)/fpu_native.h $(CPU)/fpu_neon
 	$(CC) -O3 -std=gnu99 $(CFLAGS) -fno-fast-math -fno-math-errno -frounding-math -ffp-contract=off -I$(ROOT)/custom -c $< -o $@
 
 $(OUT)/cpu_fpu_portable.o: $(CPU)/fpu_native.c $(CPU)/fpu_native.h $(CPU)/fpu_neon.h $(CPU)/cp1.h | $(OUT)
-	$(CC) -O3 -std=gnu99 $(CFLAGS) -DPARALLAX_FPU_PORTABLE -Dfpu_native_eval=fpu_native_eval_portable -fno-fast-math -fno-math-errno -frounding-math -ffp-contract=off -I$(ROOT)/custom -c $< -o $@
+	$(CC) -O3 -std=gnu99 $(CFLAGS) -DN64EMU_FPU_PORTABLE -Dfpu_native_eval=fpu_native_eval_portable -fno-fast-math -fno-math-errno -frounding-math -ffp-contract=off -I$(ROOT)/custom -c $< -o $@
 
 $(OUT)/cpu_fpu_diff$(EXE): $(ROOT)/benchmarks/fpu_native_diff.c $(OUT)/cpu_fpu_native.o $(OUT)/cpu_fpu_portable.o
 	$(CC) -O3 -std=gnu99 -ffast-math $(CFLAGS) -I$(ROOT)/src $^ -lm -o $@

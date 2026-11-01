@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_DEVICE_MEMORY_MEMORY_H
-#define PARALLAX_DEVICE_MEMORY_MEMORY_H
+#ifndef N64EMU_DEVICE_MEMORY_MEMORY_H
+#define N64EMU_DEVICE_MEMORY_MEMORY_H
 
 #include <stddef.h>
 #include <stdint.h>

@@ -8,36 +8,36 @@ DYNAREC_USED := 0
 ifeq ($(CPU_BACKEND),auto)
 ifeq ($(WITH_DYNAREC),x86_64)
     DYNAREC_USED := 1
-    COREFLAGS += -DHAVE_PARALLAXJIT
-    PARALLAXJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
-    PARALLAXJIT_SOURCE = $(PARALLAXJIT_DIR)/parallaxjit_x64.cpp
+    COREFLAGS += -DHAVE_N64EMUJIT
+    N64EMUJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
+    N64EMUJIT_SOURCE = $(N64EMUJIT_DIR)/n64emujit_x64.cpp
     INCFLAGS += -I$(ROOT_DIR)/deps/xbyak
 else ifeq ($(WITH_DYNAREC),x86)
     DYNAREC_USED := 1
-    COREFLAGS += -DHAVE_PARALLAXJIT
-    PARALLAXJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
-    PARALLAXJIT_SOURCE = $(PARALLAXJIT_DIR)/parallaxjit_x86.cpp
+    COREFLAGS += -DHAVE_N64EMUJIT
+    N64EMUJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
+    N64EMUJIT_SOURCE = $(N64EMUJIT_DIR)/n64emujit_x86.cpp
     INCFLAGS += -I$(ROOT_DIR)/deps/xbyak
 else ifeq ($(WITH_DYNAREC),arm)
 ifneq (,$(filter -DOS_LINUX,$(COREFLAGS)))
     DYNAREC_USED := 1
-    COREFLAGS += -DHAVE_PARALLAXJIT
-    PARALLAXJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
-    PARALLAXJIT_SOURCE = $(PARALLAXJIT_DIR)/parallaxjit_arm32.cpp
+    COREFLAGS += -DHAVE_N64EMUJIT
+    N64EMUJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
+    N64EMUJIT_SOURCE = $(N64EMUJIT_DIR)/n64emujit_arm32.cpp
 endif
 else ifeq ($(WITH_DYNAREC),aarch64)
 ifneq (,$(filter -DOS_LINUX,$(COREFLAGS)))
     DYNAREC_USED := 1
-    COREFLAGS += -DHAVE_PARALLAXJIT
-    PARALLAXJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
-    PARALLAXJIT_SOURCE = $(PARALLAXJIT_DIR)/parallaxjit_arm64.cpp $(ROOT_DIR)/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp
+    COREFLAGS += -DHAVE_N64EMUJIT
+    N64EMUJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
+    N64EMUJIT_SOURCE = $(N64EMUJIT_DIR)/n64emujit_arm64.cpp $(ROOT_DIR)/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp
     INCFLAGS += -I$(ROOT_DIR)/deps/xbyak_aarch64 -I$(ROOT_DIR)/deps/xbyak_aarch64/xbyak_aarch64
 endif
 endif
 endif
 
 ifeq ($(DYNAREC_USED),0)
-COREFLAGS += -DPARALLAX_CPU_INTERPRETER
+COREFLAGS += -DN64EMU_CPU_INTERPRETER
 endif
 
 INCFLAGS += \
@@ -221,12 +221,12 @@ SOURCES_C += $(ROOT_DIR)/src/libretro.c \
 				   $(wildcard $(RSPDIR_PARALLEL)/arch/$(PARALLEL_RSP_ARCH)/rsp/*.cpp)
 ifeq ($(RSP_BACKEND),interpreter)
 	SOURCES_CXX += $(RSPDIR_PARALLEL)/rsp_interpreter.cpp
-	COREFLAGS += -DPARALLAX_RSP_INTERPRETER
+	COREFLAGS += -DN64EMU_RSP_INTERPRETER
 else
 	SOURCES_CXX += $(RSPDIR_PARALLEL)/rsp_jit.cpp $(RSPDIR_PARALLEL)/jit_vector.cpp
 ifneq (,$(filter aarch64 arm64,$(ARCH)))
 	INCFLAGS += -I$(ROOT_DIR)/deps/xbyak_aarch64 -I$(ROOT_DIR)/deps/xbyak_aarch64/xbyak_aarch64
-	SOURCES_CXX += $(filter-out $(PARALLAXJIT_SOURCE),$(ROOT_DIR)/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp)
+	SOURCES_CXX += $(filter-out $(N64EMUJIT_SOURCE),$(ROOT_DIR)/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp)
 else
 	INCFLAGS += -I$(ROOT_DIR)/deps/xbyak
 endif
@@ -243,7 +243,7 @@ ifeq ($(HAVE_NEON),1)
 endif
 
 ifeq ($(DYNAREC_USED),1)
-ifneq ($(PARALLAXJIT_DIR),)
-SOURCES_CXX += $(PARALLAXJIT_SOURCE)
+ifneq ($(N64EMUJIT_DIR),)
+SOURCES_CXX += $(N64EMUJIT_SOURCE)
 endif
 endif

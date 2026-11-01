@@ -1,5 +1,5 @@
-#ifndef PARALLAXJIT_OPTIMIZER_TYPES_H
-#define PARALLAXJIT_OPTIMIZER_TYPES_H
+#ifndef N64EMUJIT_OPTIMIZER_TYPES_H
+#define N64EMUJIT_OPTIMIZER_TYPES_H
 struct value_expression { unsigned op, a, b, immediate, value; };
 struct region_analysis {
     unsigned next[34][33];

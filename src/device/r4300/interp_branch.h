@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_R4300_INTERP_BRANCH_H
-#define PARALLAX_R4300_INTERP_BRANCH_H
+#ifndef N64EMU_R4300_INTERP_BRANCH_H
+#define N64EMU_R4300_INTERP_BRANCH_H
 #include "r4300_core.h"
 #include "cp0.h"
 #include "timing.h"
@@ -47,7 +47,7 @@ static osal_force_inline void interp_branch_finish_step(struct r4300_core* r,
         cp0_update_count(r);
         r->delay_slot = saved_delay;
         unsigned jump = (unsigned)taken & (unsigned)(r->skip_jump == 0)&(r->branch_sequence==sequence);
-#if defined(PARALLAX_INTERP_BRANCHLESS) && PARALLAX_INTERP_BRANCHLESS
+#if defined(N64EMU_INTERP_BRANCHLESS) && N64EMU_INTERP_BRANCHLESS
         uint32_t mask = 0u - jump;
         r->instruction_pc.addr = (target & mask) | (r->instruction_pc.addr & ~mask);
 #else

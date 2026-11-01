@@ -1,5 +1,5 @@
-#ifndef PARALLAX_R4300_CACHE_TIMING_H
-#define PARALLAX_R4300_CACHE_TIMING_H
+#ifndef N64EMU_R4300_CACHE_TIMING_H
+#define N64EMU_R4300_CACHE_TIMING_H
 #include "device/memory.h"
 #include "device/rcp/rcp.h"
 #include "device/rdram.h"

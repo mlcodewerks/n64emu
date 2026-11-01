@@ -218,16 +218,16 @@ static void emu_step_initialize(void)
     core_bind_backends();
 }
 
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
 void main_prerun(void);
-int parallax_usf_prepare(void)
+int n64emu_usf_prepare(void)
 {
     if (!load_game_successful) return 0;
     emu_step_initialize();
     if (initializing) { main_prerun(); initializing = false; }
     return g_EmulatorRunning;
 }
-void parallax_usf_step(void)
+void n64emu_usf_step(void)
 {
     main_run();
     ai_flush_samples(&g_dev.ai);
@@ -380,7 +380,7 @@ void retro_set_environment(retro_environment_t cb)
 
 void retro_get_system_info(struct retro_system_info *info)
 {
-    info->library_name = "Parallax";
+    info->library_name = "n64emu";
     info->library_version = "0.01";
     info->valid_extensions = "n64|v64|z64|bin|u1";
     info->need_fullpath = false;
@@ -727,7 +727,7 @@ void retro_run(void)
     else
 #endif
     {
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
         extern void softrdp_present(bool new_frame);
         softrdp_present(libretro_swap_buffer);
 #endif
@@ -898,7 +898,7 @@ void event_set_gameshark(int active)
 
 
 
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
 void renderer_process_display_list(void)
 {
 }
@@ -963,7 +963,7 @@ int renderer_open_content(void)
     struct n64video_config config;
     n64video_config_init(&config);
     config.parallel = true;
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     config.parallel = false;
 #endif
     config.num_workers = renderer_settings.threads;
@@ -1069,9 +1069,9 @@ void renderer_framebuffer_read_range(unsigned address, unsigned size) {
 }
 
 
-#endif /* !PARALLAX_USF: audio builds supply renderer stubs. */
+#endif /* !N64EMU_USF: audio builds supply renderer stubs. */
 
-#if defined(PARALLAX_HEADLESS_BENCHMARK)
+#if defined(N64EMU_HEADLESS_BENCHMARK)
 /* Sample at the video callback, before the next field changes VI registers. */
 CORE_EXPORT void retro_debug_vi(uint32_t out[14])
 {

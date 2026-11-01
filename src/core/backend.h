@@ -1,6 +1,6 @@
 
-#ifndef PARALLAX_BACKEND_H
-#define PARALLAX_BACKEND_H
+#ifndef N64EMU_BACKEND_H
+#define N64EMU_BACKEND_H
 #include <stdint.h>
 #include "core/framebuffer_notifications.h"
 #include "core/types.h"

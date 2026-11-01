@@ -1,5 +1,5 @@
-#ifndef PARALLAX_STORAGE_H
-#define PARALLAX_STORAGE_H
+#ifndef N64EMU_STORAGE_H
+#define N64EMU_STORAGE_H
 
 #include <stddef.h>
 #include <stdint.h>

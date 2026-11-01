@@ -1,4 +1,4 @@
-/* SoftRDP's scanline jobs use Parallax's existing synchronous generation pool. */
+/* SoftRDP's scanline jobs use n64emu's existing synchronous generation pool. */
 #include "upstream/core/sr_threads.h"
 #include "upstream/core/sr_async.h"
 #include "worker_pool.h"

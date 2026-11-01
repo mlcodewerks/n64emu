@@ -1,4 +1,4 @@
-    using namespace parallax32;
+    using namespace n64emu32;
     unsigned lane=vs&7;
     unsigned selected=op!=0x33?e&7:e<2?lane:e<4?(lane&~1u)|(e&1):e<8?(lane&~3u)|(e&3):e&7;
     unsigned source=vec_offset(vt)+selected*2,dest=vec_offset(vd)+lane*2;

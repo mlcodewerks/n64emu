@@ -9,12 +9,12 @@
 #include "interp_fpu_move.h"
 #include "interp_poll.h"
 #include "interp_thread_poll.h"
-#ifdef HAVE_PARALLAXJIT
-#include "jit/parallaxjit.h"
+#ifdef HAVE_N64EMUJIT
+#include "jit/n64emujit.h"
 #endif
 #include "core/log.h"
 #include "core/types.h"
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
 #include "usf/internal.h"
 #endif
 
@@ -161,16 +161,16 @@ struct cached_block
      * for arithmetic, guarded RAM and direct COP1 dispatch. */
     struct cached_instruction instructions[CI_BLOCK_INSTRUCTIONS];
     r4300_op_handler handlers[CI_BLOCK_INSTRUCTIONS];
-#ifdef HAVE_PARALLAXJIT
-    parallaxjit_entry native_entry, native_one_entry, native_chain_entry;
+#ifdef HAVE_N64EMUJIT
+    n64emujit_entry native_entry, native_one_entry, native_chain_entry;
     uint64_t native_generation, native_one_generation;
     uint8_t native_link_replace;
-    struct parallaxjit_link_cache native_links[2];
+    struct n64emujit_link_cache native_links[2];
 #endif
     union {struct interp_ram_poll poll;struct interp_simple_poll simple_poll;};
     uint32_t source_words[CI_BLOCK_INSTRUCTIONS + 2];
     uint8_t source_count;
-#ifdef PARALLAXJIT_PROFILE
+#ifdef N64EMUJIT_PROFILE
     uint64_t profile_entries;
 #endif
 };
@@ -184,17 +184,17 @@ struct cached_set
 struct r4300_jit_state
 {
     struct r4300_fastmem* fastmem;
-#ifdef HAVE_PARALLAXJIT
-    struct parallaxjit* jit;
+#ifdef HAVE_N64EMUJIT
+    struct n64emujit* jit;
     /* Linked entries are derived from direct/indirect edge counts, so a hot
      * native tail updates one counter instead of three. Public totals agree. */
     uint64_t jit_dispatch_entries;
     uint64_t jit_fast_commits, jit_indirect_links;
     uint64_t jit_direct_links;
     uint64_t fetch_generation;
-    struct parallaxjit_fetch_cache fetch_cache[32];
+    struct n64emujit_fetch_cache fetch_cache[32];
     uint64_t jit_compile_misses[2], jit_verifications[2], jit_replacements;
-#ifdef PARALLAXJIT_PROFILE
+#ifdef N64EMUJIT_PROFILE
     uint64_t profile_slow[64], profile_special[64], profile_cop1[64];
     uint64_t profile_regions[33], profile_fpu[64];
 #endif
@@ -837,15 +837,15 @@ static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r
 
 
     set->next_replace ^= 1;
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
     if (state->jit && block->valid && block->virtual_pc != pc) ++state->jit_replacements;
 #endif
     block->valid = 0;
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
     block->native_entry = block->native_one_entry = NULL;
     block->native_link_replace = 0;
     memset(block->native_links,0,sizeof(block->native_links));
-#ifdef PARALLAXJIT_PROFILE
+#ifdef N64EMUJIT_PROFILE
     block->profile_entries = 0;
 #endif
 #endif
@@ -990,14 +990,14 @@ static CI_COLD_NOINLINE int ci_verify_dirty_block(struct r4300_core* r, struct c
     uint32_t instruction_image[1024];
     if(source)source=ci_instruction_source(r,pc,physical_page,instruction_image);
     if (!source || memcmp(source, block->source_words, block->source_count * sizeof(uint32_t))) {
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
         ++r->jit->jit_verifications[1];
 #endif
         return 0;
     }
     if (block->epoch != r->jit->epoch || block->page_generation != r->jit->page_generation[physical_page]) {
         ++r->jit->restored_blocks;
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
         ++r->jit->jit_verifications[0];
 #endif
     }
@@ -1216,7 +1216,7 @@ void r4300_fastmem_destroy(struct r4300_fastmem* f)
 
 int r4300_jit_init(struct r4300_core* r4300)
 {
-#ifndef HAVE_PARALLAXJIT
+#ifndef HAVE_N64EMUJIT
     (void)r4300;
     return 1;
 #else
@@ -1227,7 +1227,7 @@ int r4300_jit_init(struct r4300_core* r4300)
     if (r4300->jit == NULL)
         return 0;
     unsigned set_count = CI_SET_COUNT;
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
 #ifndef CI_JIT_SET_COUNT
 #define CI_JIT_SET_COUNT CI_CACHED_SET_COUNT
 #endif
@@ -1242,14 +1242,14 @@ int r4300_jit_init(struct r4300_core* r4300)
     r4300->jit->epoch = 1;
     r4300->cached_code_pages = r4300->jit->page_cached;
     r4300->code_page_generation = r4300->jit->page_generation;
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
     if (r4300->emumode == EMUMODE_DYNAREC) {
-        r4300->jit->jit = parallaxjit_create();
+        r4300->jit->jit = n64emujit_create();
         if (!r4300->jit->jit) {
             r4300_jit_destroy(r4300);
             return 0;
         }
-        r4300->jit->fastmem = r4300_fastmem_create(r4300, parallaxjit_fault_guard(r4300->jit->jit));
+        r4300->jit->fastmem = r4300_fastmem_create(r4300, n64emujit_fault_guard(r4300->jit->jit));
     }
 #endif
     return 1;
@@ -1259,8 +1259,8 @@ int r4300_jit_init(struct r4300_core* r4300)
 void r4300_jit_destroy(struct r4300_core* r4300)
 {
     if (r4300->jit) r4300_fastmem_destroy(r4300->jit->fastmem);
-#ifdef HAVE_PARALLAXJIT
-    if (r4300->jit) parallaxjit_destroy(r4300->jit->jit);
+#ifdef HAVE_N64EMUJIT
+    if (r4300->jit) n64emujit_destroy(r4300->jit->jit);
 #endif
     if (r4300->jit) free(r4300->jit->sets);
     if (r4300->jit) free(r4300->jit->recent_blocks);
@@ -1278,8 +1278,8 @@ void r4300_jit_cache_stats(struct r4300_core* r, uint64_t stats[2])
 void r4300_jit_host_fault_stats(struct r4300_core* r, uint64_t stats[2])
 {
     stats[0] = r->jit && r->jit->fastmem != NULL;
-#ifdef HAVE_PARALLAXJIT
-    stats[1] = r->jit ? parallaxjit_fault_count(r->jit->jit) : 0;
+#ifdef HAVE_N64EMUJIT
+    stats[1] = r->jit ? n64emujit_fault_count(r->jit->jit) : 0;
 #else
     stats[1] = 0;
 #endif
@@ -1287,7 +1287,7 @@ void r4300_jit_host_fault_stats(struct r4300_core* r, uint64_t stats[2])
 
 void r4300_jit_tlb_changed(struct r4300_core* r4300)
 {
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
     struct r4300_jit_state* state=r4300->jit;
     if(state && ++state->fetch_generation==0) {
         state->fetch_generation=1;
@@ -1441,7 +1441,7 @@ static CI_FORCE_INLINE void ci_execute_one(struct r4300_core* r4300)
 
 }
 
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
 /* Precise stubs retain the shared instruction ordering and delay-slot rules.
  * Native guards/timing commit in machine code. A memory stub writes back its
  * prefix before calling here, and reloads its allocation before resuming. */
@@ -1450,11 +1450,11 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
     struct cached_block* block = opaque;
     struct r4300_jit_state* state = r->jit;
     uint32_t pc = block->virtual_pc + i * 4;
-    if (state->fastmem) parallaxjit_fault_resolve(state->jit, r, i < block->count ? block->instructions[i].op : 0);
+    if (state->fastmem) n64emujit_fault_resolve(state->jit, r, i < block->count ? block->instructions[i].op : 0);
 
     unsigned count = (phase >> 8) & 63;
     if ((phase & 255) == 5) {
-#ifdef PARALLAXJIT_PROFILE
+#ifdef N64EMUJIT_PROFILE
         ++state->profile_regions[count];
 #endif
         for (unsigned n = 0; n < count; ++n)
@@ -1465,7 +1465,7 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
     /* A precise branch may already have executed a sequential slot. */
     if (i >= block->count) { ci_execute_one(r); return 0; }
     uint32_t op = block->instructions[i].op;
-#ifdef PARALLAXJIT_PROFILE
+#ifdef N64EMUJIT_PROFILE
     if (phase == 2) {
         ++state->profile_slow[op >> 26];
         if (!(op >> 26)) ++state->profile_special[op & 63];
@@ -1516,7 +1516,7 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
            ci_mapping_matches(r, block);
 }
 
-static parallaxjit_entry ci_jit_link(struct r4300_core* r)
+static n64emujit_entry ci_jit_link(struct r4300_core* r)
 {
     if (breakloop || r->prefetch_valid || r->irq_writeback_pending || r->delay_slot || r->stop || (r->instruction_pc.addr & 3)) return NULL;
     struct r4300_jit_state* state = r->jit;
@@ -1528,13 +1528,13 @@ static parallaxjit_entry ci_jit_link(struct r4300_core* r)
         next->epoch != state->epoch ||
         next->page_generation != state->page_generation[next->physical_page] ||
         !ci_mapping_matches(r, next) ||
-        !parallaxjit_entry_valid(state->jit, next->native_entry, next->native_generation)) return NULL;
+        !n64emujit_entry_valid(state->jit, next->native_entry, next->native_generation)) return NULL;
     struct cached_block* previous = state->previous_block;
     /* Fixed KSEG edges need no mapping load. Mapped edges guard the live LUT
      * entry in assembly; cache attributes remain live in the target body. */
     if (previous) {
         unsigned slot = previous->native_links[0].pc == pc ? 0 : previous->native_links[1].pc == pc ? 1 : previous->native_link_replace++ & 1;
-        struct parallaxjit_link_cache* cache = &previous->native_links[slot];
+        struct n64emujit_link_cache* cache = &previous->native_links[slot];
         cache->pc = pc; cache->epoch = state->epoch;
         cache->page_generation = state->page_generation[next->physical_page];
         cache->expected_entry = next->native_entry; cache->body = next->native_chain_entry;
@@ -1542,23 +1542,23 @@ static parallaxjit_entry ci_jit_link(struct r4300_core* r)
         cache->current_page_generation = &state->page_generation[next->physical_page];
         cache->current_mapping = (pc & UINT32_C(0xc0000000)) == UINT32_C(0x80000000) ? NULL : &r->cp0.tlb.LUT_r[pc >> CI_PAGE_SHIFT];
         cache->mapping = cache->current_mapping ? *cache->current_mapping : 0;
-        cache->current_segment_generation = parallaxjit_entry_generation_ptr(state->jit,next->native_entry);
+        cache->current_segment_generation = n64emujit_entry_generation_ptr(state->jit,next->native_entry);
         cache->segment_generation = next->native_generation;
         cache->target_block = next;
         cache->profile_entries = NULL;
-#ifdef PARALLAXJIT_PROFILE
+#ifdef N64EMUJIT_PROFILE
         cache->profile_entries = &next->profile_entries;
 #endif
     }
     state->previous_block = next;
     ++state->jit_indirect_links;
-#ifdef PARALLAXJIT_PROFILE
+#ifdef N64EMUJIT_PROFILE
     ++next->profile_entries;
 #endif
     return next->native_chain_entry;
 }
 
-#ifdef PARALLAXJIT_PROFILE
+#ifdef N64EMUJIT_PROFILE
 static int ci_jit_fpu_prepare(struct r4300_core* r, uint32_t op, uint64_t inputs[3], uint64_t* commits)
 {
     ++r->jit->profile_fpu[op & 63];
@@ -1581,8 +1581,8 @@ static int ci_jit_fpu_finish(struct r4300_core* r, uint32_t op, uint64_t bits, u
 
 static void ci_execute_jit(struct r4300_core* r, int one)
 {
-#ifdef PARALLAX_USF
-    if (parallax_usf_yield()) { breakloop = true; return; }
+#ifdef N64EMU_USF
+    if (n64emu_usf_yield()) { breakloop = true; return; }
 #endif
     if(r->prefetch_valid||r->irq_writeback_pending){r4300_ops_execute_one(r);return;}
     /* A delay slot remains one precise instruction, never a nested native
@@ -1604,14 +1604,14 @@ static void ci_execute_jit(struct r4300_core* r, int one)
         (block->ram_poll == 2 && interp_thread_poll_advance(r, pc)) ||
         (block->ram_poll == 3 && interp_simple_poll_advance(r,&block->simple_poll)))) return;
 #endif
-    parallaxjit_entry* entry = one ? &block->native_one_entry : &block->native_entry;
+    n64emujit_entry* entry = one ? &block->native_one_entry : &block->native_entry;
     uint64_t* generation = one ? &block->native_one_generation : &block->native_generation;
-    if (!parallaxjit_entry_valid(state->jit, *entry, *generation)) {
+    if (!n64emujit_entry_valid(state->jit, *entry, *generation)) {
         ++state->jit_compile_misses[*entry != NULL];
         uint32_t ops[CI_BLOCK_INSTRUCTIONS];
         unsigned count = one ? 1 : block->count;
         for (unsigned i = 0; i < count; ++i) ops[i] = block->instructions[i].op;
-        struct parallaxjit_config config = {block->virtual_pc, block->physical_page, r->cache_timing, one ? NULL : ci_jit_link,
+        struct n64emujit_config config = {block->virtual_pc, block->physical_page, r->cache_timing, one ? NULL : ci_jit_link,
             block->delay_op, !one && block->has_delay, block->idle_end, &r->retired_ops, &state->jit_fast_commits,
             ci_jit_fpu_prepare, ci_jit_fpu_finish, one ? NULL : &block->native_chain_entry};
         config.compat_issue_clock = r->compat_issue_clock;
@@ -1621,26 +1621,26 @@ static void ci_execute_jit(struct r4300_core* r, int one)
         config.fetch_generation=&state->fetch_generation;
         config.fetch_cache=&state->fetch_cache[(block->virtual_pc>>12)&31];
         config.entries = NULL; config.linked_entries = NULL; config.direct_links = &state->jit_direct_links;
-#ifdef PARALLAXJIT_PROFILE
+#ifdef N64EMUJIT_PROFILE
         config.profile = 1;
 #endif
-        *entry = parallaxjit_compile_optimized(state->jit, block, ops, count, ci_jit_step, &config);
-        *generation = parallaxjit_generation(state->jit);
+        *entry = n64emujit_compile_optimized(state->jit, block, ops, count, ci_jit_step, &config);
+        *generation = n64emujit_generation(state->jit);
         if (!*entry) {
-            core_log(CORE_LOG_ERROR, "ParallaxJIT executable code allocation/protection failed; stopping CPU");
+            core_log(CORE_LOG_ERROR, "n64emuJIT executable code allocation/protection failed; stopping CPU");
             r->stop = 1;
             breakloop = true;
             return;
         }
     }
     ++state->jit_dispatch_entries;
-#ifdef PARALLAXJIT_PROFILE
+#ifdef N64EMUJIT_PROFILE
     ++block->profile_entries;
 #endif
     if (state->fastmem) {
-        void* previous_faults = parallaxjit_fault_enter(state->jit);
+        void* previous_faults = n64emujit_fault_enter(state->jit);
         (*entry)(r);
-        parallaxjit_fault_leave(previous_faults);
+        n64emujit_fault_leave(previous_faults);
     } else (*entry)(r);
 }
 
@@ -1649,23 +1649,23 @@ void r4300_jit_run(struct r4300_core* r) { while (!breakloop) ci_execute_jit(r, 
 void r4300_jit_stats(struct r4300_core* r, uint64_t stats[4])
 {
     struct r4300_jit_state* s = r->jit;
-    parallaxjit_stats(s ? s->jit : NULL, &stats[0], &stats[1]);
+    n64emujit_stats(s ? s->jit : NULL, &stats[0], &stats[1]);
     stats[2] = s ? s->jit_dispatch_entries + s->jit_indirect_links + s->jit_direct_links : 0;
     stats[3] = s ? r->retired_ops : 0;
-    if (s) core_log(CORE_LOG_INFO, "ParallaxJIT cache: new=%llu recycled=%llu verified=%llu changed=%llu replaced=%llu",
+    if (s) core_log(CORE_LOG_INFO, "n64emuJIT cache: new=%llu recycled=%llu verified=%llu changed=%llu replaced=%llu",
         (unsigned long long)s->jit_compile_misses[0], (unsigned long long)s->jit_compile_misses[1],
         (unsigned long long)s->jit_verifications[0], (unsigned long long)s->jit_verifications[1], (unsigned long long)s->jit_replacements);
-    if (s) core_log(CORE_LOG_INFO,"ParallaxJIT links: direct=%llu",(unsigned long long)s->jit_direct_links);
-    if (s && s->fastmem) core_log(CORE_LOG_INFO,"ParallaxJIT host faults: %llu",(unsigned long long)parallaxjit_fault_count(s->jit));
-#ifdef PARALLAXJIT_PROFILE
+    if (s) core_log(CORE_LOG_INFO,"n64emuJIT links: direct=%llu",(unsigned long long)s->jit_direct_links);
+    if (s && s->fastmem) core_log(CORE_LOG_INFO,"n64emuJIT host faults: %llu",(unsigned long long)n64emujit_fault_count(s->jit));
+#ifdef N64EMUJIT_PROFILE
     if (s) {
         for (unsigned i = 0; i < 64; ++i)
             if (s->profile_slow[i] || s->profile_special[i] || s->profile_cop1[i] || s->profile_fpu[i])
-                core_log(CORE_LOG_INFO,"ParallaxJIT profile opcode %u: slow=%llu special=%llu cop1rs=%llu fpu=%llu", i,
+                core_log(CORE_LOG_INFO,"n64emuJIT profile opcode %u: slow=%llu special=%llu cop1rs=%llu fpu=%llu", i,
                     (unsigned long long)s->profile_slow[i], (unsigned long long)s->profile_special[i],
                     (unsigned long long)s->profile_cop1[i], (unsigned long long)s->profile_fpu[i]);
         for (unsigned i = 1; i <= 32; ++i)
-            if (s->profile_regions[i]) core_log(CORE_LOG_INFO,"ParallaxJIT profile guard count %u: %llu",i,(unsigned long long)s->profile_regions[i]);
+            if (s->profile_regions[i]) core_log(CORE_LOG_INFO,"n64emuJIT profile guard count %u: %llu",i,(unsigned long long)s->profile_regions[i]);
         for (unsigned rank = 0; rank < 24; ++rank) {
             struct cached_block* best = NULL;
             for (unsigned set = 0; set <= s->set_mask; ++set)
@@ -1674,9 +1674,9 @@ void r4300_jit_stats(struct r4300_core* r, uint64_t stats[4])
                     if (b->valid && b->profile_entries && (!best || b->profile_entries > best->profile_entries)) best = b;
                 }
             if (!best) break;
-            core_log(CORE_LOG_INFO,"ParallaxJIT profile block %08x count=%u entries=%llu",best->virtual_pc,best->count,(unsigned long long)best->profile_entries);
+            core_log(CORE_LOG_INFO,"n64emuJIT profile block %08x count=%u entries=%llu",best->virtual_pc,best->count,(unsigned long long)best->profile_entries);
             for (unsigned n = 0; n < best->count; ++n)
-                core_log(CORE_LOG_INFO,"ParallaxJIT profile instruction %08x %08x",best->virtual_pc + 4*n,best->instructions[n].op);
+                core_log(CORE_LOG_INFO,"n64emuJIT profile instruction %08x %08x",best->virtual_pc + 4*n,best->instructions[n].op);
             best->profile_entries = 0;
         }
     }
@@ -1684,7 +1684,7 @@ void r4300_jit_stats(struct r4300_core* r, uint64_t stats[4])
 }
 void r4300_jit_code_stats(struct r4300_core* r, uint64_t stats[3])
 {
-    parallaxjit_code_stats(r->jit ? r->jit->jit : NULL, stats);
+    n64emujit_code_stats(r->jit ? r->jit->jit : NULL, stats);
 }
 void r4300_jit_optimization_stats(struct r4300_core* r, uint64_t stats[2])
 {
@@ -1714,27 +1714,27 @@ void run_r4300(struct r4300_core* r4300)
         r4300->pc = &r4300->instruction_pc;
         r4300->instruction_pc.addr = r4300->cp0.last_addr = r4300->start_address;
         if (!r4300_jit_init(r4300)) {
-            core_log(CORE_LOG_ERROR,"ParallaxJIT initialization failed; stopping CPU");
+            core_log(CORE_LOG_ERROR,"n64emuJIT initialization failed; stopping CPU");
             r4300->stop=1;
             breakloop=true;
             goto cpu_run_done;
         }
-#ifdef HAVE_PARALLAXJIT
-        core_log(CORE_LOG_INFO,"CPU dynarec: " PARALLAXJIT_BACKEND_NAME);
+#ifdef HAVE_N64EMUJIT
+        core_log(CORE_LOG_INFO,"CPU dynarec: " N64EMUJIT_BACKEND_NAME);
 #else
         core_log(CORE_LOG_INFO,"CPU backend: portable interpreter");
 #endif
         r4300->startup = 0;
     }
 
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
     r4300->execute_one=r4300_jit_execute_one;
     r4300_jit_run(r4300);
 #else
     r4300->execute_one=r4300_ops_execute_one;
     while (!breakloop && !r4300->stop) {
-#ifdef PARALLAX_USF
-        if (!(r4300->retired_ops & 65535) && parallax_usf_yield()) { breakloop = true; break; }
+#ifdef N64EMU_USF
+        if (!(r4300->retired_ops & 65535) && n64emu_usf_yield()) { breakloop = true; break; }
 #endif
         r4300_ops_execute_one(r4300);
     }

@@ -1,5 +1,5 @@
-#ifndef PARALLAX_R4300_INTERP_POLL_H
-#define PARALLAX_R4300_INTERP_POLL_H
+#ifndef N64EMU_R4300_INTERP_POLL_H
+#define N64EMU_R4300_INTERP_POLL_H
 
 #include "timing.h"
 #include "cpu_ops.h"

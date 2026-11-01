@@ -1,7 +1,7 @@
 /* Audio-only device glue: no command decoding, rasterization or presentation.
  * Keep DP registers addressable for CPU/RSP polling and private checkpoints.
  * SPDX-License-Identifier: GPL-2.0-or-later */
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
 #error USF renderer stubs must not be linked into a video core.
 #endif
 #include "core/backend.h"

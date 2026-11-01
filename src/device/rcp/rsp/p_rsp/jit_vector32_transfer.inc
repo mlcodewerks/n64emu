@@ -1,4 +1,4 @@
-    using namespace parallax32;
+    using namespace n64emu32;
     unsigned offset=vec_offset(vector),flag=std::min(vector&3u,2u);
     if(op==0) {
         if(!(element&1))host.load(0,STATE,int32_t(offset+element),2,true);

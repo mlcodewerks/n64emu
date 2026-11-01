@@ -15,7 +15,7 @@
 int g_gs_vi_counter;
 unsigned int IgnoreTLBExceptions;
 struct vi_controller;
-#ifndef PARALLAX_REAL_RCP
+#ifndef N64EMU_REAL_RCP
 void vi_schedule_vertical_interrupt(struct vi_controller* vi) { (void)vi; abort(); }
 #endif
 struct pif;

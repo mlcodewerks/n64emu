@@ -22,7 +22,7 @@ static void words(uint32_t *out, const uint8_t **p, size_t n) {
     while (n--)
         *out++ = word(p);
 }
-int parallax_usf_load_pj64(const uint8_t *data, size_t size) {
+int n64emu_usf_load_pj64(const uint8_t *data, size_t size) {
     if (!data || size < 8 || memcmp(data, "\xc8\xa6\xd8\x23", 4))
         return 0;
     const uint8_t *p = data + 4;
@@ -96,7 +96,7 @@ int parallax_usf_load_pj64(const uint8_t *data, size_t size) {
     r->regs[0] = 0;
     if (!r4300_jit_init(r))
         return 0;
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
     r->execute_one = r4300_jit_execute_one;
 #else
     r->execute_one = r4300_ops_execute_one;
@@ -112,7 +112,7 @@ int parallax_usf_load_pj64(const uint8_t *data, size_t size) {
     g_dev.ai.last_read = 0;
     g_dev.ai.samples_format_changed = 1;
     ai_rebase_timing(&g_dev.ai);
-    if (parallax_usf_fifo_enabled()) {
+    if (n64emu_usf_fifo_enabled()) {
         g_dev.ai.regs[AI_STATUS_REG] = 0x40000000;
         /* Recreate the ripper's initial busy period without replaying samples. */
         uint64_t frames = (g_dev.ai.regs[AI_LEN_REG] & 0x3fff8u) / 4;

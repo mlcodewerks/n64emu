@@ -1,5 +1,5 @@
-#ifndef PARALLAX_DEVICE_CART_H
-#define PARALLAX_DEVICE_CART_H
+#ifndef N64EMU_DEVICE_CART_H
+#define N64EMU_DEVICE_CART_H
 
 #include <stdint.h>
 #include <time.h>

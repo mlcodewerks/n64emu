@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_R4300_INTERP_MEMORY_H
-#define PARALLAX_R4300_INTERP_MEMORY_H
+#ifndef N64EMU_R4300_INTERP_MEMORY_H
+#define N64EMU_R4300_INTERP_MEMORY_H
 #include "r4300_core.h"
 #include "timing.h"
 #include "tlb.h"

@@ -1,5 +1,5 @@
 
-static void emit_direct_links(void* block, const struct parallaxjit_config* config)
+static void emit_direct_links(void* block, const struct n64emujit_config* config)
 {
     unsigned char* misses[17]; unsigned miss_count = 0;
     if(!config->compat_issue_clock){emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,irq_writeback_pending),0);misses[miss_count++]=emit_jump(5);}
@@ -10,26 +10,26 @@ static void emit_direct_links(void* block, const struct parallaxjit_config* conf
     emit_mem(0x8b,0,RDX,R12,-1,0,offsetof(struct r4300_core,instruction_pc.addr));
     for (unsigned slot = 0; slot < 2; ++slot) {
         emit_movimm64((intptr_t)&config->links[slot],R11);
-        emit_mem(0x39,0,RDX,R11,-1,0,offsetof(struct parallaxjit_link_cache,pc));
+        emit_mem(0x39,0,RDX,R11,-1,0,offsetof(struct n64emujit_link_cache,pc));
         unsigned char* other = emit_jump(5);
-        emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,current_entry));
+        emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,current_entry));
         emit_reg_op(0x85,RAX,RAX,1); misses[miss_count++] = emit_jump(4);
         emit_mem(0x8b,1,RAX,RAX,-1,0,0);
-        emit_mem(0x39,1,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,expected_entry)); misses[miss_count++] = emit_jump(5);
+        emit_mem(0x39,1,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,expected_entry)); misses[miss_count++] = emit_jump(5);
         emit_movimm64((intptr_t)config->epoch,RAX); emit_mem(0x8b,0,RAX,RAX,-1,0,0);
-        emit_mem(0x39,0,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,epoch)); misses[miss_count++] = emit_jump(5);
-        emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,current_page_generation));
+        emit_mem(0x39,0,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,epoch)); misses[miss_count++] = emit_jump(5);
+        emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,current_page_generation));
         emit_mem(0x8b,0,RAX,RAX,-1,0,0);
-        emit_mem(0x39,0,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,page_generation)); misses[miss_count++] = emit_jump(5);
-        emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,current_mapping));
+        emit_mem(0x39,0,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,page_generation)); misses[miss_count++] = emit_jump(5);
+        emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,current_mapping));
         emit_reg_op(0x85,RAX,RAX,1); unsigned char* fixed_mapping = emit_jump(4);
         emit_mem(0x8b,0,RAX,RAX,-1,0,0);
-        emit_mem(0x39,0,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,mapping)); misses[miss_count++] = emit_jump(5);
+        emit_mem(0x39,0,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,mapping)); misses[miss_count++] = emit_jump(5);
         patch_jump(fixed_mapping,out);
-        emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,current_segment_generation));
+        emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,current_segment_generation));
         emit_mem(0x8b,1,RAX,RAX,-1,0,0);
-        emit_mem(0x39,1,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,segment_generation)); misses[miss_count++] = emit_jump(5);
-        emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,target_block));
+        emit_mem(0x39,1,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,segment_generation)); misses[miss_count++] = emit_jump(5);
+        emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,target_block));
         emit_movimm64((intptr_t)config->previous_block,RCX); emit_mem(0x89,1,RAX,RCX,-1,0,0);
         uint64_t* counters[] = {config->entries,config->linked_entries,config->direct_links};
         uintptr_t counter_base = 0;
@@ -42,10 +42,10 @@ static void emit_direct_links(void* block, const struct parallaxjit_config* conf
             emit_mem_imm(0x83,1,0,RAX,-1,0,(size_t)offset,1);
         }
         if (config->profile) {
-            emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct parallaxjit_link_cache,profile_entries));
+            emit_mem(0x8b,1,RAX,R11,-1,0,offsetof(struct n64emujit_link_cache,profile_entries));
             emit_mem_imm(0x83,1,0,RAX,-1,0,0,1);
         }
-        emit_mem(0xff,0,4,R11,-1,0,offsetof(struct parallaxjit_link_cache,body));
+        emit_mem(0xff,0,4,R11,-1,0,offsetof(struct n64emujit_link_cache,body));
         patch_jump(other,out);
     }
     for (unsigned n = 0; n < miss_count; ++n) patch_jump(misses[n],out);

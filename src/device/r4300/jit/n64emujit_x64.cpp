@@ -1,4 +1,4 @@
-/* Xbyak host emitter for ParallaxJIT's shared precise frontend.
+/* Xbyak host emitter for n64emuJIT's shared precise frontend.
  * Derived from Ari64's emitter, Copyright (C) 2009-2011 Ari64.
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #define XBYAK_NO_OP_NAMES
@@ -6,7 +6,7 @@
 #include <map>
 #include <memory>
 extern "C" {
-#include "parallaxjit.h"
+#include "n64emujit.h"
 #include "core/log.h"
 #include "device/r4300/r4300_core.h"
 #include "device/r4300/idec.h"
@@ -20,7 +20,7 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 #if !defined(__x86_64__) && !defined(_M_X64)
-#error The ParallaxJIT backend supports x64 only
+#error The n64emuJIT backend supports x64 only
 #endif
 #ifdef _WIN32
 #include <windows.h>

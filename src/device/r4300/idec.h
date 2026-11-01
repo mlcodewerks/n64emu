@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_DEVICE_R4300_IDEC_H
-#define PARALLAX_DEVICE_R4300_IDEC_H
+#ifndef N64EMU_DEVICE_R4300_IDEC_H
+#define N64EMU_DEVICE_R4300_IDEC_H
 
 #include "osal/preproc.h"
 

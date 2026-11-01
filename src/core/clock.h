@@ -1,6 +1,6 @@
 
-#ifndef PARALLAX_CLOCK_H
-#define PARALLAX_CLOCK_H
+#ifndef N64EMU_CLOCK_H
+#define N64EMU_CLOCK_H
 
 #include <time.h>
 

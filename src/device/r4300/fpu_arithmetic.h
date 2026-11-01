@@ -42,7 +42,7 @@ static int fpu_inputs(struct r4300_core* cpu, uint64_t a, uint64_t b, int single
     /* USF rippers allow gradual underflow in fading audio envelopes. The
      * hardware's unimplemented-operation trap would stop their audio thread. */
     if ((ca == FP_NAN && !(a & signal)) || (cb == FP_NAN && !(b & signal))
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
         || ca == FP_SUBNORMAL || cb == FP_SUBNORMAL
 #endif
         ) {
@@ -62,7 +62,7 @@ static int fpu_output(struct r4300_core* cpu, uint64_t* bits, int single)
     if (cls == FP_NAN) {
         *bits = single ? UINT64_C(0x7fbfffff) : UINT64_C(0x7ff7ffffffffffff);
     }
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
     else if (cls == FP_SUBNORMAL) {
         uint64_t sign = *bits & (single ? UINT64_C(0x80000000) : UINT64_C(0x8000000000000000));
         unsigned int rm = cpu->cp1.fcr31 & 3;
@@ -81,7 +81,7 @@ static int fpu_output(struct r4300_core* cpu, uint64_t* bits, int single)
  * ordinary execution latency. Classify raw bits without host FP side effects. */
 static unsigned fpu_extra_cycles(struct r4300_core *cpu,uint32_t op,uint64_t result,int have_result)
 {
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     (void)cpu; (void)op; (void)result; (void)have_result;
     return 0;
 #else
@@ -122,7 +122,7 @@ static int fpu_prepare_unimplemented(struct r4300_core *cpu,unsigned extra)
     return fpu_unimplemented(cpu);
 }
 
-static PARALLAX_FORCE_INLINE int fpu_prepare(struct r4300_core* cpu, uint32_t op, uint64_t inputs[3])
+static N64EMU_FORCE_INLINE int fpu_prepare(struct r4300_core* cpu, uint32_t op, uint64_t inputs[3])
 {
     unsigned int fmt = RS_OF(op), fn = op & 63;
     unsigned int fs = (cpu->cp0.regs[CP0_STATUS_REG] & CP0_STATUS_FR) ? FS_OF(op) : (FS_OF(op) & ~1);
@@ -148,7 +148,7 @@ static PARALLAX_FORCE_INLINE int fpu_prepare(struct r4300_core* cpu, uint32_t op
         if (to_integer) {
             int cls = fpu_class((uint64_t)a.dword, single);
             if (
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
                 cls == FP_SUBNORMAL ||
 #endif
                 cls == FP_INFINITE || cls == FP_NAN) {
@@ -172,7 +172,7 @@ static PARALLAX_FORCE_INLINE int fpu_prepare(struct r4300_core* cpu, uint32_t op
     return 1;
 }
 
-static PARALLAX_FORCE_INLINE void fpu_finish(struct r4300_core* cpu, uint32_t op, uint64_t bits, unsigned int flags)
+static N64EMU_FORCE_INLINE void fpu_finish(struct r4300_core* cpu, uint32_t op, uint64_t bits, unsigned int flags)
 {
     unsigned extra=fpu_extra_cycles(cpu,op,bits,1);
     unsigned int fmt = RS_OF(op), fn = op & 63, fd = FD_OF(op);
@@ -181,7 +181,7 @@ static PARALLAX_FORCE_INLINE void fpu_finish(struct r4300_core* cpu, uint32_t op
     if (fn == 6) { cpu->cp1.regs[fd].dword = (int64_t)bits; cpu->instruction_pc.addr += 4; return; }
     if(!cpu->compat_issue_clock)cp0_step_cycles(&cpu->cp0,extra);
     if ((flags & 32)
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
         || ((flags & 2) &&
         (!(cpu->cp1.fcr31 & UINT32_C(0x1000000)) || (cpu->cp1.fcr31 & 0x180)))
 #endif

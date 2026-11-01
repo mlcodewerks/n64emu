@@ -107,7 +107,7 @@ static osal_inline unsigned long long int core_swap64(unsigned long long int x)
     #endif
 }
 
-#ifdef PARALLAX_BIG_ENDIAN
+#ifdef N64EMU_BIG_ENDIAN
 #define big16(x) (x)
 #define big32(x) (x)
 #define big64(x) (x)

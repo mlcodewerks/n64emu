@@ -1,6 +1,6 @@
 /* Straight-line ALU fetches cannot exit. Charge their fixed clocks and
  * uncached penalties together, before any memory guard, branch or commit. */
-static void emit_pending_clocks(const struct parallaxjit_config* config,unsigned base,unsigned fetches,size_t fetch_flag=4)
+static void emit_pending_clocks(const struct n64emujit_config* config,unsigned base,unsigned fetches,size_t fetch_flag=4)
 {
     if(base)emit_addimm(CLOCKS,base,CLOCKS);
     if(!config->cache_timing || !fetches)return;
@@ -18,7 +18,7 @@ static void emit_pending_clocks(const struct parallaxjit_config* config,unsigned
  * Reserve its latest deadline before admitting a native region. COUNT writes
  * do not rebase these monotonic CPU-clock deadlines. This only guards entry;
  * the existing fetch/data paths still charge the actual remaining wait. */
-static void emit_pending_transfer_guard(const struct parallaxjit_config* config,
+static void emit_pending_transfer_guard(const struct n64emujit_config* config,
     unsigned cached_bound, unsigned uncached_bound, struct memory_exit* failure)
 {
     if (!config->cache_timing || config->compat_issue_clock) return;
@@ -51,7 +51,7 @@ static void emit_pending_transfer_guard(const struct parallaxjit_config* config,
     patch_jump(empty, out);
 }
 
-static void emit_region_guard(const struct parallaxjit_config* config, unsigned start,
+static void emit_region_guard(const struct n64emujit_config* config, unsigned start,
     unsigned count, unsigned base, unsigned memory_count, struct memory_exit* failure)
 {
     emit_movimm64((intptr_t)&breakloop, ADDRESS);
@@ -115,7 +115,7 @@ static void emit_region_guard(const struct parallaxjit_config* config, unsigned 
     }
     emit_pending_transfer_guard(config, cached_bound, uncached_bound, failure);
 }
-static void emit_region_commit_native(const struct parallaxjit_config* config,
+static void emit_region_commit_native(const struct n64emujit_config* config,
     unsigned start, unsigned count, int branch)
 {
     emit_mem(0x8b, 0, T0, STATE, -1, 0, offsetof(struct r4300_core, cp0.count_phase));

@@ -15,5 +15,5 @@ void core_log(int level, const char *message, ...)
     enum retro_log_level severity = level == CORE_LOG_ERROR ? RETRO_LOG_ERROR :
         level == CORE_LOG_WARNING ? RETRO_LOG_WARN :
         level == CORE_LOG_VERBOSE ? RETRO_LOG_DEBUG : RETRO_LOG_INFO;
-    log_cb(severity, "parallax: %s\n", text);
+    log_cb(severity, "n64emu: %s\n", text);
 }

@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_DEVICE_R4300_R4300_CORE_H
-#define PARALLAX_DEVICE_R4300_R4300_CORE_H
+#ifndef N64EMU_DEVICE_R4300_R4300_CORE_H
+#define N64EMU_DEVICE_R4300_R4300_CORE_H
 
 #include <stddef.h>
 #include <stdint.h>

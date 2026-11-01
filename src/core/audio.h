@@ -1,5 +1,5 @@
-#ifndef PARALLAX_AUDIO_H
-#define PARALLAX_AUDIO_H
+#ifndef N64EMU_AUDIO_H
+#define N64EMU_AUDIO_H
 
 #include <stddef.h>
 

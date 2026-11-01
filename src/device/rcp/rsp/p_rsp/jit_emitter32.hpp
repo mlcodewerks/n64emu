@@ -2,8 +2,8 @@
 // Logical cache registers have frame homes, so three-source instructions and
 // nested delay slots cannot exhaust IA-32's small scalar register file.
 // SPDX-License-Identifier: GPL-2.0-or-later
-#ifndef PARALLAX_RSP_EMITTER32_HPP
-#define PARALLAX_RSP_EMITTER32_HPP
+#ifndef N64EMU_RSP_EMITTER32_HPP
+#define N64EMU_RSP_EMITTER32_HPP
 #include "jit32/assembler.hpp"
 #include "simd_caps.hpp"
 #include <array>
@@ -17,52 +17,52 @@ enum { JIT_R0=0,JIT_R1=1,JIT_V0=32,JIT_V1,JIT_V2,JIT_FP=63 };
 constexpr unsigned JIT_R(unsigned n) { return n; }
 constexpr unsigned JIT_V(unsigned n) { return JIT_V0+n; }
 constexpr unsigned JIT_R_NUM=5,JIT_V_NUM=5;
-struct CodeLabel { parallax32::Label label;size_t offset=0; };
+struct CodeLabel { n64emu32::Label label;size_t offset=0; };
 struct VectorProgram;
 class Emitter {
-    parallax32::Assembler host;
+    n64emu32::Assembler host;
     std::vector<std::unique_ptr<CodeLabel>> labels;
     struct Argument { bool immediate;HostWord value; };
     std::vector<Argument> arguments;
     uint8_t* destination=nullptr;
     bool optimize_code;
-    static constexpr unsigned FP=parallax32::Assembler::FP;
-    static constexpr unsigned STATE=parallax32::Assembler::STATE;
-    static constexpr unsigned DMEM=parallax32::Assembler::DMEM;
+    static constexpr unsigned FP=n64emu32::Assembler::FP;
+    static constexpr unsigned STATE=n64emu32::Assembler::STATE;
+    static constexpr unsigned DMEM=n64emu32::Assembler::DMEM;
     static int32_t slot(unsigned n) { return -64-int32_t(n>=JIT_V0?n-JIT_V0+JIT_R_NUM:n)*4; }
     void loadv(unsigned n,unsigned physical) {
         if(n==JIT_V0)host.mov(physical,STATE);
         else if(n==JIT_V1)host.mov(physical,DMEM);
-        else if(n==JIT_V2)host.mov(physical,parallax32::Assembler::INDIRECT);
+        else if(n==JIT_V2)host.mov(physical,n64emu32::Assembler::INDIRECT);
         else if(n==JIT_FP)host.mov(physical,FP);
         else host.load(physical,FP,slot(n));
     }
     void savev(unsigned n,unsigned physical) {
         if(n==JIT_V0)host.mov(STATE,physical);
         else if(n==JIT_V1)host.mov(DMEM,physical);
-        else if(n==JIT_V2)host.mov(parallax32::Assembler::INDIRECT,physical);
+        else if(n==JIT_V2)host.mov(n64emu32::Assembler::INDIRECT,physical);
         else host.store(physical,FP,slot(n));
     }
     CodeLabel* new_label() { labels.emplace_back(new CodeLabel);return labels.back().get(); }
-    void binary(unsigned d,unsigned a,unsigned b,parallax32::Operation op) {
+    void binary(unsigned d,unsigned a,unsigned b,n64emu32::Operation op) {
         loadv(a,0);loadv(b,1);host.alu(op,0,1);savev(d,0);
     }
-    void immediate(unsigned d,unsigned a,HostWord value,parallax32::Operation op) {
+    void immediate(unsigned d,unsigned a,HostWord value,n64emu32::Operation op) {
         loadv(a,0);host.immediate(op,0,uint32_t(value));savev(d,0);
     }
-    void compare(unsigned d,unsigned a,unsigned b,parallax32::Condition cc) {
-        loadv(a,0);loadv(b,1);host.alu(parallax32::CMP,0,1);condition(d,cc);
+    void compare(unsigned d,unsigned a,unsigned b,n64emu32::Condition cc) {
+        loadv(a,0);loadv(b,1);host.alu(n64emu32::CMP,0,1);condition(d,cc);
     }
-    void compare_immediate(unsigned d,unsigned a,HostWord value,parallax32::Condition cc) {
-        loadv(a,0);host.immediate(parallax32::CMP,0,uint32_t(value));condition(d,cc);
+    void compare_immediate(unsigned d,unsigned a,HostWord value,n64emu32::Condition cc) {
+        loadv(a,0);host.immediate(n64emu32::CMP,0,uint32_t(value));condition(d,cc);
     }
-    void condition(unsigned d,parallax32::Condition cc) {
-        parallax32::Label yes,done;host.branch(yes,cc);host.imm(0,0);host.branch(done);
+    void condition(unsigned d,n64emu32::Condition cc) {
+        n64emu32::Label yes,done;host.branch(yes,cc);host.imm(0,0);host.branch(done);
         host.bind(yes);host.imm(0,1);host.bind(done);savev(d,0);
     }
-    void shift(unsigned d,unsigned a,unsigned amount,parallax32::Shift kind,bool variable) {
+    void shift(unsigned d,unsigned a,unsigned amount,n64emu32::Shift kind,bool variable) {
         loadv(a,0);
-        if(variable){loadv(amount,1);host.immediate(parallax32::AND,1,31);host.shift_register(0,kind,1);}
+        if(variable){loadv(amount,1);host.immediate(n64emu32::AND,1,31);host.shift_register(0,kind,1);}
         else host.shift(0,kind,amount);
         savev(d,0);
     }
@@ -70,13 +70,13 @@ class Emitter {
         loadv(b,1);host.load(0,1,int32_t(offset),bytes,sign);savev(d,0);
     }
     void memory_index_load(unsigned d,unsigned b,unsigned index,unsigned bytes,bool sign) {
-        loadv(b,0);loadv(index,1);host.alu(parallax32::ADD,0,1);host.load(0,0,0,bytes,sign);savev(d,0);
+        loadv(b,0);loadv(index,1);host.alu(n64emu32::ADD,0,1);host.load(0,0,0,bytes,sign);savev(d,0);
     }
     void memory_store(unsigned b,unsigned s,HostWord offset,unsigned bytes) {
         loadv(s,0);loadv(b,1);host.store(0,1,int32_t(offset),bytes);
     }
     void memory_index_store(unsigned b,unsigned s,unsigned index,unsigned bytes) {
-        loadv(b,1);loadv(index,2);host.alu(parallax32::ADD,1,2);loadv(s,0);host.store(0,1,0,bytes);
+        loadv(b,1);loadv(index,2);host.alu(n64emu32::ADD,1,2);loadv(s,0);host.store(0,1,0,bytes);
     }
     void emit_vector_program(const VectorProgram&);
     void vector_scalar(unsigned,unsigned,unsigned,unsigned,unsigned);
@@ -84,7 +84,7 @@ class Emitter {
     void simd_spill(unsigned,unsigned);
     void simd_reload(unsigned,unsigned);
     void simd_memory(unsigned,unsigned,int32_t,bool,unsigned=16);
-#ifdef PARALLAX_JIT32_ARM
+#ifdef N64EMU_JIT32_ARM
     void neon3(uint32_t example,unsigned d,unsigned a,unsigned b) {
         host.word((example&~0x004ff0afu)|((d&15)<<12)|((d&16)<<18)|((a&15)<<16)|((a&16)<<3)|(b&15)|((b&16)<<1));
     }
@@ -109,47 +109,47 @@ public:
             host.store(0,FP,-512+int32_t(i*4));
         }
         for(unsigned i=0;i<arguments.size();i++) { host.load(0,FP,-512+int32_t(i*4));host.argument(i,0); }
-#ifdef PARALLAX_JIT32_ARM
+#ifdef N64EMU_JIT32_ARM
         // Writing r1..r3 through r0 above also overwrites argument zero.
         if(!arguments.empty())host.load(0,FP,-512);
 #endif
-#ifdef PARALLAX_JIT32_ARM
+#ifdef N64EMU_JIT32_ARM
         host.store(14,FP,-940);
 #endif
         host.call(function);savev(JIT_R0,0);
-#ifdef PARALLAX_JIT32_ARM
+#ifdef N64EMU_JIT32_ARM
         host.load(14,FP,-940);
 #endif
     }
     void retval(unsigned d) { movr(d,JIT_R0); }
     void movi(unsigned d,HostWord value) { host.imm(0,uint32_t(value));savev(d,0); }
     void movr(unsigned d,unsigned s) { if(d!=s){loadv(s,0);savev(d,0);} }
-#define RSP32_BINARY(name,op) void name(unsigned d,unsigned a,unsigned b){binary(d,a,b,parallax32::op);}
+#define RSP32_BINARY(name,op) void name(unsigned d,unsigned a,unsigned b){binary(d,a,b,n64emu32::op);}
     RSP32_BINARY(addr,ADD) RSP32_BINARY(subr,SUB) RSP32_BINARY(andr,AND) RSP32_BINARY(orr,OR) RSP32_BINARY(xorr,XOR)
 #undef RSP32_BINARY
-#define RSP32_IMMEDIATE(name,op) void name(unsigned d,unsigned a,HostWord v){immediate(d,a,v,parallax32::op);}
+#define RSP32_IMMEDIATE(name,op) void name(unsigned d,unsigned a,HostWord v){immediate(d,a,v,n64emu32::op);}
     RSP32_IMMEDIATE(addi,ADD) RSP32_IMMEDIATE(andi,AND) RSP32_IMMEDIATE(ori,OR) RSP32_IMMEDIATE(xori,XOR)
 #undef RSP32_IMMEDIATE
-#define RSP32_SHIFT(name,op,variable) void name(unsigned d,unsigned a,unsigned n){shift(d,a,n,parallax32::op,variable);}
+#define RSP32_SHIFT(name,op,variable) void name(unsigned d,unsigned a,unsigned n){shift(d,a,n,n64emu32::op,variable);}
     RSP32_SHIFT(lshi,LSL,false) RSP32_SHIFT(rshi,ASR,false) RSP32_SHIFT(rshi_u,LSR,false)
     RSP32_SHIFT(lshr,LSL,true) RSP32_SHIFT(rshr,ASR,true) RSP32_SHIFT(rshr_u,LSR,true)
 #undef RSP32_SHIFT
     void extr_i(unsigned d,unsigned a) { movr(d,a); }
     void extr_ui(unsigned d,unsigned a) { movr(d,a); }
-#define RSP32_CMP(name,cc) void name(unsigned d,unsigned a,unsigned b){compare(d,a,b,parallax32::cc);}
+#define RSP32_CMP(name,cc) void name(unsigned d,unsigned a,unsigned b){compare(d,a,b,n64emu32::cc);}
     RSP32_CMP(eqr,EQ) RSP32_CMP(ner,NE) RSP32_CMP(ltr,LT) RSP32_CMP(ltr_u,LO)
 #undef RSP32_CMP
-#define RSP32_CMP(name,cc) void name(unsigned d,unsigned a,HostWord v){compare_immediate(d,a,v,parallax32::cc);}
+#define RSP32_CMP(name,cc) void name(unsigned d,unsigned a,HostWord v){compare_immediate(d,a,v,n64emu32::cc);}
     RSP32_CMP(lti,LT) RSP32_CMP(lti_u,LO) RSP32_CMP(gei,GE) RSP32_CMP(lei,LE) RSP32_CMP(gti,GT)
 #undef RSP32_CMP
     CodeLabel* label(){auto* n=new_label();n->offset=host.size();host.bind(n->label);return n;}
     CodeLabel* indirect(){return label();}
     void patch(CodeLabel* n){n->offset=host.size();host.bind(n->label);}
     void patch_at(CodeLabel* n,CodeLabel* target){n->offset=target->offset;host.bind_at(n->label,target->offset);}
-    CodeLabel* beqi(unsigned a,HostWord v){loadv(a,0);host.immediate(parallax32::CMP,0,uint32_t(v));auto*n=new_label();host.branch(n->label,parallax32::EQ);return n;}
-    CodeLabel* bnei(unsigned a,HostWord v){loadv(a,0);host.immediate(parallax32::CMP,0,uint32_t(v));auto*n=new_label();host.branch(n->label,parallax32::NE);return n;}
-    CodeLabel* bltr_u(unsigned a,unsigned b){loadv(a,0);loadv(b,1);host.alu(parallax32::CMP,0,1);auto*n=new_label();host.branch(n->label,parallax32::LO);return n;}
-    CodeLabel* bmsi(unsigned a,HostWord v){loadv(a,0);host.immediate(parallax32::TEST,0,uint32_t(v));auto*n=new_label();host.branch(n->label,parallax32::NE);return n;}
+    CodeLabel* beqi(unsigned a,HostWord v){loadv(a,0);host.immediate(n64emu32::CMP,0,uint32_t(v));auto*n=new_label();host.branch(n->label,n64emu32::EQ);return n;}
+    CodeLabel* bnei(unsigned a,HostWord v){loadv(a,0);host.immediate(n64emu32::CMP,0,uint32_t(v));auto*n=new_label();host.branch(n->label,n64emu32::NE);return n;}
+    CodeLabel* bltr_u(unsigned a,unsigned b){loadv(a,0);loadv(b,1);host.alu(n64emu32::CMP,0,1);auto*n=new_label();host.branch(n->label,n64emu32::LO);return n;}
+    CodeLabel* bmsi(unsigned a,HostWord v){loadv(a,0);host.immediate(n64emu32::TEST,0,uint32_t(v));auto*n=new_label();host.branch(n->label,n64emu32::NE);return n;}
     CodeLabel* jmpi(){auto*n=new_label();host.branch(n->label);return n;}
     void jmpr(unsigned a){loadv(a,0);host.jump_register(0);}
     void jump_absolute(void* target){host.jump(target);}
@@ -181,7 +181,7 @@ public:
     void vector_transfer(unsigned,unsigned,unsigned,unsigned);
     void vector_memory(unsigned,unsigned,unsigned,HostWord,bool,unsigned);
     void vector_packed_load(unsigned,unsigned,unsigned,HostWord,unsigned);
-#ifdef PARALLAX_JIT32_CROSS_ARM
+#ifdef N64EMU_JIT32_CROSS_ARM
     static void vector_tables(void (*write)(const void*,size_t));
 #endif
 };

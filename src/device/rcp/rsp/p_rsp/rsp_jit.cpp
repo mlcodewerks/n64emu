@@ -4,7 +4,7 @@
 #include "rsp_jit.hpp"
 #include "rsp/timing.hpp"
 #include "rsp/quantize.hpp"
-#ifdef PARALLAX_RSP_ENTRY_CAPTURE
+#ifdef N64EMU_RSP_ENTRY_CAPTURE
 #include "../../../../../benchmarks/libdragon/rsp_fixture.h"
 #include <cstdio>
 #include <cstdlib>
@@ -383,7 +383,7 @@ void CPU::jit_begin_call(Emitter *_jit)
 
 void CPU::jit_end_call(Emitter *_jit, CodePointer ptr)
 {
-#ifdef PARALLAX_RSP_SIMD_DISPATCH
+#ifdef N64EMU_RSP_SIMD_DISPATCH
     ptr = rsp_resolve_simd_helper(ptr);
 #endif
 	_jit->finishi(ptr);
@@ -943,7 +943,7 @@ Func CPU::get_vector_block(uint32_t instruction)
 {
     unsigned op=instruction&63;
     bool generic=op<0x30 && !quantize_opcode(op);
-#ifdef PARALLAX_RSP_JIT32
+#ifdef N64EMU_RSP_JIT32
     // IA-32/AAPCS32 leaves specialize the same optimized vector IR for their
     // smaller register files rather than using the 64-bit leaf argument ABI.
     generic=false;
@@ -1097,7 +1097,7 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
                           InstructionInfo &info, const InstructionInfo &last_info,
                           bool first_instruction, bool next_instruction_is_branch_target)
 {
-#ifdef PARALLAX_RSP_ENTRY_CAPTURE
+#ifdef N64EMU_RSP_ENTRY_CAPTURE
     const char *capture_pc=std::getenv("RSP_ENTRY_CAPTURE_PC");
     if(capture_pc && pc==std::strtoul(capture_pc,nullptr,0)) {
         regs.flush_register_window(_jit);
@@ -2358,7 +2358,7 @@ ReturnMode CPU::run(uint32_t cycle_limit)
 			*state.cp0.cr[CP0_REGISTER_SP_STATUS] |= SP_STATUS_BROKE | SP_STATUS_HALT;
 			if (*state.cp0.cr[CP0_REGISTER_SP_STATUS] & SP_STATUS_INTR_BREAK)
 				*state.cp0.irq |= 1;
-#if !defined(PARALLEL_INTEGRATION) && !defined(PARALLAX_RSP_TEST_SILENT)
+#if !defined(PARALLEL_INTEGRATION) && !defined(N64EMU_RSP_TEST_SILENT)
 			print_registers();
 #endif
 			return MODE_BREAK;

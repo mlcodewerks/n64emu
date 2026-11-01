@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_DEVICE_R4300_CP1_H
-#define PARALLAX_DEVICE_R4300_CP1_H
+#ifndef N64EMU_DEVICE_R4300_CP1_H
+#define N64EMU_DEVICE_R4300_CP1_H
 
 #include <stdint.h>
 #include "osal/preproc.h"
@@ -71,5 +71,5 @@ void set_fpr_pointers(struct cp1* cp1, uint32_t newStatus);
 
 void update_x86_rounding_mode(struct cp1* cp1);
 
-#endif /* PARALLAX_DEVICE_R4300_CP1_H */
+#endif /* N64EMU_DEVICE_R4300_CP1_H */
 

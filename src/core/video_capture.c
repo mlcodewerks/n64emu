@@ -64,14 +64,14 @@ static const struct video_capture_backend_interface g_idummy_video_capture_backe
 };
 
 /* exported video capture backends */
-#if defined(PARALLAX_OPENCV)
+#if defined(N64EMU_OPENCV)
 extern const struct video_capture_backend_interface g_iopencv_video_capture_backend;
 #endif
 
 
 static const struct video_capture_backend_interface* const video_capture_backends[] =
 {
-#if defined(PARALLAX_OPENCV)
+#if defined(N64EMU_OPENCV)
     &g_iopencv_video_capture_backend,
 #endif
     &g_idummy_video_capture_backend,

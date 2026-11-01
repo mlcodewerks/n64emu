@@ -1,5 +1,5 @@
 
-static PARALLAX_FORCE_INLINE int fpu_compare_prepare(struct r4300_core* r4300, uint32_t op, uint64_t inputs[3])
+static N64EMU_FORCE_INLINE int fpu_compare_prepare(struct r4300_core* r4300, uint32_t op, uint64_t inputs[3])
 {
     const unsigned int fmt = RS_OF(op);
     const unsigned int fs = (r4300->cp0.regs[CP0_STATUS_REG] & CP0_STATUS_FR)
@@ -46,7 +46,7 @@ int r4300_ops_fpu_compare_prepare(struct r4300_core* r, uint32_t op, uint64_t in
 {
     return fpu_compare_prepare(r, op, inputs);
 }
-static PARALLAX_FORCE_INLINE void fpu_compare_finish(struct r4300_core* r, int result)
+static N64EMU_FORCE_INLINE void fpu_compare_finish(struct r4300_core* r, int result)
 {
     r->cp1.fcr31 = (r->cp1.fcr31 & ~FCR31_CMP_BIT) | (result ? FCR31_CMP_BIT : 0);
     r->instruction_pc.addr += 4;

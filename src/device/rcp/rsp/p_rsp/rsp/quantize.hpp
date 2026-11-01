@@ -1,5 +1,5 @@
-#ifndef PARALLAX_RSP_QUANTIZE_HPP
-#define PARALLAX_RSP_QUANTIZE_HPP
+#ifndef N64EMU_RSP_QUANTIZE_HPP
+#define N64EMU_RSP_QUANTIZE_HPP
 #include "../state.hpp"
 
 namespace RSP {

@@ -10,7 +10,7 @@
     X(color_resize) X(color_merge) X(color_alias) X(color_retire) X(depth_alias) \
     X(color_alloc) X(depth_alloc) X(depth_import) X(gpu_alias)
 
-#ifdef PARALLAX_GLRDP_PROFILE
+#ifdef N64EMU_GLRDP_PROFILE
 #include <array>
 #include <chrono>
 #include <cstdint>

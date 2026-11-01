@@ -1,9 +1,9 @@
 
 
-#define PARALLAX_CORE_PROTOTYPES 1
+#define N64EMU_CORE_PROTOTYPES 1
 
 #include "interrupt.h"
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
 #include "usf/internal.h"
 #endif
 
@@ -227,8 +227,8 @@ void remove_event(struct interrupt_queue* q, int type)
 
 void schedule_compare(struct cp0* cp0)
 {
-#ifdef PARALLAX_USF
-    if (!parallax_usf_compare_enabled()) { remove_event(&cp0->q, COMPARE_INT); return; }
+#ifdef N64EMU_USF
+    if (!n64emu_usf_compare_enabled()) { remove_event(&cp0->q, COMPARE_INT); return; }
 #endif
     int64_t delta = (uint32_t)(cp0->regs[CP0_COMPARE_REG] - cp0->regs[CP0_COUNT_REG]);
 

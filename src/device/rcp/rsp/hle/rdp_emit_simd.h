@@ -1,8 +1,8 @@
 /* Integer SIMD shared by the angrylion HLE microcode emitters.
  * SSE2 / NEON selection and exact accumulator primitives are common
  * with audio HLE. Display-list and FIFO state remain ordered by callers. */
-#ifndef PARALLAX_RDP_EMIT_SIMD_H
-#define PARALLAX_RDP_EMIT_SIMD_H
+#ifndef N64EMU_RDP_EMIT_SIMD_H
+#define N64EMU_RDP_EMIT_SIMD_H
 #include "hle_simd.h"
 
 #if HLE_SIMD_ENABLED

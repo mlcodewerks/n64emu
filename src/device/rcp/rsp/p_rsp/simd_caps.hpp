@@ -1,5 +1,5 @@
 #pragma once
-#ifdef PARALLAX_RSP_SIMD_DISPATCH
+#ifdef N64EMU_RSP_SIMD_DISPATCH
 unsigned rsp_simd_runtime_level();
 #endif
 /* Only the fallback helpers are multiversioned. Emitted calls resolve once
@@ -10,7 +10,7 @@ static inline unsigned rsp_simd_level()
     return 2;
 #elif defined(__aarch64__) || defined(__ARM_NEON) || defined(_M_ARM64)
     return 100; /* NEON */
-#elif defined(PARALLAX_RSP_SIMD_DISPATCH)
+#elif defined(N64EMU_RSP_SIMD_DISPATCH)
     return rsp_simd_runtime_level();
 #elif defined(__SSE4_2__)
     return 42;
@@ -22,6 +22,6 @@ static inline unsigned rsp_simd_level()
     return 2;
 #endif
 }
-#ifdef PARALLAX_RSP_SIMD_DISPATCH
+#ifdef N64EMU_RSP_SIMD_DISPATCH
 void *rsp_resolve_simd_helper(void *pointer);
 #endif

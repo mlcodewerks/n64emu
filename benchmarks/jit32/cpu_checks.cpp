@@ -1,4 +1,4 @@
-#include "device/r4300/jit/parallaxjit.h"
+#include "device/r4300/jit/n64emujit.h"
 extern "C" {
 #include "device/r4300/r4300_core.h"
 void core_log(int,const char*,...) {}
@@ -42,10 +42,10 @@ static void reference(r4300_core& state,uint32_t op) {
     if(write&&rd)state.regs[rd]=int64_t(result);state.regs[0]=0;
 }
 static unsigned linked_count;
-static parallaxjit_entry linked_body;
-static parallaxjit_entry link(r4300_core*){return ++linked_count<100000?linked_body:nullptr;}
+static n64emujit_entry linked_body;
+static n64emujit_entry link(r4300_core*){return ++linked_count<100000?linked_body:nullptr;}
 int main() {
-    auto* jit=parallaxjit_create();require(jit,"code arena allocation");
+    auto* jit=n64emujit_create();require(jit,"code arena allocation");
     auto actual=std::make_unique<r4300_core>(),expected=std::make_unique<r4300_core>();
     std::mt19937_64 random(0x33324a4954);std::vector<uint32_t> instructions;
     for(unsigned major:{9u,10u,11u,12u,13u,14u,15u,25u})
@@ -56,8 +56,8 @@ int main() {
             instructions.push_back((1<<21)|(2<<16)|(dest<<11)|(shift<<6)|fn);
     unsigned cases=0;
     for(uint32_t op:instructions) {
-        require(parallaxjit_has_native(&op,1,0,0,0),"native opcode selection");
-        auto function=parallaxjit_compile(jit,nullptr,&op,1,step);require(function,"native instruction compilation");
+        require(n64emujit_has_native(&op,1,0,0,0),"native opcode selection");
+        auto function=n64emujit_compile(jit,nullptr,&op,1,step);require(function,"native instruction compilation");
         for(unsigned sample=0;sample<128;sample++) {
             for(auto& reg:actual->regs)reg=int64_t(random());actual->regs[0]=0;actual->hi=random();actual->lo=random();
             if(sample<64){actual->regs[1]=sample;actual->regs[2]=int64_t(UINT64_C(0x80000000ffffffff));}
@@ -71,11 +71,11 @@ int main() {
         }
     }
     uint32_t increment=(25u<<26)|(1<<21)|(1<<16)|1;
-    parallaxjit_config config={};config.link=link;config.chain_entry=&linked_body;
-    auto function=parallaxjit_compile_optimized(jit,nullptr,&increment,1,step,&config);require(function,"linked block compilation");
+    n64emujit_config config={};config.link=link;config.chain_entry=&linked_body;
+    auto function=n64emujit_compile_optimized(jit,nullptr,&increment,1,step,&config);require(function,"linked block compilation");
     actual->regs[1]=0;function(actual.get());require(actual->regs[1]==100000,"tail links must execute without growing the host stack");
-    auto old=function;auto generation=parallaxjit_generation(jit);
-    for(unsigned i=0;parallaxjit_entry_valid(jit,old,generation)&&i<100000;i++)require(parallaxjit_compile(jit,nullptr,&increment,1,step),"arena recycling");
-    require(!parallaxjit_entry_valid(jit,old,generation),"recycled segment invalidates old entries");
-    parallaxjit_destroy(jit);std::printf("CPU JIT32: %u native arithmetic cases, 100000 tail links and arena recycling passed.\n",cases);
+    auto old=function;auto generation=n64emujit_generation(jit);
+    for(unsigned i=0;n64emujit_entry_valid(jit,old,generation)&&i<100000;i++)require(n64emujit_compile(jit,nullptr,&increment,1,step),"arena recycling");
+    require(!n64emujit_entry_valid(jit,old,generation),"recycled segment invalidates old entries");
+    n64emujit_destroy(jit);std::printf("CPU JIT32: %u native arithmetic cases, 100000 tail links and arena recycling passed.\n",cases);
 }

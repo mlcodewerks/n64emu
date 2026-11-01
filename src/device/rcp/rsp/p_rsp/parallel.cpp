@@ -1,4 +1,4 @@
-#if defined(PARALLAX_RSP_INTERPRETER)
+#if defined(N64EMU_RSP_INTERPRETER)
 #include "rsp_interpreter.hpp"
 #elif defined(DEBUG_JIT)
 #include "debug_rsp.hpp"
@@ -25,7 +25,7 @@ extern "C" {
 namespace RSP
 {
 rsp_memory rsp;
-#if defined(PARALLAX_RSP_INTERPRETER)
+#if defined(N64EMU_RSP_INTERPRETER)
 RSP::Interpreter cpu;
 #elif defined(DEBUG_JIT)
 RSP::CPU cpu;
@@ -234,7 +234,7 @@ extern "C"
         RSP::cpu.set_cycle_timing(renderer_component_timing());
         core_log(CORE_LOG_INFO,"RSP backend: %s; component timing %s",
                      renderer_settings.rsp_hle ? "HLE with native fallback" :
-#ifdef PARALLAX_RSP_INTERPRETER
+#ifdef N64EMU_RSP_INTERPRETER
                      "portable LLE",
 #else
                      "JIT LLE",

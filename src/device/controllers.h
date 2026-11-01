@@ -1,5 +1,5 @@
-#ifndef PARALLAX_DEVICE_CONTROLLERS_H
-#define PARALLAX_DEVICE_CONTROLLERS_H
+#ifndef N64EMU_DEVICE_CONTROLLERS_H
+#define N64EMU_DEVICE_CONTROLLERS_H
 
 #include "core/joybus.h"
 #include <stddef.h>

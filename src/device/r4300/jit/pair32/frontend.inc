@@ -7,7 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 extern "C" {
-#include "../parallaxjit.h"
+#include "../n64emujit.h"
 #include "core/log.h"
 #include "device/r4300/r4300_core.h"
 #include "device/r4300/idec.h"
@@ -19,11 +19,11 @@ extern "C" {
 #include <unistd.h>
 #endif
 
-#ifndef PARALLAXJIT32_SEGMENT_BYTES
-#define PARALLAXJIT32_SEGMENT_BYTES (512*1024)
+#ifndef N64EMUJIT32_SEGMENT_BYTES
+#define N64EMUJIT32_SEGMENT_BYTES (512*1024)
 #endif
-static constexpr size_t SEGMENT_BYTES=PARALLAXJIT32_SEGMENT_BYTES,SEGMENTS=16,ARENA_BYTES=SEGMENT_BYTES*SEGMENTS;
-struct parallaxjit {
+static constexpr size_t SEGMENT_BYTES=N64EMUJIT32_SEGMENT_BYTES,SEGMENTS=16,ARENA_BYTES=SEGMENT_BYTES*SEGMENTS;
+struct n64emujit {
     uint8_t* code;
     size_t used,page;
     uint64_t generation,stamps[SEGMENTS],blocks,native,bytes,calls;
@@ -36,8 +36,8 @@ static int code_protect(void* p,size_t bytes,int executable) {
 #endif
 }
 #include "../code_write_scope.h"
-parallaxjit* parallaxjit_create() {
-    auto* jit=static_cast<parallaxjit*>(std::calloc(1,sizeof(parallaxjit)));if(!jit)return nullptr;
+n64emujit* n64emujit_create() {
+    auto* jit=static_cast<n64emujit*>(std::calloc(1,sizeof(n64emujit)));if(!jit)return nullptr;
 #ifdef _WIN32
     SYSTEM_INFO info;GetSystemInfo(&info);jit->page=info.dwPageSize;
     jit->code=static_cast<uint8_t*>(VirtualAlloc(nullptr,ARENA_BYTES,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));
@@ -48,7 +48,7 @@ parallaxjit* parallaxjit_create() {
 #endif
     if(!jit->code){std::free(jit);return nullptr;}jit->generation=jit->stamps[0]=1;return jit;
 }
-void parallaxjit_destroy(parallaxjit* jit) {
+void n64emujit_destroy(n64emujit* jit) {
     if(!jit)return;
 #ifdef _WIN32
     VirtualFree(jit->code,0,MEM_RELEASE);
@@ -57,28 +57,28 @@ void parallaxjit_destroy(parallaxjit* jit) {
 #endif
     std::free(jit);
 }
-void* parallaxjit_fault_guard(const parallaxjit*){return nullptr;}
-void* parallaxjit_fault_enter(parallaxjit*){return nullptr;}
-void parallaxjit_fault_leave(void*){}
-uint64_t parallaxjit_fault_count(const parallaxjit*){return 0;}
-void parallaxjit_fault_resolve(parallaxjit*,r4300_core*,uint32_t){}
-uint64_t parallaxjit_generation(const parallaxjit* jit){return jit->generation;}
-const uint64_t* parallaxjit_entry_generation_ptr(const parallaxjit* jit,parallaxjit_entry entry) {
+void* n64emujit_fault_guard(const n64emujit*){return nullptr;}
+void* n64emujit_fault_enter(n64emujit*){return nullptr;}
+void n64emujit_fault_leave(void*){}
+uint64_t n64emujit_fault_count(const n64emujit*){return 0;}
+void n64emujit_fault_resolve(n64emujit*,r4300_core*,uint32_t){}
+uint64_t n64emujit_generation(const n64emujit* jit){return jit->generation;}
+const uint64_t* n64emujit_entry_generation_ptr(const n64emujit* jit,n64emujit_entry entry) {
     uintptr_t offset=uintptr_t(entry)-uintptr_t(jit?jit->code:nullptr);
     return jit&&entry&&offset<ARENA_BYTES?&jit->stamps[offset/SEGMENT_BYTES]:nullptr;
 }
-int parallaxjit_entry_valid(const parallaxjit* jit,parallaxjit_entry entry,uint64_t generation) {
-    const auto* stamp=parallaxjit_entry_generation_ptr(jit,entry);return stamp&&generation&&*stamp==generation;
+int n64emujit_entry_valid(const n64emujit* jit,n64emujit_entry entry,uint64_t generation) {
+    const auto* stamp=n64emujit_entry_generation_ptr(jit,entry);return stamp&&generation&&*stamp==generation;
 }
-void parallaxjit_stats(const parallaxjit* jit,uint64_t* blocks,uint64_t* native) {
+void n64emujit_stats(const n64emujit* jit,uint64_t* blocks,uint64_t* native) {
     *blocks=jit?jit->blocks:0;*native=jit?jit->native:0;
 }
-void parallaxjit_code_stats(const parallaxjit* jit,uint64_t stats[3]) {
+void n64emujit_code_stats(const n64emujit* jit,uint64_t stats[3]) {
     stats[0]=jit?jit->bytes:0;stats[1]=0;stats[2]=jit?jit->calls:0;
 }
 
 namespace {
-using namespace parallax32;
+using namespace n64emu32;
 class Compiler {
 public:
     Assembler host;
@@ -92,14 +92,14 @@ public:
     void store(unsigned reg) { if(reg){host.store(0,STATE,gpr(reg));host.store(2,STATE,gpr(reg)+4);} }
     void sign_word() {host.mov(2,0);host.shift(2,ASR,31);}
     void constant(uint64_t value) {host.imm(0,uint32_t(value));host.imm(2,uint32_t(value>>32));}
-    void step(void* block,unsigned index,unsigned phase,parallaxjit_step callback,Label& exit) {
+    void step(void* block,unsigned index,unsigned phase,n64emujit_step callback,Label& exit) {
         // AAPCS and cdecl have different argument placement. Snapshot the state
         // pointer in its ABI slot before populating the remaining arguments.
         host.mov(0,STATE);host.argument(0,0);
         host.imm(0,uint32_t(uintptr_t(block)));host.argument(1,0);
         host.imm(0,index);host.argument(2,0);
         host.imm(0,phase);host.argument(3,0);
-#ifdef PARALLAX_JIT32_ARM
+#ifdef N64EMU_JIT32_ARM
         host.mov(0,STATE);
 #endif
         host.call(reinterpret_cast<const void*>(callback));++calls;
@@ -190,8 +190,8 @@ bool Compiler::instruction(uint32_t op) {
     if(word)sign_word();store(rd);return true;
 }
 
-static parallaxjit_entry compile(parallaxjit* jit,void* block,const uint32_t* ops,unsigned count,
-    parallaxjit_step callback,const parallaxjit_config* config) {
+static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,unsigned count,
+    n64emujit_step callback,const n64emujit_config* config) {
     if(!jit||!ops||!callback||!count||count>32)return nullptr;
     Compiler compiler;auto& host=compiler.host;host.frame();host.incoming_state();size_t chain=host.size();
     Label exit;
@@ -223,16 +223,16 @@ static parallaxjit_entry compile(parallaxjit* jit,void* block,const uint32_t* op
 #endif
     if(!code_protect(jit->code+page_start,page_end-page_start,1))return nullptr;
     publication.published=true;jit->used+=reserve;++jit->blocks;jit->native+=compiler.native;jit->bytes+=bytes;jit->calls+=compiler.calls;
-    if(config&&config->chain_entry)*config->chain_entry=reinterpret_cast<parallaxjit_entry>(entry+chain);
-    return reinterpret_cast<parallaxjit_entry>(entry);
+    if(config&&config->chain_entry)*config->chain_entry=reinterpret_cast<n64emujit_entry>(entry+chain);
+    return reinterpret_cast<n64emujit_entry>(entry);
 }
 }
-int parallaxjit_has_native(const uint32_t* ops,unsigned count,uint32_t,unsigned,unsigned) {
+int n64emujit_has_native(const uint32_t* ops,unsigned count,uint32_t,unsigned,unsigned) {
     for(unsigned i=0;i<count;i++)if(native_instruction(ops[i]))return 1;return 0;
 }
-parallaxjit_entry parallaxjit_compile(parallaxjit* jit,void* block,const uint32_t* ops,unsigned count,parallaxjit_step step) {
+n64emujit_entry n64emujit_compile(n64emujit* jit,void* block,const uint32_t* ops,unsigned count,n64emujit_step step) {
     try{return compile(jit,block,ops,count,step,nullptr);}catch(const std::exception& error){core_log(CORE_LOG_ERROR,"32-bit JIT emission failed: %s",error.what());return nullptr;}
 }
-parallaxjit_entry parallaxjit_compile_optimized(parallaxjit* jit,void* block,const uint32_t* ops,unsigned count,parallaxjit_step step,const parallaxjit_config* config) {
+n64emujit_entry n64emujit_compile_optimized(n64emujit* jit,void* block,const uint32_t* ops,unsigned count,n64emujit_step step,const n64emujit_config* config) {
     try{return compile(jit,block,ops,count,step,config);}catch(const std::exception& error){core_log(CORE_LOG_ERROR,"32-bit JIT emission failed: %s",error.what());return nullptr;}
 }

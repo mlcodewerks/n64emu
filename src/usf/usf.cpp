@@ -1,4 +1,4 @@
-/* lazyusf2 interface over the shared Parallax CPU/RSP/device core.
+/* lazyusf2 interface over the shared n64emu CPU/RSP/device core.
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #include "usf.h"
 #include "internal.h"
@@ -197,7 +197,7 @@ void ensure_engine(State &s) {
         retro_game_info game{};
         game.data = rom.data();
         game.size = rom.size();
-        if (!retro_load_game(&game) || !parallax_usf_prepare())
+        if (!retro_load_game(&game) || !n64emu_usf_prepare())
             throw std::runtime_error("USF core initialization failed");
         // Native checkpoints restore PC before the first CPU run has happened.
         g_dev.r4300.pc = &g_dev.r4300.instruction_pc;
@@ -205,7 +205,7 @@ void ensure_engine(State &s) {
         g_dev.r4300.stop = 0;
         if (!r4300_jit_init(&g_dev.r4300))
             throw std::runtime_error("USF CPU initialization failed");
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
         g_dev.r4300.execute_one = r4300_jit_execute_one;
 #else
         g_dev.r4300.execute_one = r4300_ops_execute_one;
@@ -213,7 +213,7 @@ void ensure_engine(State &s) {
         g_dev.ai.aout = &s;
         g_dev.ai.iaout = &sink;
         if (s.checkpoint.empty()) {
-            if (!parallax_usf_load_pj64(s.save.data(), s.save.size()))
+            if (!n64emu_usf_load_pj64(s.save.data(), s.save.size()))
                 throw std::runtime_error("Invalid Project64 USF save state");
         } else if (!retro_unserialize(s.checkpoint.data(), s.checkpoint.size()))
             throw std::runtime_error("USF context restore failed");
@@ -228,7 +228,7 @@ void ensure_engine(State &s) {
 }
 void render_native(State &s, int16_t *buffer, size_t frames) {
     if (s.trimming)
-        throw std::runtime_error("Parallax USF does not support trimming/coverage instrumentation");
+        throw std::runtime_error("n64emu USF does not support trimming/coverage instrumentation");
     if (s.error[0])
         throw std::runtime_error(s.error);
     if (frames > SIZE_MAX / 4)
@@ -256,7 +256,7 @@ void render_native(State &s, int16_t *buffer, size_t frames) {
         unsigned fields = 0;
         while ((s.audio.size() - s.audio_read) / 2 < s.goal) {
             const size_t buffered = s.audio.size();
-            parallax_usf_step();
+            n64emu_usf_step();
             if (s.error[0])
                 throw std::runtime_error(s.error);
             if (g_dev.r4300.stop)
@@ -333,9 +333,9 @@ void upload(State &s, const uint8_t *data, size_t bytes) {
 } // namespace
 
 extern "C" {
-int parallax_usf_compare_enabled() { return active && active->compare; }
-int parallax_usf_fifo_enabled() { return active && active->fifo; }
-unsigned parallax_usf_rdram_size() {
+int n64emu_usf_compare_enabled() { return active && active->compare; }
+int n64emu_usf_fifo_enabled() { return active && active->fifo; }
+unsigned n64emu_usf_rdram_size() {
     if (active && active->save.size() >= 8) {
         unsigned bytes = le32(active->save.data() + 4);
         if (bytes == 0x400000 || bytes == 0x800000)
@@ -343,7 +343,7 @@ unsigned parallax_usf_rdram_size() {
     }
     return 0x800000;
 }
-int parallax_usf_yield() {
+int n64emu_usf_yield() {
     if (active && active->budget && g_dev.r4300.retired_ops >= active->budget) {
         active->fail("USF CPU instruction budget exceeded");
         return 1;

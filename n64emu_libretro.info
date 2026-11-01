@@ -1,5 +1,5 @@
-display_name = "Nintendo - Nintendo 64 (Parallax)"
-corename = "Parallax"
+display_name = "Nintendo - Nintendo 64 (n64emu)"
+corename = "n64emu"
 authors = "libretro/Mupen64Plus authors"
 supported_extensions = "n64|v64|z64|bin|u1"
 categories = "Emulator"

@@ -2,8 +2,8 @@
  * Only an exact published instruction PC accessing our guard page is owned.
  * Recovery changes PC to the existing precise exit; no guest work, allocation,
  * locking or logging takes place inside the exception/signal handler. */
-#ifndef PARALLAX_JIT_HOST_FAULT_H
-#define PARALLAX_JIT_HOST_FAULT_H
+#ifndef N64EMU_JIT_HOST_FAULT_H
+#define N64EMU_JIT_HOST_FAULT_H
 #include <mutex>
 #include <atomic>
 #include <signal.h>
@@ -85,7 +85,7 @@ static void host_fault_handler(int sig, siginfo_t* info, void* context)
 static host_fault_domain* host_fault_create(void* code, size_t bytes, size_t segment_bytes, size_t page)
 {
 #if defined(_WIN32) || defined(__linux__)
-    const char* enabled = getenv("PARALLAX_CPU_HOST_FAULTS");
+    const char* enabled = getenv("N64EMU_CPU_HOST_FAULTS");
     if (!enabled || strcmp(enabled, "1")) return NULL;
     host_fault_domain* d = (host_fault_domain*)calloc(1, sizeof(*d));
     if (!d) return NULL;

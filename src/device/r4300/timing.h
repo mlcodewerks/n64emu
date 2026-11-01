@@ -1,5 +1,5 @@
-#ifndef PARALLAX_DEVICE_R4300_TIMING_H
-#define PARALLAX_DEVICE_R4300_TIMING_H
+#ifndef N64EMU_DEVICE_R4300_TIMING_H
+#define N64EMU_DEVICE_R4300_TIMING_H
 
 #include "cp0.h"
 #include "r4300_core.h"
@@ -10,7 +10,7 @@
  */
 static osal_force_inline unsigned int r4300_base_cycles(uint32_t op, uint32_t status)
 {
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     (void)op; (void)status;
     return 1;
 #else
@@ -75,7 +75,7 @@ static osal_force_inline uint32_t r4300_read_count(const struct r4300_core* r)
 
 static osal_force_inline unsigned int r4300_issue_reservation(unsigned int compatibility)
 {
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     /* The USF ripper advanced COUNT by two per instruction: four CPU clocks,
      * including the one-clock baseline. Use the same clock in native regions,
      * precise side exits, delay slots and polling shortcuts. */

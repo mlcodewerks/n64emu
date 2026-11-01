@@ -2,8 +2,8 @@
 
 #include "cpu_ops.h"
 #include "jit_runtime.h"
-#ifdef HAVE_PARALLAXJIT
-#include "jit/parallaxjit.h"
+#ifdef HAVE_N64EMUJIT
+#include "jit/n64emujit.h"
 #endif
 #include "idec.h"
 #include "timing.h"
@@ -23,39 +23,39 @@
 #include "device/r4300/r4300_core.h"
 #include "osal/preproc.h"
 
-#if (defined(__GNUC__) || defined(__clang__)) && !defined(PARALLAX_DISABLE_COMPUTED_GOTO)
-#define PARALLAX_LIKELY(x) __builtin_expect(!!(x), 1)
-#define PARALLAX_UNLIKELY(x) __builtin_expect(!!(x), 0)
-#define PARALLAX_UNREACHABLE() __builtin_unreachable()
-#define PARALLAX_HOT __attribute__((hot))
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(N64EMU_DISABLE_COMPUTED_GOTO)
+#define N64EMU_LIKELY(x) __builtin_expect(!!(x), 1)
+#define N64EMU_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define N64EMU_UNREACHABLE() __builtin_unreachable()
+#define N64EMU_HOT __attribute__((hot))
 #else
-#define PARALLAX_LIKELY(x) (x)
-#define PARALLAX_UNLIKELY(x) (x)
+#define N64EMU_LIKELY(x) (x)
+#define N64EMU_UNLIKELY(x) (x)
 #if defined(_MSC_VER)
-#define PARALLAX_UNREACHABLE() __assume(0)
+#define N64EMU_UNREACHABLE() __assume(0)
 #else
-#define PARALLAX_UNREACHABLE() ((void)0)
+#define N64EMU_UNREACHABLE() ((void)0)
 #endif
-#define PARALLAX_HOT
+#define N64EMU_HOT
 #endif
 
 #if defined(_MSC_VER)
-#define PARALLAX_FORCE_INLINE __forceinline
+#define N64EMU_FORCE_INLINE __forceinline
 #elif defined(__GNUC__) || defined(__clang__)
-#define PARALLAX_FORCE_INLINE inline __attribute__((always_inline))
+#define N64EMU_FORCE_INLINE inline __attribute__((always_inline))
 #else
-#define PARALLAX_FORCE_INLINE inline
+#define N64EMU_FORCE_INLINE inline
 #endif
 
-#ifndef PARALLAX_CPU_BRANCHLESS
-#define PARALLAX_CPU_BRANCHLESS 0
+#ifndef N64EMU_CPU_BRANCHLESS
+#define N64EMU_CPU_BRANCHLESS 0
 #endif
 
-static PARALLAX_FORCE_INLINE uint32_t interp_select_u32(unsigned int condition,
+static N64EMU_FORCE_INLINE uint32_t interp_select_u32(unsigned int condition,
                                                     uint32_t true_value,
                                                     uint32_t false_value)
 {
-#if PARALLAX_CPU_BRANCHLESS
+#if N64EMU_CPU_BRANCHLESS
     const uint32_t mask = UINT32_C(0) - (uint32_t)(condition != 0);
     return (true_value & mask) | (false_value & ~mask);
 #else
@@ -107,7 +107,7 @@ static PARALLAX_FORCE_INLINE uint32_t interp_select_u32(unsigned int condition,
 #define JUMP_OF(op)    ((op) & UINT32_C(0x3FFFFFF))
 
 
-static PARALLAX_FORCE_INLINE int interp_idle_delay_nop(struct r4300_core* r4300, uint32_t address);
+static N64EMU_FORCE_INLINE int interp_idle_delay_nop(struct r4300_core* r4300, uint32_t address);
 
 #define IS_RELATIVE_IDLE_LOOP(r4300, op, addr) \
     (IMM16S_OF(op) == -1 && interp_idle_delay_nop((r4300), (addr) + 4))
@@ -217,31 +217,31 @@ static PARALLAX_FORCE_INLINE int interp_idle_delay_nop(struct r4300_core* r4300,
 
 /* Fast instruction fetch for the common unmapped KSEG0/KSEG1 path.
  * Keep the generic helper for TLB-mapped addresses and exceptions. */
-static PARALLAX_FORCE_INLINE uint32_t* interp_fast_mem_access(struct r4300_core* r4300, uint32_t address)
+static N64EMU_FORCE_INLINE uint32_t* interp_fast_mem_access(struct r4300_core* r4300, uint32_t address)
 {
     /* A materialized instruction line remains authoritative after RAM is
      * modified. Precise exits must see the same code as native blocks. */
-    if(PARALLAX_UNLIKELY(r4300->cache_timing&&r4300->icache_shadow_tags[(address>>5)&511]))
+    if(N64EMU_UNLIKELY(r4300->cache_timing&&r4300->icache_shadow_tags[(address>>5)&511]))
         return fast_mem_access(r4300,address);
-    if (PARALLAX_LIKELY((address & UINT32_C(0xc0000000)) == UINT32_C(0x80000000)))
+    if (N64EMU_LIKELY((address & UINT32_C(0xc0000000)) == UINT32_C(0x80000000)))
     {
         address &= UINT32_C(0x1ffffffc);
         return (uint32_t*)((uint8_t*)r4300->mem->base + address);
     }
 
 #if defined(JIT)
-    if (PARALLAX_UNLIKELY(r4300->emumode == EMUMODE_DYNAREC))
+    if (N64EMU_UNLIKELY(r4300->emumode == EMUMODE_DYNAREC))
         return fast_mem_access(r4300, address);
 #endif
 
     {
         const uint32_t mapped = r4300->cp0.tlb.LUT_r[address >> 12];
-        if (PARALLAX_LIKELY(mapped != 0))
+        if (N64EMU_LIKELY(mapped != 0))
             address = (mapped & UINT32_C(0xfffff000)) | (address & UINT32_C(0x00000fff));
         else
         {
             address = virtual_to_physical_address(r4300, address, 2);
-            if (PARALLAX_UNLIKELY(address == 0))
+            if (N64EMU_UNLIKELY(address == 0))
                 return NULL;
         }
     }
@@ -253,7 +253,7 @@ static PARALLAX_FORCE_INLINE uint32_t* interp_fast_mem_access(struct r4300_core*
 /* Idle-loop recognition is speculative: an absent delay-slot mapping must
  * neither dereference NULL nor raise a premature exception at the branch PC.
  * The actual delay-slot fetch supplies the architectural EPC/BD exception. */
-static PARALLAX_FORCE_INLINE int interp_idle_delay_nop(struct r4300_core* r4300, uint32_t address)
+static N64EMU_FORCE_INLINE int interp_idle_delay_nop(struct r4300_core* r4300, uint32_t address)
 {
     if ((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)) {
         uint32_t mapped = r4300->cp0.tlb.LUT_r[address >> 12];
@@ -290,12 +290,12 @@ static PARALLAX_FORCE_INLINE int interp_idle_delay_nop(struct r4300_core* r4300,
 #define BITS_ABOVE_MASK64(x) (~(BITS_BELOW_MASK64((x))))
 
 
-static PARALLAX_FORCE_INLINE unsigned int bshift(uint32_t address)
+static N64EMU_FORCE_INLINE unsigned int bshift(uint32_t address)
 {
     return ((address & 3) ^ 3) << 3;
 }
 
-static PARALLAX_FORCE_INLINE unsigned int hshift(uint32_t address)
+static N64EMU_FORCE_INLINE unsigned int hshift(uint32_t address)
 {
     return ((address & 2) ^ 2) << 3;
 }
@@ -327,7 +327,7 @@ DECLARE_INSTRUCTION(NI)
 DECLARE_INSTRUCTION(BREAK)
 {
     (void)op;
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     /* USF rippers replace idle waits with BREAK, including branch slots.
      * Match their advance-to-next-event convention without raising BP. */
     interp_idle_advance(r4300);
@@ -665,7 +665,7 @@ DECLARE_INSTRUCTION(SDR)
     interp_write_aligned_dword(r4300, lsaddr & ~UINT32_C(0x7), value << shift, mask);
 }
 
-static PARALLAX_FORCE_INLINE int add_overflow_s32(int32_t a, int32_t b, int32_t* result)
+static N64EMU_FORCE_INLINE int add_overflow_s32(int32_t a, int32_t b, int32_t* result)
 {
     const uint32_t ua = (uint32_t)a;
     const uint32_t ub = (uint32_t)b;
@@ -674,7 +674,7 @@ static PARALLAX_FORCE_INLINE int add_overflow_s32(int32_t a, int32_t b, int32_t*
     return (int)((~(ua ^ ub) & (ua ^ ur)) >> 31);
 }
 
-static PARALLAX_FORCE_INLINE int sub_overflow_s32(int32_t a, int32_t b, int32_t* result)
+static N64EMU_FORCE_INLINE int sub_overflow_s32(int32_t a, int32_t b, int32_t* result)
 {
     const uint32_t ua = (uint32_t)a;
     const uint32_t ub = (uint32_t)b;
@@ -683,7 +683,7 @@ static PARALLAX_FORCE_INLINE int sub_overflow_s32(int32_t a, int32_t b, int32_t*
     return (int)(((ua ^ ub) & (ua ^ ur)) >> 31);
 }
 
-static PARALLAX_FORCE_INLINE int add_overflow_s64(int64_t a, int64_t b, int64_t* result)
+static N64EMU_FORCE_INLINE int add_overflow_s64(int64_t a, int64_t b, int64_t* result)
 {
     const uint64_t ua = (uint64_t)a;
     const uint64_t ub = (uint64_t)b;
@@ -692,7 +692,7 @@ static PARALLAX_FORCE_INLINE int add_overflow_s64(int64_t a, int64_t b, int64_t*
     return (int)((~(ua ^ ub) & (ua ^ ur)) >> 63);
 }
 
-static PARALLAX_FORCE_INLINE int sub_overflow_s64(int64_t a, int64_t b, int64_t* result)
+static N64EMU_FORCE_INLINE int sub_overflow_s64(int64_t a, int64_t b, int64_t* result)
 {
     const uint64_t ua = (uint64_t)a;
     const uint64_t ub = (uint64_t)b;
@@ -701,7 +701,7 @@ static PARALLAX_FORCE_INLINE int sub_overflow_s64(int64_t a, int64_t b, int64_t*
     return (int)(((ua ^ ub) & (ua ^ ur)) >> 63);
 }
 
-static PARALLAX_FORCE_INLINE void raise_arithmetic_overflow(struct r4300_core* r4300)
+static N64EMU_FORCE_INLINE void raise_arithmetic_overflow(struct r4300_core* r4300)
 {
     r4300->cp0.regs[CP0_CAUSE_REG] =
         (r4300->cp0.regs[CP0_CAUSE_REG] & ~UINT32_C(0x3000007c)) | CP0_CAUSE_EXCCODE_OV;
@@ -712,7 +712,7 @@ DECLARE_INSTRUCTION(ADD)
 {
     DECLARE_R4300
     int32_t result;
-    if (PARALLAX_UNLIKELY(add_overflow_s32(rrs32, rrt32, &result)))
+    if (N64EMU_UNLIKELY(add_overflow_s32(rrs32, rrt32, &result)))
     {
         raise_arithmetic_overflow(r4300);
         return;
@@ -732,7 +732,7 @@ DECLARE_INSTRUCTION(ADDI)
 {
     DECLARE_R4300
     int32_t result;
-    if (PARALLAX_UNLIKELY(add_overflow_s32(irs32, (int32_t)iimmediate, &result)))
+    if (N64EMU_UNLIKELY(add_overflow_s32(irs32, (int32_t)iimmediate, &result)))
     {
         raise_arithmetic_overflow(r4300);
         return;
@@ -752,7 +752,7 @@ DECLARE_INSTRUCTION(DADD)
 {
     DECLARE_R4300
     int64_t result;
-    if (PARALLAX_UNLIKELY(add_overflow_s64(rrs, rrt, &result)))
+    if (N64EMU_UNLIKELY(add_overflow_s64(rrs, rrt, &result)))
     {
         raise_arithmetic_overflow(r4300);
         return;
@@ -772,7 +772,7 @@ DECLARE_INSTRUCTION(DADDI)
 {
     DECLARE_R4300
     int64_t result;
-    if (PARALLAX_UNLIKELY(add_overflow_s64(irs, (int64_t)iimmediate, &result)))
+    if (N64EMU_UNLIKELY(add_overflow_s64(irs, (int64_t)iimmediate, &result)))
     {
         raise_arithmetic_overflow(r4300);
         return;
@@ -792,7 +792,7 @@ DECLARE_INSTRUCTION(SUB)
 {
     DECLARE_R4300
     int32_t result;
-    if (PARALLAX_UNLIKELY(sub_overflow_s32(rrs32, rrt32, &result)))
+    if (N64EMU_UNLIKELY(sub_overflow_s32(rrs32, rrt32, &result)))
     {
         raise_arithmetic_overflow(r4300);
         return;
@@ -812,7 +812,7 @@ DECLARE_INSTRUCTION(DSUB)
 {
     DECLARE_R4300
     int64_t result;
-    if (PARALLAX_UNLIKELY(sub_overflow_s64(rrs, rrt, &result)))
+    if (N64EMU_UNLIKELY(sub_overflow_s64(rrs, rrt, &result)))
     {
         raise_arithmetic_overflow(r4300);
         return;
@@ -1742,7 +1742,7 @@ DECLARE_INSTRUCTION(CTC1)
 #include "fpu_compare.h"
 
 /* Shared issue/operand validation in one native COP1 helper boundary. */
-static PARALLAX_FORCE_INLINE int jit_fpu_prepare_body(struct r4300_core* r, uint32_t op, uint64_t inputs[3], uint64_t* commits,int prefetched)
+static N64EMU_FORCE_INLINE int jit_fpu_prepare_body(struct r4300_core* r, uint32_t op, uint64_t inputs[3], uint64_t* commits,int prefetched)
 {
     int issued=prefetched?r4300_begin_prefetched_instruction_cycles(r,op,r->instruction_pc.addr,1,r->cache_timing):
                          r4300_begin_instruction_cycles(r,op,r->instruction_pc.addr,1,r->cache_timing);

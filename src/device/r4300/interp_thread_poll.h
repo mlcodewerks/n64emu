@@ -1,6 +1,6 @@
 
-#ifndef PARALLAX_INTERP_THREAD_POLL_H
-#define PARALLAX_INTERP_THREAD_POLL_H
+#ifndef N64EMU_INTERP_THREAD_POLL_H
+#define N64EMU_INTERP_THREAD_POLL_H
 #include <string.h>
 #include "timing.h"
 #include "cpu_ops.h"

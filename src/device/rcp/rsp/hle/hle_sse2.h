@@ -1,8 +1,8 @@
 /* Packed integer building blocks shared by the SSE2 and NEON HLE paths.
  * Keep the signed products and byte-mask selection semantics exact: the
  * RSP's 48-bit accumulators observe bits that ordinary saturated DSP drops. */
-#ifndef PARALLAX_HLE_SSE2_H
-#define PARALLAX_HLE_SSE2_H
+#ifndef N64EMU_HLE_SSE2_H
+#define N64EMU_HLE_SSE2_H
 
 static inline __m128i hle_select_bits(__m128i mask, __m128i yes, __m128i no)
 {

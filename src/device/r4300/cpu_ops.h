@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_DEVICE_R4300_CPU_OPS_H
-#define PARALLAX_DEVICE_R4300_CPU_OPS_H
+#ifndef N64EMU_DEVICE_R4300_CPU_OPS_H
+#define N64EMU_DEVICE_R4300_CPU_OPS_H
 
 /* Precise opcode semantics for native JIT helpers, delay slots and faults.
  * This module does not provide a continuous interpreter execution mode. */
@@ -28,4 +28,4 @@ int r4300_ops_jit_fpu_prepare(struct r4300_core*, uint32_t op, uint64_t inputs[3
 int r4300_ops_jit_fpu_prepare_prefetched(struct r4300_core*,uint32_t,uint64_t[3],uint64_t*);
 void r4300_ops_fpu_compare_finish(struct r4300_core*, int result);
 
-#endif /* PARALLAX_DEVICE_R4300_CPU_OPS_H */
+#endif /* N64EMU_DEVICE_R4300_CPU_OPS_H */

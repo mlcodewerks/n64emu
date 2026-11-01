@@ -1,8 +1,8 @@
 /* Shared integer HLE kernels. SSE2 on x86; the existing sse2neon adapter
  * lowers the same operations to NEON. Scalar code remains the reference on
  * other targets and in HLE_SIMD_DISABLE validation builds. No float math. */
-#ifndef PARALLAX_HLE_SIMD_H
-#define PARALLAX_HLE_SIMD_H
+#ifndef N64EMU_HLE_SIMD_H
+#define N64EMU_HLE_SIMD_H
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>

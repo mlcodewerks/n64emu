@@ -1,6 +1,6 @@
 
-#ifndef PARALLAX_INTERP_PAIR_H
-#define PARALLAX_INTERP_PAIR_H
+#ifndef N64EMU_INTERP_PAIR_H
+#define N64EMU_INTERP_PAIR_H
 
 /* LUI followed by a nontrapping immediate operation on its destination.
  * The caller must keep the pair within one code page and exclude interrupt

@@ -1,5 +1,5 @@
-#ifndef PARALLAX_SOFTRDP_VI_SIMD_H
-#define PARALLAX_SOFTRDP_VI_SIMD_H
+#ifndef N64EMU_SOFTRDP_VI_SIMD_H
+#define N64EMU_SOFTRDP_VI_SIMD_H
 #include "simd.h"
 
 #ifdef SR_PACKED

@@ -20,7 +20,7 @@ static void memory_guard(struct memory_exit* exit, unsigned condition)
     assert(exit->guard_count < 16);
     exit->guards[exit->guard_count++] = emit_jump(condition);
 }
-static void emit_write_buffer_drain_native(const struct parallaxjit_config* config,unsigned unissued=0)
+static void emit_write_buffer_drain_native(const struct n64emujit_config* config,unsigned unissued=0)
 {
     if(config->compat_issue_clock)return;
     JIT(sub(assembler->sp,assembler->sp,16));
@@ -40,7 +40,7 @@ static void emit_write_buffer_drain_native(const struct parallaxjit_config* conf
     patch_jump(empty,out);emit_mem(0x8b,1,T0,SP,-1,0,0);emit_mem(0x8b,1,T2,SP,-1,0,8);
     JIT(add(assembler->sp,assembler->sp,16));
 }
-static void emit_icache_fill_wait_native(const struct parallaxjit_config* config,unsigned unissued=0,unsigned index=UINT32_MAX)
+static void emit_icache_fill_wait_native(const struct n64emujit_config* config,unsigned unissued=0,unsigned index=UINT32_MAX)
 {
     if(config->compat_issue_clock)return;
     JIT(sub(assembler->sp,assembler->sp,32));
@@ -59,7 +59,7 @@ static void emit_icache_fill_wait_native(const struct parallaxjit_config* config
     patch_jump(skip,out);emit_mem(0x8b,1,T0,SP,-1,0,0);emit_mem(0x8b,1,T2,SP,-1,0,8);emit_mem(0x8b,1,T1,SP,-1,0,16);
     JIT(add(assembler->sp,assembler->sp,32));
 }
-static void emit_icache_prefetch_native(const struct parallaxjit_config* config,unsigned unissued,unsigned index)
+static void emit_icache_prefetch_native(const struct n64emujit_config* config,unsigned unissued,unsigned index)
 {
     JIT(sub(assembler->sp,assembler->sp,32));
     emit_mem(0x89,1,T0,SP,-1,0,0);emit_mem(0x89,1,T2,SP,-1,0,8);emit_mem(0x89,1,T1,SP,-1,0,16);
@@ -119,7 +119,7 @@ static void emit_itlb_native(uint32_t pc)
     emit_addimm(CLOCKS, 3, CLOCKS);
     patch_jump(hits[0], out); patch_jump(hits[1], out);
 }
-static void emit_branch_prefetch(const struct parallaxjit_config* config)
+static void emit_branch_prefetch(const struct n64emujit_config* config)
 {
     if(!config->cache_timing||config->compat_issue_clock)return;
     emit_mem_imm(0xf7,0,0,SP,-1,0,4,2);auto *uncached=emit_jump(4);
@@ -147,7 +147,7 @@ static void emit_branch_prefetch(const struct parallaxjit_config* config)
 /* Fetch state changes happen only after the current instruction's guards.
  * A region stays on one code page, so its first fetch establishes the exact
  * two-entry instruction micro-TLB hit/replacement state for later fetches. */
-static void emit_fetch_native(const struct parallaxjit_config* config, unsigned index, unsigned start, unsigned base, int check_line, bool defer_base=false,size_t fetch_flag=4)
+static void emit_fetch_native(const struct n64emujit_config* config, unsigned index, unsigned start, unsigned base, int check_line, bool defer_base=false,size_t fetch_flag=4)
 {
     unsigned cycles = base + r4300_issue_reservation(config->compat_issue_clock);
     if(!defer_base)emit_addimm(CLOCKS, cycles, CLOCKS);
@@ -299,7 +299,7 @@ static void emit_mapped_cacheability(void)
 }
 #include "../fetch_cache.inc"
 static void emit_memory_native(uint32_t instruction, unsigned index,
-    const struct parallaxjit_config* config, struct memory_exit* exit, int check_line,
+    const struct n64emujit_config* config, struct memory_exit* exit, int check_line,
     uint32_t previous, int known)
 {
     enum r4300_opcode op = r4300_get_idec(instruction)->opcode;

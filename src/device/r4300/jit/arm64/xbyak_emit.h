@@ -1,4 +1,4 @@
-/* Xbyak_aarch64 encoding for the shared ParallaxJIT frontend. GPL-2.0-or-later. */
+/* Xbyak_aarch64 encoding for the shared n64emuJIT frontend. GPL-2.0-or-later. */
 using namespace Xbyak_aarch64;
 enum { T0=9,T1=10,T2=11,ADDRESS=12,STATE=19,CLOCKS=20,TARGET=21,
        CACHE3=22,CACHE0=23,CACHE1=24,CACHE2=25,CACHE4=26,CACHE5=27,CACHE6=28,SP=31,

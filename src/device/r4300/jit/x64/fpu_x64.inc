@@ -42,7 +42,7 @@ static void emit_xmm_bits(int integer,unsigned xmm,int load) {
  * Commit ordinary results here; exceptional outputs, enabled exceptions and
  * event boundaries retain the shared finish without repeating arithmetic. */
 static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
-    const struct parallaxjit_config* config, unsigned char** exits, unsigned* exit_count)
+    const struct n64emujit_config* config, unsigned char** exits, unsigned* exit_count)
 {
     unsigned fn = instruction & 63, fmt = (instruction >> 21) & 31;
     int integer = (fn >= 8 && fn <= 15) || fn == 36 || fn == 37;
@@ -105,7 +105,7 @@ static void emit_fpu_save_fetch_flags()
     emit_mem(0x8b,0,RAX,RSP,-1,0,4);emit_mem(0x89,0,RAX,RSP,-1,0,fpu_fetch_flag);
 #endif
 }
-static void emit_fpu_native(uint32_t instruction, unsigned index, const struct parallaxjit_config* config,
+static void emit_fpu_native(uint32_t instruction, unsigned index, const struct n64emujit_config* config,
     unsigned char** exits, unsigned* exit_count,bool prefetched=false,unsigned fetch_start=0)
 {
     unsigned fmt = (instruction >> 21) & 31, fn = instruction & 63;

@@ -181,7 +181,7 @@ void optional_rsp_init(rsp_memory rsp_info)
 
 static int graphics_supported_memory(const uint32_t *task, unsigned char *ram, unsigned char *dmem)
 {
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     (void)task; (void)ram; (void)dmem;
     return 0;
 #else
@@ -326,7 +326,7 @@ unsigned int optional_rsp_execute(unsigned int cycles)
 {
     native_dispatch = 0;
     const uint32_t *task = (const uint32_t *)(info.DMEM + 0xfc0);
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
     /* Some rips submit a display list during startup. Acknowledge the task
      * and its DP completion without running a graphics microcode or renderer,
      * including when the caller requests LLE audio. */

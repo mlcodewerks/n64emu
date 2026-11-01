@@ -10,7 +10,7 @@
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 
-#define PARALLAX_CORE_PROTOTYPES 1
+#define N64EMU_CORE_PROTOTYPES 1
 #include "core/log.h"
 
 #include "rom_database_ares.h"
@@ -170,18 +170,18 @@ core_result close_rom(void)
         core_log(CORE_LOG_INFO, "Cached CPU blocks: decoded=%" PRIu64 " restored=%" PRIu64,
             cache[0], cache[1]);
     }
-#ifdef HAVE_PARALLAXJIT
+#ifdef HAVE_N64EMUJIT
     if (g_dev.r4300.emumode == EMUMODE_DYNAREC) {
         uint64_t stats[4], optimized[2], code[3];
         r4300_jit_stats(&g_dev.r4300, stats);
         r4300_jit_optimization_stats(&g_dev.r4300, optimized);
-        core_log(CORE_LOG_INFO, "ParallaxJIT: blocks=%" PRIu64 " native=%" PRIu64
+        core_log(CORE_LOG_INFO, "n64emuJIT: blocks=%" PRIu64 " native=%" PRIu64
             " entries=%" PRIu64 " commits=%" PRIu64,
             stats[0], stats[1], stats[2], stats[3]);
-        core_log(CORE_LOG_INFO, "ParallaxJIT optimization: fast=%" PRIu64 " links=%" PRIu64 " direct=%" PRIu64,
+        core_log(CORE_LOG_INFO, "n64emuJIT optimization: fast=%" PRIu64 " links=%" PRIu64 " direct=%" PRIu64,
             optimized[0], optimized[1], r4300_jit_direct_links(&g_dev.r4300));
         r4300_jit_code_stats(&g_dev.r4300, code);
-        core_log(CORE_LOG_INFO, "ParallaxJIT linkage: bytes=%" PRIu64 " relative_calls=%" PRIu64 " absolute_calls=%" PRIu64,
+        core_log(CORE_LOG_INFO, "n64emuJIT linkage: bytes=%" PRIu64 " relative_calls=%" PRIu64 " absolute_calls=%" PRIu64,
             code[0], code[1], code[2]);
     }
 #endif

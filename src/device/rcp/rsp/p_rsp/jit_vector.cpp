@@ -327,7 +327,7 @@ alignas(16) static const std::array<std::array<uint8_t,16>,16> element_masks=[](
     }return masks;
 }();
 
-#ifdef PARALLAX_JIT32_CROSS_ARM
+#ifdef N64EMU_JIT32_CROSS_ARM
 void Emitter::vector_tables(void (*write)(const void*,size_t))
 {
     write(element_masks.data(),sizeof(element_masks));
@@ -338,7 +338,7 @@ void Emitter::vector_tables(void (*write)(const void*,size_t))
 
 void Emitter::vector_arguments(unsigned vd,unsigned vs,unsigned vt,unsigned e)
 {
-#if defined(PARALLAX_RSP_JIT32)
+#if defined(N64EMU_RSP_JIT32)
     // The 32-bit leaves specialize their loads/stores for this instruction.
     (void)vd;(void)vs;(void)vt;(void)e;
 #elif defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
@@ -368,8 +368,8 @@ void Emitter::emit_vector_program(const VectorProgram &program)
     };
     for(unsigned i=0;i<count;i++)if(p.nodes[i].op==VOp::Store)mark(mark,int(i));
     for(unsigned i=0;i<count;i++)if(live[i])for(int a:{p.nodes[i].a,p.nodes[i].b,p.nodes[i].c})if(a>=0)++uses[a];
-#if defined(PARALLAX_RSP_JIT32)
-#ifdef PARALLAX_JIT32_X86
+#if defined(N64EMU_RSP_JIT32)
+#ifdef N64EMU_JIT32_X86
     const unsigned registers[]={1,2,3,4,5,6,7};
 #else
     const unsigned registers[]={0,1,2,3,8,9,10,11,12,13};
@@ -397,14 +397,14 @@ void Emitter::emit_vector_program(const VectorProgram &program)
     }
     auto reusable=[&](const VectorProgram::Node &n,const std::vector<unsigned> &remaining)->int {
         if(n.a<0 || n.op==VOp::Store)return -1;
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64) || defined(PARALLAX_JIT32_ARM)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64) || defined(N64EMU_JIT32_ARM)
         // These expansions write the destination before consuming all inputs.
         if(n.op==VOp::Pack||n.op==VOp::Blend)return -1;
 #endif
         for(unsigned input=0;input<2;input++) {
             int candidate=input?n.b:n.a;if(candidate<0)continue;
             if(input && !optimize_code)continue;
-#if !defined(__aarch64__) && !defined(_M_ARM64) && !defined(RSP_JIT_EMITTER_AARCH64) && !defined(PARALLAX_JIT32_ARM)
+#if !defined(__aarch64__) && !defined(_M_ARM64) && !defined(RSP_JIT_EMITTER_AARCH64) && !defined(N64EMU_JIT32_ARM)
             if(input && !commutative(n.op))continue;
 #endif
             unsigned consumed=0;for(int id:{n.a,n.b,n.c})if(id==candidate)++consumed;
@@ -429,7 +429,7 @@ void Emitter::emit_vector_program(const VectorProgram &program)
     unsigned next_home=0;
     // Scratch homes are private to this instruction and never overlap the
     // shared branch-delay frame or the entry thunk's preserved SIMD registers.
-#if defined(PARALLAX_RSP_JIT32)
+#if defined(N64EMU_RSP_JIT32)
     if(spill_bytes)vector_stack(-int(spill_bytes));
     auto spill=[&](unsigned reg,unsigned id){simd_spill(reg,home[id]*16);};
     auto reload=[&](unsigned reg,unsigned id){simd_reload(reg,home[id]*16);};
@@ -476,7 +476,7 @@ void Emitter::emit_vector_program(const VectorProgram &program)
         // a commutative operation. NEON can also reuse the second source of a
         // noncommutative, single-write operation without changing its order.
         if(reuse==1 && commutative(n.op))std::swap(a,b);
-#if defined(PARALLAX_RSP_JIT32)
+#if defined(N64EMU_RSP_JIT32)
         simd_node(unsigned(n.op),d,a,b,c,n.imm);
 #elif defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
         auto dd=vr(d),aa=vr(a),bb=vr(b);
@@ -545,7 +545,7 @@ void Emitter::emit_vector_program(const VectorProgram &program)
         }
         if(n.op!=VOp::Store){physical[i]=int(d);owner[d]=int(i);}
     }
-#if defined(PARALLAX_RSP_JIT32)
+#if defined(N64EMU_RSP_JIT32)
     if(spill_bytes)vector_stack(int(spill_bytes));
 #elif defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
     if(spill_bytes) {
@@ -559,7 +559,7 @@ void Emitter::emit_vector_program(const VectorProgram &program)
 
 void Emitter::vector_transfer(unsigned op,unsigned scalar,unsigned vector,unsigned element)
 {
-#ifdef PARALLAX_RSP_JIT32
+#ifdef N64EMU_RSP_JIT32
 #include "jit_vector32_transfer.inc"
 #else
     const unsigned offset=vec_offset(vector),flag=std::min(vector&3u,2u);
@@ -609,7 +609,7 @@ void Emitter::vector_transfer(unsigned op,unsigned scalar,unsigned vector,unsign
 
 void Emitter::vector_scalar(unsigned op,unsigned vd,unsigned vs,unsigned vt,unsigned e)
 {
-#ifdef PARALLAX_RSP_JIT32
+#ifdef N64EMU_RSP_JIT32
 #include "jit_vector32_scalar.inc"
 #else
     unsigned lane=vs&7;
@@ -651,7 +651,7 @@ void Emitter::vector_scalar(unsigned op,unsigned vd,unsigned vs,unsigned vt,unsi
 #endif
 #endif
 }
-#ifdef PARALLAX_RSP_JIT32
+#ifdef N64EMU_RSP_JIT32
 #include "jit_vector32.inc"
 #endif
 } }

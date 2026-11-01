@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_DEVICE_R4300_TLB_H
-#define PARALLAX_DEVICE_R4300_TLB_H
+#ifndef N64EMU_DEVICE_R4300_TLB_H
+#define N64EMU_DEVICE_R4300_TLB_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -49,4 +49,4 @@ void tlb_map(struct tlb* tlb, size_t entry);
 
 uint32_t virtual_to_physical_address(struct r4300_core* r4300, uint32_t address, int w);
 
-#endif /* PARALLAX_DEVICE_R4300_TLB_H */
+#endif /* N64EMU_DEVICE_R4300_TLB_H */

@@ -11,7 +11,7 @@
 
 
 #include "core/log.h"
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
 #include "usf/internal.h"
 #endif
 #include "core/types.h"
@@ -719,7 +719,7 @@ void main_prerun(void)
     si_dma_duration = 0; /* Command-dependent SI timing. */
 
     /* do byte-swapping if it hasn't been done yet */
-#if !defined(PARALLAX_BIG_ENDIAN)
+#if !defined(N64EMU_BIG_ENDIAN)
     if (g_RomWordsLittleEndian == 0)
     {
         swap_buffer((uint8_t*)mem_base_u32(g_mem_base, MM_CART_ROM), 4, g_rom_size/4);
@@ -921,8 +921,8 @@ void main_prerun(void)
                 g_start_address,
                 &g_dev.ai, &g_libretro_audio_backend,
                 si_dma_duration,
-#ifdef PARALLAX_USF
-                parallax_usf_rdram_size(),
+#ifdef N64EMU_USF
+                n64emu_usf_rdram_size(),
 #else
                 0x800000, /* Expansion Pak is always installed (8 MiB). */
 #endif

@@ -245,7 +245,7 @@ static void send_alist_to_audio_plugin(struct hle_t* hle)
     rsp_break(hle, SP_STATUS_TASKDONE);
 }
 
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
 static void send_dlist_to_gfx_plugin(struct hle_t* hle)
 {
     uint32_t text = *dmem_u32(hle, TASK_UCODE) & 0x7fffffu;
@@ -620,7 +620,7 @@ static void unknown_task(struct hle_t* hle)
  * task detection at every poll scans the same resident code hundreds of
  * thousands of times per frame sequence. Reuse the validated task identity;
  * command bounds checks, signal handling and cycle charges still run. */
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
 enum hle_graphics_resume hle_graphics_resume_pending(struct hle_t* hle)
 {
     struct cached_ucodes_t *cache = &hle->cached_ucodes;
@@ -757,7 +757,7 @@ static ucode_func_t try_audio_task_detection(struct hle_t* hle)
     return NULL;
 }
 
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
 static ucode_func_t try_normal_task_detection(struct hle_t* hle)
 {
     unsigned int sum =
@@ -886,7 +886,7 @@ static ucode_func_t task_detection(struct hle_t* hle)
                 return uc_pfunc;
         }
 
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
         uc_pfunc = try_normal_task_detection(hle);
         if (uc_pfunc)
             return uc_pfunc;
@@ -910,7 +910,7 @@ static void timing_identify(ucode_func_t handler)
 {
     if (handler == task_done) { hle_timing_family("task_done"); return; }
     if (handler == cicx105_ucode) { hle_timing_family("cicx105_ucode"); return; }
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
     if (handler == send_dlist_to_gfx_plugin) { hle_timing_family("send_dlist_to_gfx_plugin"); return; }
     if (handler == f3d_gfx_task) { hle_timing_family("send_dlist_to_gfx_plugin"); return; }
     if (handler == streaming_gfx_task) { hle_timing_family("streaming_gfx_task"); return; }
@@ -941,7 +941,7 @@ static void timing_identify(ucode_func_t handler)
     if (handler == alist_process_nead_efz) { hle_timing_family("alist_process_nead_efz"); return; }
     if (handler == musyx_v1_task) { hle_timing_family("musyx_v1_task"); return; }
     if (handler == musyx_v2_task) { hle_timing_family("musyx_v2_task"); return; }
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
     if (handler == jpeg_decode_PS0) { hle_timing_family("jpeg_decode_PS0"); return; }
     if (handler == jpeg_decode_PS) { hle_timing_family("jpeg_decode_PS"); return; }
     if (handler == jpeg_decode_OB) { hle_timing_family("jpeg_decode_OB"); return; }
@@ -961,7 +961,7 @@ enum hle_task_kind hle_get_task_kind(struct hle_t* hle)
         return HLE_TASK_UNKNOWN;
     if (handler == cicx105_ucode)
         return HLE_TASK_BOOT;
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
     if (handler == send_dlist_to_gfx_plugin || handler == streaming_gfx_task ||
         handler == rs_gfx_task || handler == zboss_gfx_task || handler == naboo_gfx_task ||
         handler == f3d_gfx_task)
@@ -1071,7 +1071,7 @@ static void dump_task(struct hle_t* hle, const char *const filename)
 }
 #endif
 
-#ifndef PARALLAX_USF
+#ifndef N64EMU_USF
 #include "rdp_emit_state.h"
 #define STREAM_FIELDS(X) X(l_streaming_gfx_running) X(l_rs_gfx_running) X(l_zboss_wait) X(l_zboss_running) X(l_naboo_gfx_running) X(l_naboo_emit)
 EMIT_STATE_DEFINE(hle_stream, STREAM_FIELDS)

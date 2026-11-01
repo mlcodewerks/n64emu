@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_DEVICE_R4300_INTERRUPT_H
-#define PARALLAX_DEVICE_R4300_INTERRUPT_H
+#ifndef N64EMU_DEVICE_R4300_INTERRUPT_H
+#define N64EMU_DEVICE_R4300_INTERRUPT_H
 
 #include <stdint.h>
 
@@ -48,4 +48,4 @@ void nmi_int_handler(void* opaque);
 #define NMI_INT     0x400
 #define RSP_DMA_EVT 0x800
 
-#endif /* PARALLAX_DEVICE_R4300_INTERRUPT_H */
+#endif /* N64EMU_DEVICE_R4300_INTERRUPT_H */

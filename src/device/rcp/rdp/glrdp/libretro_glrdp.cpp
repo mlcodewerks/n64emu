@@ -311,6 +311,6 @@ void glrdp_fb_info(void *data) {
                        unsigned(dimensions.second)};
 }
 
-#ifdef PARALLAX_GLRDP_PROFILE
+#ifdef N64EMU_GLRDP_PROFILE
 extern "C" RETRO_API void retro_debug_glrdp_profile(double *out) { glrdp_profile::take(out); }
 #endif

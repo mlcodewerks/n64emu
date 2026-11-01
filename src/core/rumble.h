@@ -1,5 +1,5 @@
-#ifndef PARALLAX_RUMBLE_H
-#define PARALLAX_RUMBLE_H
+#ifndef N64EMU_RUMBLE_H
+#define N64EMU_RUMBLE_H
 
 enum rumble_action
 {

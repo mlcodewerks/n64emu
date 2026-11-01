@@ -1,6 +1,6 @@
 
-#ifndef PARALLAX_DEVICE_RCP_RDP_FB_H
-#define PARALLAX_DEVICE_RCP_RDP_FB_H
+#ifndef N64EMU_DEVICE_RCP_RDP_FB_H
+#define N64EMU_DEVICE_RCP_RDP_FB_H
 
 #include <stdint.h>
 

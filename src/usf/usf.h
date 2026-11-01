@@ -1,12 +1,12 @@
 /* lazyusf2-compatible audio interface. SPDX-License-Identifier: GPL-2.0-or-later */
-#ifndef PARALLAX_USF_H
-#define PARALLAX_USF_H
+#ifndef N64EMU_USF_H
+#define N64EMU_USF_H
 #include <stddef.h>
 #include <stdint.h>
 typedef struct usf_state usf_state_t;
 typedef struct usf_state_helper usf_state_helper_t;
 #ifdef _WIN32
-#ifdef PARALLAX_USF
+#ifdef N64EMU_USF
 #define USF_API __declspec(dllexport)
 #else
 #define USF_API __declspec(dllimport)

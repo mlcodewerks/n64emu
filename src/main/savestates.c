@@ -14,7 +14,7 @@
 #include <string.h>
 #include <sys/types.h>
 
-#define PARALLAX_CORE_PROTOTYPES 1
+#define N64EMU_CORE_PROTOTYPES 1
 #include "core/log.h"
 #include "core/types.h"
 #include "core/storage.h"

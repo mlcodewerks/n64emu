@@ -1,6 +1,6 @@
 /* Experimental fault-assisted CPU RAM lookup. SPDX-License-Identifier: GPL-2.0-or-later */
-#ifndef PARALLAX_R4300_FASTMEM_H
-#define PARALLAX_R4300_FASTMEM_H
+#ifndef N64EMU_R4300_FASTMEM_H
+#define N64EMU_R4300_FASTMEM_H
 #include <stdint.h>
 #include <stddef.h>
 struct r4300_core;

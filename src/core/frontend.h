@@ -19,8 +19,8 @@
  *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#ifndef PARALLAX_FRONTEND_H
-#define PARALLAX_FRONTEND_H
+#ifndef N64EMU_FRONTEND_H
+#define N64EMU_FRONTEND_H
 #include <stdbool.h>
 #include <libretro.h>
 #include "core/backend.h"
@@ -41,7 +41,7 @@ uint32_t get_retro_screen_height(void);
 #define RETRO_GAME_TYPE_DD 1
 #define RETRO_MEMORY_TRANSFERPAK (0x100 + 2)
 #define RETRO_GAME_TYPE_TRANSFERPAK 2
-#define CORE_NAME "parallax"
+#define CORE_NAME "n64emu"
 #ifdef __cplusplus
 }
 #endif

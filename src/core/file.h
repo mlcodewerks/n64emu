@@ -1,5 +1,5 @@
-#ifndef PARALLAX_FILE_H
-#define PARALLAX_FILE_H
+#ifndef N64EMU_FILE_H
+#define N64EMU_FILE_H
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

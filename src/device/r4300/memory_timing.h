@@ -1,5 +1,5 @@
-#ifndef PARALLAX_R4300_MEMORY_TIMING_H
-#define PARALLAX_R4300_MEMORY_TIMING_H
+#ifndef N64EMU_R4300_MEMORY_TIMING_H
+#define N64EMU_R4300_MEMORY_TIMING_H
 
 /* CPU clocks charged in addition to instruction issue (two CPU clocks per
  * CP0 COUNT tick). C paths, native emitters and their event-budget bounds must

@@ -111,14 +111,14 @@ void swap_buffer(void *buffer, size_t length, size_t count)
 
 void to_little_endian_buffer(void *buffer, size_t length, size_t count)
 {
-#if defined(PARALLAX_BIG_ENDIAN)
+#if defined(N64EMU_BIG_ENDIAN)
     swap_buffer(buffer, length, count);
 #endif
 }
 
 void to_big_endian_buffer(void *buffer, size_t length, size_t count)
 {
-#if !defined(PARALLAX_BIG_ENDIAN)
+#if !defined(N64EMU_BIG_ENDIAN)
     swap_buffer(buffer, length, count);
 #endif
 }

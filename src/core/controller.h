@@ -1,6 +1,6 @@
 
-#ifndef PARALLAX_CONTROLLER_H
-#define PARALLAX_CONTROLLER_H
+#ifndef N64EMU_CONTROLLER_H
+#define N64EMU_CONTROLLER_H
 
 #include "core/controller_input.h"
 #include "core/rumble.h"

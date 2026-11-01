@@ -1,5 +1,5 @@
-#ifndef PARALLAX_TYPES_H
-#define PARALLAX_TYPES_H
+#ifndef N64EMU_TYPES_H
+#define N64EMU_TYPES_H
 #include <stdint.h>
 #if defined(_WIN32)
 #define CORE_EXPORT __declspec(dllexport)

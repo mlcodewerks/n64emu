@@ -62,14 +62,14 @@ target_include_directories(parallel-rsp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(parallel-rsp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/arch/simd/rsp)
 target_compile_options(parallel-rsp PRIVATE ${PARALLEL_RSP_CXX_FLAGS})
 
-get_filename_component(PARALLAX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
-target_include_directories(parallel-rsp PUBLIC ${PARALLAX_ROOT}/deps)
+get_filename_component(N64EMU_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
+target_include_directories(parallel-rsp PUBLIC ${N64EMU_ROOT}/deps)
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
-	target_include_directories(parallel-rsp PUBLIC ${PARALLAX_ROOT}/deps/xbyak_aarch64
-		${PARALLAX_ROOT}/deps/xbyak_aarch64/xbyak_aarch64)
-	target_sources(parallel-rsp PRIVATE ${PARALLAX_ROOT}/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp)
+	target_include_directories(parallel-rsp PUBLIC ${N64EMU_ROOT}/deps/xbyak_aarch64
+		${N64EMU_ROOT}/deps/xbyak_aarch64/xbyak_aarch64)
+	target_sources(parallel-rsp PRIVATE ${N64EMU_ROOT}/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp)
 elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
-	target_include_directories(parallel-rsp PUBLIC ${PARALLAX_ROOT}/deps/xbyak)
+	target_include_directories(parallel-rsp PUBLIC ${N64EMU_ROOT}/deps/xbyak)
 else()
 	message(FATAL_ERROR "The RSP Xbyak JIT requires x64 or AArch64.")
 endif()
@@ -82,7 +82,7 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND
     set(RSP_SIMD_BASE_FLAGS -mno-avx -mno-avx2 -mno-fma -mno-sse4.2
         -mno-sse4.1 -mno-ssse3 -mno-sse3 -msse2)
     target_sources(parallel-rsp PRIVATE simd_dispatch.cpp)
-    target_compile_definitions(parallel-rsp PUBLIC PARALLAX_RSP_SIMD_DISPATCH)
+    target_compile_definitions(parallel-rsp PUBLIC N64EMU_RSP_SIMD_DISPATCH)
     target_compile_options(parallel-rsp PUBLIC ${RSP_SIMD_BASE_FLAGS})
     set_target_properties(parallel-rsp PROPERTIES POSITION_INDEPENDENT_CODE ON)
     foreach(variant ssse3 sse41 sse42)
@@ -97,7 +97,7 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND
             rsp/vfunctions.cpp rsp/ls.cpp arch/simd/rsp/rsp_core.cpp)
         target_include_directories(rsp-${variant}-helpers PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/arch/simd/rsp
-            ${PARALLAX_ROOT}/deps ${PARALLAX_ROOT}/deps/xbyak)
+            ${N64EMU_ROOT}/deps ${N64EMU_ROOT}/deps/xbyak)
         target_compile_definitions(rsp-${variant}-helpers PRIVATE RSP_SIMD_SUFFIX=_${variant})
         target_compile_options(rsp-${variant}-helpers PRIVATE ${PARALLEL_RSP_CXX_FLAGS}
             ${RSP_SIMD_BASE_FLAGS} ${variant_flag}
@@ -111,7 +111,7 @@ option(PARALLEL_RSP_BENCHMARKS "Build the synthetic vector optimizer benchmark."
 if (PARALLEL_RSP_BENCHMARKS)
     # Keep Xbyak's C++-standard-dependent CodeGenerator layout identical in
     # the benchmark and the library, just as for the unit-test executables.
-    add_executable(rsp-vector-benchmark ${PARALLAX_ROOT}/benchmarks/rsp-optimizer/vector_benchmark.cpp)
+    add_executable(rsp-vector-benchmark ${N64EMU_ROOT}/benchmarks/rsp-optimizer/vector_benchmark.cpp)
     target_link_libraries(rsp-vector-benchmark PRIVATE parallel-rsp)
     target_compile_options(rsp-vector-benchmark PRIVATE ${PARALLEL_RSP_CXX_FLAGS})
 endif()

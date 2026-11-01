@@ -1,7 +1,7 @@
 /* Functional model of the SDK vector self-test in the known boot stubs.
  * Uses the native vector primitives; no instruction-cycle measurement. */
-#ifndef PARALLAX_HLE_BOOT_PROBE_HPP
-#define PARALLAX_HLE_BOOT_PROBE_HPP
+#ifndef N64EMU_HLE_BOOT_PROBE_HPP
+#define N64EMU_HLE_BOOT_PROBE_HPP
 #include "rsp_op.hpp"
 #include "dpc_bridge.h"
 static uint32_t rsp_hle_boot_probe(const uint32_t *im, const uint32_t *dm,

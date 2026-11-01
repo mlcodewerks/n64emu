@@ -1,6 +1,6 @@
 
-#ifndef PARALLAX_INTERP_FPU_MOVE_H
-#define PARALLAX_INTERP_FPU_MOVE_H
+#ifndef N64EMU_INTERP_FPU_MOVE_H
+#define N64EMU_INTERP_FPU_MOVE_H
 #include "r4300_core.h"
 
 /* MOV.S and MOV.D are raw 64-bit copies in this VR4300 model. They preserve

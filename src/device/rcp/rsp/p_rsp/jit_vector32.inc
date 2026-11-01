@@ -1,11 +1,11 @@
 void Emitter::simd_memory(unsigned reg,unsigned base,int32_t offset,bool store,unsigned bytes)
 {
-#ifdef PARALLAX_JIT32_X86
-    auto& code=host.code;auto v=Xbyak::Xmm(reg);auto address=parallax32::Assembler::mem(0,base,offset);
+#ifdef N64EMU_JIT32_X86
+    auto& code=host.code;auto v=Xbyak::Xmm(reg);auto address=n64emu32::Assembler::mem(0,base,offset);
     if(store){if(bytes==16)code.movdqu(address,v);else if(bytes==8)code.movq(address,v);else code.movd(address,v);}
     else {if(bytes==16)code.movdqu(v,address);else if(bytes==8)code.movq(v,address);else code.movd(v,address);}
 #else
-    host.mov(12,base);if(offset)host.immediate(parallax32::ADD,12,uint32_t(offset));
+    host.mov(12,base);if(offset)host.immediate(n64emu32::ADD,12,uint32_t(offset));
     uint32_t encoding=bytes==16?0xf42c0a0fu:bytes==8?0xf42c070fu:0xf4ac080fu;
     if(store)encoding&=~0x00200000u;
     unsigned d=reg*2;host.word(encoding|((d&15)<<12)|((d&16)<<18));
@@ -14,7 +14,7 @@ void Emitter::simd_memory(unsigned reg,unsigned base,int32_t offset,bool store,u
 void Emitter::simd_spill(unsigned reg,unsigned offset)
 {
     simd_memory(reg,
-#ifdef PARALLAX_JIT32_X86
+#ifdef N64EMU_JIT32_X86
         4,
 #else
         13,
@@ -24,7 +24,7 @@ void Emitter::simd_spill(unsigned reg,unsigned offset)
 void Emitter::simd_reload(unsigned reg,unsigned offset)
 {
     simd_memory(reg,
-#ifdef PARALLAX_JIT32_X86
+#ifdef N64EMU_JIT32_X86
         4,
 #else
         13,
@@ -34,7 +34,7 @@ void Emitter::simd_reload(unsigned reg,unsigned offset)
 void Emitter::simd_node(unsigned operation,unsigned d,unsigned a,unsigned b,unsigned c,uint32_t immediate)
 {
     VOp op=VOp(operation);
-#ifdef PARALLAX_JIT32_X86
+#ifdef N64EMU_JIT32_X86
     auto& code=host.code;Xbyak::Xmm dd(d),aa(a),bb(b);
     if(op==VOp::Load){simd_memory(d,STATE,int32_t(immediate),false);return;}
     if(op==VOp::Store){simd_memory(a,STATE,int32_t(immediate),true);return;}
@@ -101,7 +101,7 @@ void Emitter::simd_node(unsigned operation,unsigned d,unsigned a,unsigned b,unsi
 }
 void Emitter::vector_memory(unsigned state,unsigned dmem,unsigned address,HostWord vector_offset,bool store,unsigned bytes)
 {
-    using namespace parallax32;
+    using namespace n64emu32;
     if(bytes<4) {
         loadv(address,1);host.immediate(XOR,1,bytes==1?3:2);host.alu(ADD,1,DMEM);
         if(store){host.load(0,STATE,int32_t(vector_offset),bytes);host.store(0,1,0,bytes);}
@@ -111,7 +111,7 @@ void Emitter::vector_memory(unsigned state,unsigned dmem,unsigned address,HostWo
     if(store)simd_memory(0,STATE,int32_t(vector_offset),false,bytes);
     loadv(address,0);host.alu(ADD,0,DMEM);host.store(0,FP,-924);
     if(!store)simd_memory(0,0,0,false,bytes);
-#ifdef PARALLAX_JIT32_X86
+#ifdef N64EMU_JIT32_X86
     host.code.pshuflw(host.code.xmm0,host.code.xmm0,0xb1);
     if(bytes==16)host.code.pshufhw(host.code.xmm0,host.code.xmm0,0xb1);
 #else
@@ -123,8 +123,8 @@ void Emitter::vector_memory(unsigned state,unsigned dmem,unsigned address,HostWo
 }
 void Emitter::vector_packed_load(unsigned state,unsigned dmem,unsigned address,HostWord vector_offset,unsigned shift)
 {
-    loadv(address,0);host.alu(parallax32::ADD,0,DMEM);simd_memory(0,0,0,false,8);
-#ifdef PARALLAX_JIT32_X86
+    loadv(address,0);host.alu(n64emu32::ADD,0,DMEM);simd_memory(0,0,0,false,8);
+#ifdef N64EMU_JIT32_X86
     auto& code=host.code;code.pxor(code.xmm1,code.xmm1);code.punpcklbw(code.xmm0,code.xmm1);
     code.pshuflw(code.xmm0,code.xmm0,0x1b);code.pshufhw(code.xmm0,code.xmm0,0x1b);code.psllw(code.xmm0,shift);
 #else

@@ -19,7 +19,7 @@
             return 1;                                                                              \
         }                                                                                          \
     } while (0)
-#ifdef PARALLAX_USF_LINKED
+#ifdef N64EMU_USF_LINKED
 #define LOAD(n) auto p_##n = &n
 #else
 #define LOAD(n)                                                                                    \
@@ -66,7 +66,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: usf_checks <USF shared library>\n");
         return 2;
     }
-#ifndef PARALLAX_USF_LINKED
+#ifndef N64EMU_USF_LINKED
     void *library = (void *)OPEN(argv[1]);
     CHECK(library);
 #endif

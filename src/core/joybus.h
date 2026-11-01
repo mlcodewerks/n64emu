@@ -1,5 +1,5 @@
-#ifndef PARALLAX_JOYBUS_H
-#define PARALLAX_JOYBUS_H
+#ifndef N64EMU_JOYBUS_H
+#define N64EMU_JOYBUS_H
 
 #include "core/log.h"
 

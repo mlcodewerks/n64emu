@@ -1,29 +1,29 @@
 // Small A32/IA-32 encoding layer used by the 32-bit CPU and RSP backends.
 // The block compilers own allocation, precise exits and code publication.
 // SPDX-License-Identifier: GPL-2.0-or-later
-#ifndef PARALLAX_JIT32_ASSEMBLER_HPP
-#define PARALLAX_JIT32_ASSEMBLER_HPP
+#ifndef N64EMU_JIT32_ASSEMBLER_HPP
+#define N64EMU_JIT32_ASSEMBLER_HPP
 #include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
 #if defined(__i386__) || defined(_M_IX86)
-#define PARALLAX_JIT32_X86 1
+#define N64EMU_JIT32_X86 1
 #include <xbyak/xbyak.h>
-#elif defined(__arm__) || defined(PARALLAX_JIT32_CROSS_ARM)
-#define PARALLAX_JIT32_ARM 1
+#elif defined(__arm__) || defined(N64EMU_JIT32_CROSS_ARM)
+#define N64EMU_JIT32_ARM 1
 #else
 #error The 32-bit assembler requires IA-32 or ARMv7.
 #endif
 
-namespace parallax32 {
+namespace n64emu32 {
 enum Condition { EQ, NE, LO, HS, LT, GE, LE, GT, HI, LS, MI, PL, AL };
 enum Operation { ADD, ADC, SUB, SBC, AND, OR, XOR, CMP, TEST };
 enum Shift { LSL, LSR, ASR };
 struct Label { size_t offset = size_t(-1); std::vector<size_t> sites; };
 class Assembler {
-#ifdef PARALLAX_JIT32_X86
+#ifdef N64EMU_JIT32_X86
     struct ScratchAllocator : Xbyak::Allocator { bool useProtect() const override { return false; } } allocator;
     std::vector<uint8_t> buffer = std::vector<uint8_t>(1024 * 1024);
 public:

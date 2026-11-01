@@ -1,5 +1,5 @@
-#ifndef PARALLAX_DEVICE_GB_H
-#define PARALLAX_DEVICE_GB_H
+#ifndef N64EMU_DEVICE_GB_H
+#define N64EMU_DEVICE_GB_H
 
 #include <stdint.h>
 #include <time.h>

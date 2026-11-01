@@ -1,6 +1,6 @@
 # n64emu
 
-![parallax](https://user-images.githubusercontent.com/56025978/170892431-f2e70f44-1a40-4dc6-975d-0a89d00a8589.png)
+![n64emu](https://user-images.githubusercontent.com/56025978/170892431-f2e70f44-1a40-4dc6-975d-0a89d00a8589.png)
 
 **Use other libretro cores and N64 emulators for any use for gaming.** 
 
@@ -48,11 +48,11 @@ This emulator fork is based on  **very** extensive tests such as:
 
 | Target | Build command | Libretro output | USF playback library output (`USF=1`) |
 | --- | --- | --- | --- |
-| Windows x64, MSYS2 MINGW64 or UCRT64 shell | `make -j8 platform=win ARCH=x86_64` | `parallax_libretro.dll` | `build/usf/x64/parallax_usf.dll` |
-| Windows x86, MSYS2 MINGW32 shell | `make -j8 platform=win ARCH=x86` | `parallax_libretro.dll` | `build/usf/Win32/parallax_usf.dll` |
-| Linux x86-64 | `make -j8 platform=unix ARCH=x86_64` | `parallax_libretro.so` | `parallax_usf.so` |
-| Linux x86, with multilib and 32-bit development libraries | `make -j8 platform=unix ARCH=x86` | `parallax_libretro.so` | `parallax_usf.so` |
-| Linux ARMv7 hard-float, NEON | `make -j8 platform=unix ARCH=arm` | `parallax_libretro.so` | `parallax_usf.so` |
-| Linux AArch64 | `make -j8 platform=unix ARCH=aarch64` | `parallax_libretro.so` | `parallax_usf.so` |
-| Raspberry Pi 4, 64-bit Raspberry Pi OS | `make -j8 platform=rpi4` | `parallax_libretro.so` | `parallax_usf.so` |
-| Raspberry Pi 5, 64-bit Raspberry Pi OS | `make -j8 platform=rpi5` | `parallax_libretro.so` | `parallax_usf.so` |
+| Windows x64, MSYS2 MINGW64 or UCRT64 shell | `make -j8 platform=win ARCH=x86_64` | `n64emu_libretro.dll` | `build/usf/x64/n64emu_usf.dll` |
+| Windows x86, MSYS2 MINGW32 shell | `make -j8 platform=win ARCH=x86` | `n64emu_libretro.dll` | `build/usf/Win32/n64emu_usf.dll` |
+| Linux x86-64 | `make -j8 platform=unix ARCH=x86_64` | `n64emu_libretro.so` | `n64emu_usf.so` |
+| Linux x86, with multilib and 32-bit development libraries | `make -j8 platform=unix ARCH=x86` | `n64emu_libretro.so` | `n64emu_usf.so` |
+| Linux ARMv7 hard-float, NEON | `make -j8 platform=unix ARCH=arm` | `n64emu_libretro.so` | `n64emu_usf.so` |
+| Linux AArch64 | `make -j8 platform=unix ARCH=aarch64` | `n64emu_libretro.so` | `n64emu_usf.so` |
+| Raspberry Pi 4, 64-bit Raspberry Pi OS | `make -j8 platform=rpi4` | `n64emu_libretro.so` | `n64emu_usf.so` |
+| Raspberry Pi 5, 64-bit Raspberry Pi OS | `make -j8 platform=rpi5` | `n64emu_libretro.so` | `n64emu_usf.so` |

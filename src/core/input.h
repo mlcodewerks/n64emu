@@ -1,4 +1,4 @@
-#ifndef PARALLAX_INPUT_H
-#define PARALLAX_INPUT_H
+#ifndef N64EMU_INPUT_H
+#define N64EMU_INPUT_H
 #include "core/backend.h"
 #endif

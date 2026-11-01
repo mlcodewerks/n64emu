@@ -1,7 +1,7 @@
 
 
-#ifndef PARALLAX_DEVICE_DISK_H
-#define PARALLAX_DEVICE_DISK_H
+#ifndef N64EMU_DEVICE_DISK_H
+#define N64EMU_DEVICE_DISK_H
 
 #include <stdint.h>
 #include <stddef.h>

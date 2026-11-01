@@ -1,5 +1,5 @@
-#ifndef PARALLAX_RCP_H
-#define PARALLAX_RCP_H
+#ifndef N64EMU_RCP_H
+#define N64EMU_RCP_H
 
 
 #include <stddef.h>

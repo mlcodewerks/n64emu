@@ -1,4 +1,4 @@
-#ifdef PARALLAX_RSP_INTERPRETER
+#ifdef N64EMU_RSP_INTERPRETER
 #include "rsp_interpreter.hpp"
 #else
 #include "rsp_jit.hpp"
@@ -17,7 +17,7 @@ static void require(bool condition, const char *message)
 }
 struct Fixture
 {
-#ifdef PARALLAX_RSP_INTERPRETER
+#ifdef N64EMU_RSP_INTERPRETER
     Interpreter cpu;
 #else
     JIT::CPU cpu;
@@ -41,7 +41,7 @@ static uint32_t r_op(unsigned fn, unsigned d, unsigned a, unsigned b, unsigned s
 static uint32_t i_op(unsigned op, unsigned d, unsigned a, uint16_t value)
 { return (op << 26) | (a << 21) | (d << 16) | value; }
 
-#ifndef PARALLAX_RSP_INTERPRETER
+#ifndef N64EMU_RSP_INTERPRETER
 static JIT::HostWord arguments8(JIT::HostWord a, JIT::HostWord b, JIT::HostWord c, JIT::HostWord d,
                               JIT::HostWord e, JIT::HostWord f, JIT::HostWord g, JIT::HostWord h)
 { return a + 3*b + 5*c + 7*d + 11*e + 13*f + 17*g + 19*h; }
@@ -172,17 +172,17 @@ static void helpers_and_invalidation()
     require(s.sr[4] == 224 && s.sr[7] == uint32_t(int32_t(int16_t(half))) && s.sr[8] == word, "registers across helpers or wrapping loads");
 
     f.imem[0] = i_op(9,1,0,42); f.imem[1] = 13; f.restart(); f.cpu.run();
-#ifndef PARALLAX_RSP_INTERPRETER
+#ifndef N64EMU_RSP_INTERPRETER
     auto old = f.cpu.get_jit_block(0);
 #endif
     f.imem[0] = i_op(9,1,0,43); f.restart(); f.cpu.run();
-#ifndef PARALLAX_RSP_INTERPRETER
+#ifndef N64EMU_RSP_INTERPRETER
     require(s.sr[1] == 43 && f.cpu.get_jit_block(0) != old, "IMEM invalidation");
 #else
     require(s.sr[1] == 43, "IMEM replacement");
 #endif
     f.imem[0] = i_op(9,1,0,42); f.restart(); f.cpu.run();
-#ifndef PARALLAX_RSP_INTERPRETER
+#ifndef N64EMU_RSP_INTERPRETER
     require(s.sr[1] == 42 && f.cpu.get_jit_block(0) == old, "microcode cache reuse");
 #else
     require(s.sr[1] == 42, "IMEM restoration");
@@ -190,7 +190,7 @@ static void helpers_and_invalidation()
     f.cpu.set_cycle_timing(false); f.restart(); f.cpu.run(); require(s.cycles == 2, "untimed instruction count");
     f.cpu.set_cycle_timing(true); f.restart(); f.cpu.run(); require(s.cycles != 0, "timing-mode invalidation");
 }
-#ifndef PARALLAX_RSP_INTERPRETER
+#ifndef N64EMU_RSP_INTERPRETER
 static void scalar_peepholes()
 {
     using namespace JIT;
@@ -315,10 +315,10 @@ static void vector_small_memory()
 }
 int main()
 {
-#ifndef PARALLAX_RSP_INTERPRETER
+#ifndef N64EMU_RSP_INTERPRETER
     call_abi(); scalar_peepholes();
 #endif
-#ifdef PARALLAX_RSP_EMITTER_ONLY
+#ifdef N64EMU_RSP_EMITTER_ONLY
     std::puts("RSP emitter ABI and scalar checks passed.");
 #else
     scalar_registers(); branches_and_slices(); helpers_and_invalidation();optimizer_boundaries();vector_quad_memory();vector_small_memory();

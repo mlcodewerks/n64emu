@@ -1,5 +1,5 @@
-#ifndef PARALLAX_LOG_H
-#define PARALLAX_LOG_H
+#ifndef N64EMU_LOG_H
+#define N64EMU_LOG_H
 #include "core/types.h"
 #ifdef __cplusplus
 extern "C" {

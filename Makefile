@@ -119,7 +119,7 @@ endif
 WITH_DYNAREC ?= $(ARCH)
 
 PIC = 1
-TARGET_NAME := parallax
+TARGET_NAME := n64emu
 CC_AS ?= $(CC)
 NASM  ?= nasm
 
@@ -199,7 +199,7 @@ else ifeq ($(platform),win)
 
    WITH_DYNAREC = $(ARCH)
    ifeq ($(ARCH),x86_64)
-      COREFLAGS += -DWIN64 #-DPARALLAX_NETPLAY
+      COREFLAGS += -DWIN64 #-DN64EMU_NETPLAY
       ASFLAGS = -f win64 -d WIN64
       PIC = 1
    else ifeq ($(ARCH),x86)
@@ -237,8 +237,8 @@ override HAVE_GLRDP := 0
 override HAVE_GL2_RDP := 0
 override HAVE_GLES2_RDP := 0
 override HAVE_D3D9 := 0
-COREFLAGS += -DPARALLAX_USF
-TARGET := $(subst parallax_libretro,parallax_usf,$(TARGET))
+COREFLAGS += -DN64EMU_USF
+TARGET := $(subst n64emu_libretro,n64emu_usf,$(TARGET))
 ifneq (,$(findstring win,$(platform)))
 USF_BUILD_DIR ?= build/usf/$(if $(filter x86_64,$(ARCH)),x64,Win32)
 TARGET := $(USF_BUILD_DIR)/$(notdir $(TARGET))
@@ -278,7 +278,7 @@ CPUOPTS += -fcommon
 CFLAGS += -std=gnu99 -D_CRT_SECURE_NO_WARNINGS -Wno-discarded-qualifiers
 
 ifeq ($(HEADLESS_BENCHMARK),1)
-CFLAGS += -DPARALLAX_HEADLESS_BENCHMARK
+CFLAGS += -DN64EMU_HEADLESS_BENCHMARK
 endif
 CXXFLAGS += -std=c++17 -D_CRT_SECURE_NO_WARNINGS
 CXXFLAGS += -fpermissive
@@ -321,9 +321,9 @@ ifneq ($(platform),win)
 COREFLAGS += -D_GNU_SOURCE
 endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
-# ParallaxJIT emitter, runtime layout and optimization settings.
+# n64emuJIT emitter, runtime layout and optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):gl2=$(HAVE_GL2_RDP):gles2=$(HAVE_GLES2_RDP):d3d9=$(HAVE_D3D9):headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(PARALLAXJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):gl2=$(HAVE_GL2_RDP):gles2=$(HAVE_GLES2_RDP):d3d9=$(HAVE_D3D9):headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
 # Wrapper invocations must leave the child's configuration stamp intact.
 CONFIG_WRAPPERS := x86 arm32 usf usf-x86 usf-arm32 rpi4 rpi5
 ifneq ($(strip $(MAKECMDGOALS)),)
@@ -385,13 +385,13 @@ endif
 %.o: %.cpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
 
-ifneq ($(PARALLAXJIT_DIR),)
-$(PARALLAXJIT_SOURCE:.cpp=.o): CXXFLAGS += -O3
-$(PARALLAXJIT_DIR)/parallaxjit_x64.o: $(wildcard $(PARALLAXJIT_DIR)/x64/*.inc) $(PARALLAXJIT_DIR)/x64/assem_x64.h $(PARALLAXJIT_DIR)/x64/xbyak_emit.h $(PARALLAXJIT_DIR)/parallaxjit.h $(PARALLAXJIT_DIR)/code_write_scope.h
-$(PARALLAXJIT_DIR)/parallaxjit_arm64.o: $(wildcard $(PARALLAXJIT_DIR)/arm64/*.inc) $(PARALLAXJIT_DIR)/arm64/xbyak_emit.h $(PARALLAXJIT_DIR)/parallaxjit.h $(PARALLAXJIT_DIR)/code_write_scope.h
-$(PARALLAXJIT_DIR)/parallaxjit_x86.o $(PARALLAXJIT_DIR)/parallaxjit_arm32.o: $(wildcard $(PARALLAXJIT_DIR)/pair32/*.inc) $(CORE_DIR)/src/jit32/assembler.hpp $(PARALLAXJIT_DIR)/parallaxjit.h $(PARALLAXJIT_DIR)/code_write_scope.h
-ifeq ($(PARALLAXJIT_PROFILE),1)
-$(CORE_DIR)/src/device/r4300/jit_runtime.o: CFLAGS += -DPARALLAXJIT_PROFILE
+ifneq ($(N64EMUJIT_DIR),)
+$(N64EMUJIT_SOURCE:.cpp=.o): CXXFLAGS += -O3
+$(N64EMUJIT_DIR)/n64emujit_x64.o: $(wildcard $(N64EMUJIT_DIR)/x64/*.inc) $(N64EMUJIT_DIR)/x64/assem_x64.h $(N64EMUJIT_DIR)/x64/xbyak_emit.h $(N64EMUJIT_DIR)/n64emujit.h $(N64EMUJIT_DIR)/code_write_scope.h
+$(N64EMUJIT_DIR)/n64emujit_arm64.o: $(wildcard $(N64EMUJIT_DIR)/arm64/*.inc) $(N64EMUJIT_DIR)/arm64/xbyak_emit.h $(N64EMUJIT_DIR)/n64emujit.h $(N64EMUJIT_DIR)/code_write_scope.h
+$(N64EMUJIT_DIR)/n64emujit_x86.o $(N64EMUJIT_DIR)/n64emujit_arm32.o: $(wildcard $(N64EMUJIT_DIR)/pair32/*.inc) $(CORE_DIR)/src/jit32/assembler.hpp $(N64EMUJIT_DIR)/n64emujit.h $(N64EMUJIT_DIR)/code_write_scope.h
+ifeq ($(N64EMUJIT_PROFILE),1)
+$(CORE_DIR)/src/device/r4300/jit_runtime.o: CFLAGS += -DN64EMUJIT_PROFILE
 endif
 endif
 

@@ -1,5 +1,5 @@
-#ifndef PARALLAX_SOFTRDP_SIMD_H
-#define PARALLAX_SOFTRDP_SIMD_H
+#ifndef N64EMU_SOFTRDP_SIMD_H
+#define N64EMU_SOFTRDP_SIMD_H
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
