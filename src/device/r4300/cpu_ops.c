@@ -327,9 +327,16 @@ DECLARE_INSTRUCTION(NI)
 DECLARE_INSTRUCTION(BREAK)
 {
     (void)op;
+#ifdef PARALLAX_USF
+    /* USF rippers replace idle waits with BREAK, including branch slots.
+     * Match their advance-to-next-event convention without raising BP. */
+    interp_idle_advance(r4300);
+    ADD_TO_PC(1);
+#else
     r4300->cp0.regs[CP0_CAUSE_REG] =
         (r4300->cp0.regs[CP0_CAUSE_REG] & ~UINT32_C(0x3000007c)) | CP0_CAUSE_EXCCODE_BP;
     exception_general(r4300);
+#endif
 }
 
 /* Reserved */

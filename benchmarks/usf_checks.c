@@ -216,16 +216,31 @@ int main(int argc, char **argv) {
         0x3c0ea404, 0x340f0105, 0xadcf0010, 0x3c0ea430, 0x8dcf0008,
         0x31ef0020, 0x15e00004, 0, 0x3c0d8000, 0x340f03e7, 0xadaf1000
     };
-    const unsigned *prefixes[] = {count_clock, immediate_si, startup_graphics, startup_graphics};
-    const unsigned counts[] = {sizeof(count_clock)/4, sizeof(immediate_si)/4, sizeof(startup_graphics)/4, sizeof(startup_graphics)/4};
-    for (unsigned test = 0; test < 4; ++test) {
+    /* A ripper's BREAK must reach the next event and resume without BP.
+     * The JAL case must resolve its target before servicing the event;
+     * falling through instead leaves execution in the trap loop at PC+12. */
+    const unsigned break_wait[] = {
+        0x400e4800, 0x0000000d, 0x400f4800, 0x01ee7823, 0x2def0100,
+        0x11e00004, 0, 0x3c0d8000, 0x340f03e7, 0xadaf1000
+    };
+    const unsigned break_slot[] = {
+        0x400e4800, 0x0c000005, 0x0000000d, 0x08000003, 0,
+        0x400f4800, 0x01ee7823, 0x2def0100, 0x11e00004, 0,
+        0x3c0d8000, 0x340f03e7, 0xadaf1000
+    };
+    const unsigned *prefixes[] = {count_clock, immediate_si, startup_graphics, startup_graphics,
+                                  break_wait, break_slot};
+    const unsigned counts[] = {sizeof(count_clock)/4, sizeof(immediate_si)/4,
+                               sizeof(startup_graphics)/4, sizeof(startup_graphics)/4,
+                               sizeof(break_wait)/4, sizeof(break_slot)/4};
+    for (unsigned test = 0; test < sizeof(prefixes)/sizeof(prefixes[0]); ++test) {
         unsigned char *regression = state_image(0, 0x400000);
         CHECK(regression);
         memmove(regression + 0x75c + counts[test]*4, regression + 0x75c, 15*4);
         for (unsigned i = 0; i < counts[test]; ++i)
             put32(regression + 0x75c + i*4, prefixes[test][i]);
         put32(regression + 0x75c + (counts[test]+13)*4, 0x08000006 + counts[test]);
-        if (test >= 2) put32(regression + 0x75c + 0x400000 + 0xfc0, 1);
+        if (test == 2 || test == 3) put32(regression + 0x75c + 0x400000 + 0xfc0, 1);
         if (test == 3) {
             /* A graphics task must also signal DP when SP IRQs are disabled. */
             put32(regression + 0x75c + 4, 0x340f0005);
@@ -256,7 +271,7 @@ int main(int argc, char **argv) {
     free(image);
     free(image_b);
     free(section);
-    printf("USF sparse upload, PCM, skip, restart, contexts, flags, resampling, DMA, legacy clock/SI and graphics-stub checks passed "
+    printf("USF sparse upload, PCM, skip, restart, contexts, flags, resampling, DMA, legacy clock/SI/BREAK and graphics-stub checks passed "
            "(%d Hz).\n",
            rate);
     return 0;
