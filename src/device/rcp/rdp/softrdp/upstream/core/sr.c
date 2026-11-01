@@ -798,6 +798,17 @@ void sr_destroy(sr_context *ctx)
     }
 }
 
+void sr_set_vi_filters(sr_context *ctx, bool filter, bool dedither, bool divot)
+{
+    if (!ctx) return;
+    sr_flush(ctx);
+    ctx->host.disable_vi_filter = !filter;
+    ctx->host.disable_vi_aa = !filter;
+    ctx->host.disable_vi_dither_filter = !dedither;
+    ctx->host.disable_vi_divot_filter = !filter || !divot;
+    ctx->vi_plan_prepared = false;
+}
+
 void sr_set_host(sr_context *ctx, const sr_host_interface *host)
 {
     if (!ctx) {

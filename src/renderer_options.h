@@ -39,6 +39,7 @@ static inline bool renderer_component_timing(void)
 }
 void renderer_register_options(retro_environment_t environment);
 void renderer_read_options(retro_environment_t environment);
+void renderer_read_live_options(retro_environment_t environment);
 enum controller_pak_option controller_read_pak_option(retro_environment_t environment, unsigned port);
 #ifdef __cplusplus
 }

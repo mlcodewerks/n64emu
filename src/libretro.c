@@ -437,7 +437,9 @@ static bool request_vulkan_context(void)
     hw_negotiation.interface_version = RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN_VERSION;
     hw_negotiation.get_application_info = vk_get_application_info;
     hw_negotiation.create_device = vk_create_device;
-    hw_negotiation.destroy_device = vk_context_destroy;
+    /* RetroArch retains this optional callback beyond core DLL unload.
+     * Release auxiliary resources via context_destroy and retro_deinit. */
+    hw_negotiation.destroy_device = NULL;
     return environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE,
             &hw_negotiation);
 }
@@ -504,6 +506,10 @@ void retro_deinit(void)
     if (load_game_successful)
         retro_unload_game();
 
+#ifdef HAVE_PARALLEL_RDP
+    /* The frontend still owns a live VkDevice at this point. */
+    vk_context_destroy();
+#endif
     deinit_audio_libretro();
 
     if (perf_cb.perf_log)
@@ -658,6 +664,16 @@ void update_variables(bool startup)
         EnableOverscan = 0;
         IgnoreTLBExceptions = 1;
         update_controllers();
+    }
+    else
+    {
+        renderer_read_live_options(environ_cb);
+        if (renderer_open && renderer_settings.renderer == RENDERER_SOFTRDP)
+        {
+            n64video_set_vi_options(renderer_settings.vi_filter, renderer_settings.dedither,
+                    renderer_settings.blur, renderer_settings.overscan, renderer_settings.bob);
+            n64video_set_native_lod(renderer_settings.native_lod);
+        }
     }
 }
 

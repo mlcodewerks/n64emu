@@ -1990,16 +1990,8 @@ void main() {
         ordered_generic_program_ = link(batch_vs.c_str(), fragment(draw_source, true).c_str());
         initialize_samplers(ordered_generic_program_);
     }
-    if (config_.specialize_shaders) {
-        specialized_key_ = glrdp_shader_config_key(config_);
-        const auto specialized = glrdp_specialize_shader(draw_source, config_, false);
-        specialized_program_ = link(batch_vs.c_str(), fragment(specialized, false).c_str());
-        initialize_samplers(specialized_program_);
-        if (glrdp_fragment_interlock) {
-            ordered_specialized_program_ = link(batch_vs.c_str(), fragment(specialized, true).c_str());
-            initialize_samplers(ordered_specialized_program_);
-        }
-    }
+    specialization_vertex_ = batch_vs;
+    specialization_fragment_ = draw_source;
     set_rendering_config(config_);
     present_program_ = link(pvs, pfs.c_str());
     final_present_program_ = link(final_vs, final_fs);
@@ -2081,6 +2073,48 @@ void main() {
     fb_.initialize_aliases();
     return true;
 }
+void RDPRenderer::set_rendering_config(GLRDPConfig config) {
+    flush();
+    config_ = glrdp_validate_config(config);
+    if (generic_program_ && config_.specialize_shaders &&
+        (!specialized_program_ || glrdp_shader_config_key(config_) != specialized_key_))
+        specialize_programs();
+    program_ = specialized_program_ && config_.specialize_shaders &&
+               glrdp_shader_config_key(config_) == specialized_key_
+                   ? specialized_program_ : generic_program_;
+}
+
+void RDPRenderer::specialize_programs() {
+    const auto source = glrdp_specialize_shader(specialization_fragment_, config_, false);
+    auto fragment = primitive_uniforms_.fragment(source);
+    GLuint next = 0, ordered = 0;
+    try {
+        next = link(specialization_vertex_.c_str(), fragment.c_str());
+        if (glrdp_fragment_interlock) {
+            fragment.insert(fragment.find('\n') + 1,
+                "#extension GL_ARB_fragment_shader_interlock : require\n#define GLRDP_FRAGMENT_INTERLOCK 1\n");
+            ordered = link(specialization_vertex_.c_str(), fragment.c_str());
+        }
+    } catch (...) {
+        if (next) glDeleteProgram(next);
+        if (ordered) glDeleteProgram(ordered);
+        throw;
+    }
+    for (GLuint old : {specialized_program_, ordered_specialized_program_}) {
+        if (!old) continue;
+        uniforms_.erase(old);
+        combiner_values_.erase(old);
+        configuration_values_.erase(old);
+        tile_uniforms_.erase(old);
+        glDeleteProgram(old);
+    }
+    specialized_program_ = next;
+    ordered_specialized_program_ = ordered;
+    specialized_key_ = glrdp_shader_config_key(config_);
+    initialize_samplers(specialized_program_);
+    if (ordered_specialized_program_) initialize_samplers(ordered_specialized_program_);
+}
+
 GLint RDPRenderer::uniform(GLuint program, const char *name) {
     if (program && (program == generic_program_ || program == specialized_program_ ||
                     program == ordered_generic_program_ || program == ordered_specialized_program_)) {

@@ -19,6 +19,9 @@ linker.list
 /cpu_fpu_diff.exe
 /cpu_timing.exe
 benchmarks/*
+!benchmarks/renderer_vi_checks.c
+!benchmarks/renderer_checks.mk
+!benchmarks/renderer-toggle-validation.md
 !benchmarks/usf_checks.c
 !benchmarks/usf_file_checks.c
 !benchmarks/usf-validation.json

@@ -886,8 +886,8 @@ RasterPresent RasterRenderer::scanout(std::uint32_t status, std::uint32_t origin
     filter.inputs = {f->color, white_, white_};
     filter.constants[29][2] = float(f->internal_scale);
     filter.constants[106] = {renderer_settings.vi_filter ? float((status >> 8) & 3) : 3.0f,
-                             float(renderer_settings.dedither && bool(status & 65536)),
-                             float(renderer_settings.blur && bool(status & 16)),
+                             float(renderer_settings.vi_filter && renderer_settings.dedither && bool(status & 65536)),
+                             float(renderer_settings.vi_filter && renderer_settings.blur && bool(status & 16)),
                              float(renderer_settings.vi_filter)};
     filter.constants[107] = {0, float(f->size), float(renderer_settings.vi_filter && bool(status & 8)),
                              float(renderer_settings.vi_filter && bool(status & 4))};

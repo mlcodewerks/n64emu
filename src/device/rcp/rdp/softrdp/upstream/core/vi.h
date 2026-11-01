@@ -33,6 +33,7 @@ typedef struct vi_state {
     bool disable_divot_filter;
     bool disable_gamma_dither;
     bool disable_aa;
+    bool disable_filter;
     /* Mid-frame H_START/X_SCALE writes, in line order; empty for a frame that
      * keeps one horizontal window. Set by sr_set_vi_scanline_registers and
      * cleared by the scanout that uses them. */

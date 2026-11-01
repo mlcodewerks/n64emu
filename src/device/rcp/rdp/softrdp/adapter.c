@@ -24,7 +24,6 @@ static size_t scanout_capacity, presentation_capacity;
 static sr_field_output fields;
 static const uint32_t *hle_words;
 static uint32_t hle_base, hle_count;
-static uint32_t vi_status;
 bool softrdp_native_lod=true;
 
 static bool host_command(void *unused, uint32_t index, uint32_t *word)
@@ -53,10 +52,10 @@ void n64video_init(struct n64video_config *in)
     host.dmem = config.gfx.dmem;
     for (unsigned i = 0; i < SR_DP_REGISTER_COUNT; ++i) host.dp_regs[i] = config.gfx.dp_reg[i];
     for (unsigned i = 0; i < SR_VI_REGISTER_COUNT; ++i) host.vi_regs[i] = config.gfx.vi_reg[i];
-    host.vi_regs[SR_VI_STATUS]=&vi_status;
     host.mi_intr_reg = config.gfx.mi_intr_reg; host.raise_mi_interrupt = host_interrupt;
     host.read_command_word = host_command;
     host.disable_vi_dither_filter = !config.vi.vi_dedither;
+    host.disable_vi_filter = config.vi.mode != VI_MODE_NORMAL;
     host.disable_vi_divot_filter = config.vi.mode != VI_MODE_NORMAL || !config.vi.vi_blur;
     host.disable_vi_aa = config.vi.mode != VI_MODE_NORMAL;
     host.disable_vi_gamma_dither = !config.dithering;
@@ -83,9 +82,6 @@ void n64video_update_screen(void)
 {
     if (!context) return;
     sr_flush(context);
-    vi_status=config.gfx.vi_reg[VI_STATUS]?*config.gfx.vi_reg[VI_STATUS]:0;
-    if (config.vi.mode==VI_MODE_COLOR)
-        vi_status=(vi_status&~0x1031cu)|0x300u;
     sr_vi_frame_info info;
     if (sr_get_vi_frame_info(context, &info) != SR_OK || info.hold) return;
     if (!info.width || !info.height || info.width > 8192 || info.height > 8192) return;
@@ -115,6 +111,21 @@ void n64video_update_screen(void)
     if(config.vi.widescreen) output.height_out=output.height_out*3/4;
     vdac_write(&output); vdac_sync(false);
 }
+void n64video_set_vi_options(bool filter, bool dedither, bool divot, bool overscan, bool bob)
+{
+    enum vi_mode mode = filter ? VI_MODE_NORMAL : VI_MODE_COLOR;
+    if (config.vi.mode == mode && config.vi.vi_dedither == dedither &&
+        config.vi.vi_blur == divot && config.vi.hide_overscan == overscan &&
+        config.vi.bob_deinterlace == bob) return;
+    if (context) sr_set_vi_filters(context, filter, dedither, divot);
+    config.vi.mode = mode;
+    config.vi.vi_dedither = dedither;
+    config.vi.vi_blur = divot;
+    config.vi.hide_overscan = overscan;
+    config.vi.bob_deinterlace = bob;
+    sr_field_output_reset(&fields);
+}
+
 void n64video_close(void)
 {
     if (context) { sr_flush(context); sr_destroy(context); context = NULL; }

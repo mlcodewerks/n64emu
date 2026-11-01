@@ -46,6 +46,7 @@ typedef struct sr_host_interface {
     uint32_t scale;
 
     uint32_t workers;
+    bool disable_vi_filter;
     bool disable_vi_dither_filter;
     bool disable_vi_divot_filter;
     bool disable_vi_gamma_dither;

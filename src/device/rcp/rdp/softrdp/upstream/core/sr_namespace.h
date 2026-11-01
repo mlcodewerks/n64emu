@@ -73,6 +73,7 @@
 #define sr_process_rdp_list SR_NS(sr_process_rdp_list)
 #define sr_save_state SR_NS(sr_save_state)
 #define sr_set_host SR_NS(sr_set_host)
+#define sr_set_vi_filters SR_NS(sr_set_vi_filters)
 #define sr_set_vi_scanline_registers SR_NS(sr_set_vi_scanline_registers)
 #define sr_state_snapshot_size SR_NS(sr_state_snapshot_size)
 #define sr_update_screen SR_NS(sr_update_screen)

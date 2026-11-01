@@ -80,6 +80,8 @@ sr_context *sr_create(const sr_host_interface *host);
 void sr_destroy(sr_context *ctx);
 
 void sr_set_host(sr_context *ctx, const sr_host_interface *host);
+/* Update scanout filters without replacing RDP state or scaled sample planes. */
+void sr_set_vi_filters(sr_context *ctx, bool filter, bool dedither, bool divot);
 sr_result sr_process_rdp_list(sr_context *ctx);
 
 /* Submit buffered commands and wait for all queued rendering. SYNC_FULL does

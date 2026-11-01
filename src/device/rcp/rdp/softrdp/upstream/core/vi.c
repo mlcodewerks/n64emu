@@ -102,6 +102,9 @@ void vi_latch_registers(vi_state *vi, const sr_host_interface *host)
     vi->disable_divot_filter = host->disable_vi_divot_filter;
     vi->disable_gamma_dither = host->disable_vi_gamma_dither;
     vi->disable_aa = host->disable_vi_aa;
+    vi->disable_filter = host->disable_vi_filter;
+    if (vi->disable_filter)
+        vi->control = (vi->control & ~0x1031cu) | 0x300u;
 #undef LATCH
 }
 
@@ -313,7 +316,9 @@ void vi_build_scanout_plan(const vi_state *vi, const sr_memory *memory,
         (vi->control & VI_CONTROL_DIVOT) != 0;
     plan->dither_filter_enable = !vi->disable_dither_filter &&
         (vi->control & VI_CONTROL_DITHER_FILTER) != 0;
-    if (plan->aa_mode == VI_AA_REPLICATE && x_add <= 0x200u) {
+    /* A frontend filter bypass must not synthesize the hardware's broken
+     * replicate fetch mode when the game requested filtered scanout. */
+    if (!vi->disable_filter && plan->aa_mode == VI_AA_REPLICATE && x_add <= 0x200u) {
         const uint32_t fetch_mask = type == VI_TYPE_RGBA5551 ? 0x40u : 0x20u;
         if (h_start_raw < (int32_t)(fetch_mask << 1))
             plan->replicate_fetch_mask = fetch_mask;
@@ -352,6 +357,8 @@ void vi_build_scanout_plan(const vi_state *vi, const sr_memory *memory,
             const uint32_t window_max = vi_compute_x_window(
                 vi->scanline[i].h_start, vi->scanline[i].x_scale, h_offset, type,
                 plan->aa_mode, &plan->windows[i + 1u]);
+            if (vi->disable_filter)
+                plan->windows[i + 1u].replicate_fetch_mask = 0u;
             if (window_max > max_x) max_x = window_max;
             int32_t row = ((int32_t)vi->scanline[i].vi_line - v_offset) / 2;
             if (row < 0) row = 0;

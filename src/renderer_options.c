@@ -33,7 +33,7 @@ struct renderer_settings renderer_settings;
 #define RENDERERS RENDERERS_D3D9
 #endif
 /* Legacy options are supported by every libretro frontend; first value is default.
- * Settings are latched at content load, keeping renderer resources and RDRAM intact. */
+ * Renderer resources are latched at content load; shared VI controls update live. */
 static const struct retro_variable options[] = {
     {"wtfn64_renderer", "Renderer (restart required); " RENDERERS},
 #ifdef HAVE_LEGACY_GPU
@@ -41,46 +41,46 @@ static const struct retro_variable options[] = {
 #endif
 #ifdef HAVE_GLRDP
     {"wtfn64_glrdp_upscale", "GPU RDP internal upscaling (restart required); 1|2|4|8"},
-    {"wtfn64_glrdp_blending", "GPU RDP blending accuracy (restart required); accurate|fast"},
-    {"wtfn64_glrdp_combiner", "GPU RDP combiner accuracy (restart required); accurate|fast"},
-    {"wtfn64_glrdp_texture_filter", "GPU RDP texture filtering (restart required); native|point"},
-    {"wtfn64_glrdp_texcoords", "GPU RDP texture coordinate accuracy (restart required); accurate|fast"},
-    {"wtfn64_glrdp_shading", "GPU RDP shade interpolation (restart required); accurate|fast"},
-    {"wtfn64_glrdp_shader_specialization", "GPU RDP shader specialization (restart required); disabled|enabled"},
-    {"wtfn64_glrdp_texture_lod", "GPU RDP texture LOD (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_color_dither", "GPU RDP RGB dithering (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_alpha_dither", "GPU RDP alpha dithering (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_vi_filter", "GPU RDP VI filters (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_deinterlace", "GPU RDP deinterlacing (restart required); weave|bob"},
-    {"wtfn64_glrdp_coverage", "GPU RDP coverage sampling (restart required); full|reduced|2x|off"},
-    {"wtfn64_glrdp_vi_aa", "GPU RDP VI antialiasing (restart required); full|reduced|off"},
-    {"wtfn64_glrdp_vi_restore", "GPU RDP VI dedithering (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_vi_divot", "GPU RDP VI divot filter (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_vi_resample", "GPU RDP VI resampling (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_vi_gamma", "GPU RDP VI gamma correction (restart required); enabled|disabled"},
-    {"wtfn64_glrdp_vi_gamma_dither", "GPU RDP VI gamma dithering (restart required); enabled|disabled"},
+    {"wtfn64_glrdp_blending", "GPU RDP blending accuracy; accurate|fast"},
+    {"wtfn64_glrdp_combiner", "GPU RDP combiner accuracy; accurate|fast"},
+    {"wtfn64_glrdp_texture_filter", "GPU RDP texture filtering; native|point"},
+    {"wtfn64_glrdp_texcoords", "GPU RDP texture coordinate accuracy; accurate|fast"},
+    {"wtfn64_glrdp_shading", "GPU RDP shade interpolation; accurate|fast"},
+    {"wtfn64_glrdp_shader_specialization", "GPU RDP shader specialization; disabled|enabled"},
+    {"wtfn64_glrdp_texture_lod", "GPU RDP texture LOD; enabled|disabled"},
+    {"wtfn64_glrdp_color_dither", "GPU RDP RGB dithering; enabled|disabled"},
+    {"wtfn64_glrdp_alpha_dither", "GPU RDP alpha dithering; enabled|disabled"},
+    {"wtfn64_glrdp_vi_filter", "GPU RDP VI filters; enabled|disabled"},
+    {"wtfn64_glrdp_deinterlace", "GPU RDP deinterlacing; weave|bob"},
+    {"wtfn64_glrdp_coverage", "GPU RDP coverage sampling; full|reduced|2x|off"},
+    {"wtfn64_glrdp_vi_aa", "GPU RDP VI antialiasing; full|reduced|off"},
+    {"wtfn64_glrdp_vi_restore", "GPU RDP VI dedithering; enabled|disabled"},
+    {"wtfn64_glrdp_vi_divot", "GPU RDP VI divot filter; enabled|disabled"},
+    {"wtfn64_glrdp_vi_resample", "GPU RDP VI resampling; enabled|disabled"},
+    {"wtfn64_glrdp_vi_gamma", "GPU RDP VI gamma correction; enabled|disabled"},
+    {"wtfn64_glrdp_vi_gamma_dither", "GPU RDP VI gamma dithering; enabled|disabled"},
 #endif
-    {"wtfn64_timing", "CPU cache timing (restart required); fast|off|accurate"},
-    {"wtfn64_hle", "HLE level (restart required); RSP HLE|Off"},
+    {"wtfn64_timing", "CPU cache timing (restart required); accurate|fast|off"},
+    {"wtfn64_hle", "HLE level (restart required); Off|RSP HLE"},
     {"wtfn64_angrylion_threads", "CPU RDP rendering threads (restart required); 6|2|4|8|10|auto"},
     {"wtfn64_performance_cores", "Performance cores only (restart required); enabled|disabled"},
     {"wtfn64_angrylion_upscale", "SoftRDP upscaling (restart required); 1|2|4"},
 #ifdef HAVE_PARALLEL_RDP
     {"wtfn64_parallel_upscale", "paraLLEl-RDP upscaling (restart required); 1|2|4|8"},
 #endif
-    {"wtfn64_vi_filter", "VI filtering (restart required); enabled|disabled"},
-    {"wtfn64_vi_dedither", "VI dedithering (restart required); enabled|disabled"},
-    {"wtfn64_vi_blur", "VI divot filter (restart required); enabled|disabled"},
-    {"wtfn64_crop_overscan", "Crop overscan (restart required); disabled|enabled"},
-    {"wtfn64_angrylion_deinterlace", "SoftRDP deinterlacing (restart required); weave|bob"},
-    {"wtfn64_native_lod", "Native texture LOD (restart required); enabled|disabled"},
+    {"wtfn64_vi_filter", "VI filtering; enabled|disabled"},
+    {"wtfn64_vi_dedither", "VI dedithering; enabled|disabled"},
+    {"wtfn64_vi_blur", "VI divot filter; enabled|disabled"},
+    {"wtfn64_crop_overscan", "Crop overscan; disabled|enabled"},
+    {"wtfn64_angrylion_deinterlace", "SoftRDP deinterlacing; weave|bob"},
+    {"wtfn64_native_lod", "Native texture LOD; enabled|disabled"},
     {"mupen64plus-pak1", "Player 1 controller pak; memory|none|rumble|transfer"},
     {"mupen64plus-pak2", "Player 2 controller pak; none|memory|rumble|transfer"},
     {"mupen64plus-pak3", "Player 3 controller pak; none|memory|rumble|transfer"},
     {"mupen64plus-pak4", "Player 4 controller pak; none|memory|rumble|transfer"},
 #ifdef HAVE_PARALLEL_RDP
-    {"wtfn64_parallel_downscale", "paraLLEl-RDP downsampling steps (restart required); 0|1|2|3"},
-    {"wtfn64_native_tex_rect", "paraLLEl-RDP native texture rectangles (restart required); enabled|disabled"},
+    {"wtfn64_parallel_downscale", "paraLLEl-RDP downsampling steps; 0|1|2|3"},
+    {"wtfn64_native_tex_rect", "paraLLEl-RDP native texture rectangles; enabled|disabled"},
     {"wtfn64_ss_readbacks", "paraLLEl-RDP supersampled readbacks (restart required); disabled|enabled"},
     {"wtfn64_ss_dither", "paraLLEl-RDP supersampled dithering (restart required); disabled|enabled"},
 #endif
@@ -121,7 +121,9 @@ void renderer_register_options(retro_environment_t environment)
             strcpy(values[i], separator + 2);
             d->key = options[i].key;
             d->desc = descriptions[i];
-            d->info = "Changes take effect when content is restarted.";
+            d->info = strstr(d->desc, "(restart required)") ?
+                "Changes take effect when content is restarted." :
+                "Changes take effect while content is running.";
             d->category_key = "video";
             if(!strcmp(d->key,"wtfn64_renderer"))
                 d->info="GLRDP, DX11, GL2, GLES2 and D3D9 render RDP primitives on the GPU. Legacy APIs use dedicated shaders and framebuffer workarounds. Restart content to apply.";
@@ -132,44 +134,44 @@ void renderer_register_options(retro_environment_t environment)
             if (!strcmp(d->key, "wtfn64_hle"))
                 d->info = "Off executes all RSP programs natively. RSP HLE accelerates supported graphics, audio and task microcode, with native fallback for unsupported programs. Works with every CPU cache timing setting, including Accurate. Restart content to apply.";
             if (!strcmp(d->key, "wtfn64_glrdp_blending"))
-                d->info = "Accurate uses the RDP divider and quantized blend factors. Fast uses arithmetic division with the same colour sources and factors; translucent edges may differ. Restart content to apply.";
+                d->info = "Accurate uses the RDP divider and quantized blend factors. Fast uses arithmetic division with the same colour sources and factors; translucent edges may differ. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_combiner"))
-                d->info = "Accurate preserves signed nine-bit combiner arithmetic and rounding. Fast clamps the colour equation and uses eight-bit normalized factors; lighting and sharpening may differ. Both retain both cycles and alpha tests. Restart content to apply.";
+                d->info = "Accurate preserves signed nine-bit combiner arithmetic and rounding. Fast clamps the colour equation and uses eight-bit normalized factors; lighting and sharpening may differ. Both retain both cycles and alpha tests. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_vi_filter"))
-                d->info = "Disable all GLRDP VI filters, including resampling, gamma and gamma dithering. Individual selections are retained and apply when enabled. Independent of RDP coverage and blending. Restart content to apply.";
+                d->info = "Disable all GLRDP VI filters, including resampling, gamma and gamma dithering. Individual selections are retained and apply when enabled. Independent of RDP coverage and blending. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_deinterlace"))
-                d->info = "Weave retains alternating VI fields for stable interlaced detail. Bob duplicates the latest field for less motion combing at half vertical detail. Independent of VI filtering. Restart content to apply.";
+                d->info = "Weave retains alternating VI fields for stable interlaced detail. Bob duplicates the latest field for less motion combing at half vertical detail. Independent of VI filtering. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_texture_filter"))
-                d->info = "Native follows the game's RDP texture filtering. Point skips multi-tap texture filtering for lower GPU cost and a sharper, pixelated image. Independent of VI resampling. Restart content to apply.";
+                d->info = "Native follows the game's RDP texture filtering. Point skips multi-tap texture filtering for lower GPU cost and a sharper, pixelated image. Independent of VI resampling. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_texcoords"))
-                d->info = "Accurate uses native fixed-point span coordinates and the RDP perspective divider at 1x where supported. Fast uses floating-point planes and perspective division; texture alignment and wobble can differ. Restart content to apply.";
+                d->info = "Accurate uses native fixed-point span coordinates and the RDP perspective divider at 1x where supported. Fast uses floating-point planes and perspective division; texture alignment and wobble can differ. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_shading"))
-                d->info = "Accurate uses native fixed-point span and coverage corrections for vertex colours. Fast uses floating-point colour planes; gradients and alpha thresholds can differ. Independent of combiner arithmetic and texture coordinates. Restart content to apply.";
+                d->info = "Accurate uses native fixed-point span and coverage corrections for vertex colours. Fast uses floating-point colour planes; gradients and alpha thresholds can differ. Independent of combiner arithmetic and texture coordinates. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_shader_specialization"))
-                d->info = "Precompile a shader for the selected coverage and accuracy settings when content loads. Removes unused shader paths without lowering accuracy; increases startup compilation time. No shaders compile during gameplay. Restart content to apply.";
+                d->info = "Compile a shader for the selected coverage and accuracy settings. Applies immediately; changing these settings can pause briefly while the shader compiles. Disabling uses the generic shader.";
             if (!strcmp(d->key, "wtfn64_glrdp_texture_lod"))
-                d->info = "Allow the game's per-pixel mip level and LOD fraction calculation. Disabled uses base tiles and skips dynamic LOD; distant textures may shimmer and detail or sharpening effects can change. Restart content to apply.";
+                d->info = "Allow the game's per-pixel mip level and LOD fraction calculation. Disabled uses base tiles and skips dynamic LOD; distant textures may shimmer and detail or sharpening effects can change. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_color_dither"))
-                d->info = "Allow the game's RGB dithering before framebuffer storage. Disabled reduces shader work but can expose colour banding. Independent of alpha dithering and VI filters. Restart content to apply.";
+                d->info = "Allow the game's RGB dithering before framebuffer storage. Disabled reduces shader work but can expose colour banding. Independent of alpha dithering and VI filters. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_alpha_dither"))
-                d->info = "Allow dither added to pixel and shade alpha. Disabled can change transparency thresholds and fades. Alpha comparison and depth rejection remain enabled. Independent of RGB dithering. Restart content to apply.";
+                d->info = "Allow dither added to pixel and shade alpha. Disabled can change transparency thresholds and fades. Alpha comparison and depth rejection remain enabled. Independent of RGB dithering. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_vi_filter") || !strcmp(d->key, "wtfn64_vi_dedither") ||
                 !strcmp(d->key, "wtfn64_vi_blur"))
-                d->info = "Applies to Angrylion and paraLLEl-RDP. GLRDP has independent VI controls in the GLRDP category. Restart content to apply.";
+                d->info = "Applies immediately to SoftRDP and paraLLEl-RDP. GLRDP has independent VI controls in the GPU RDP category.";
             if (!strcmp(d->key, "wtfn64_glrdp_coverage"))
-                d->info = "Off treats surviving pixels as fully covered. 2x estimates coverage from two native samples; Reduced uses four; Full uses eight. Lower sample counts can lose thin edges. Alpha, depth and AA-off first-sample tests remain active. Independent of VI filters. Restart content to apply.";
+                d->info = "Off treats surviving pixels as fully covered. 2x estimates coverage from two native samples; Reduced uses four; Full uses eight. Lower sample counts can lose thin edges. Alpha, depth and AA-off first-sample tests remain active. Independent of VI filters. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_vi_aa"))
-                d->info = "Controls the game's requested VI edge reconstruction independently of RDP coverage. Off skips reconstruction; Reduced uses four neighbours; Full uses all six. Does not change resampling or other VI filters. Restart content to apply.";
+                d->info = "Controls the game's requested VI edge reconstruction independently of RDP coverage. Off skips reconstruction; Reduced uses four neighbours; Full uses all six. Does not change resampling or other VI filters. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_vi_restore"))
-                d->info = "Allow the game's eight-neighbour VI dither restoration filter. Disable to reduce scanout cost and retain the framebuffer's dither pattern. Independent of VI antialiasing. Restart content to apply.";
+                d->info = "Allow the game's eight-neighbour VI dither restoration filter. Disable to reduce scanout cost and retain the framebuffer's dither pattern. Independent of VI antialiasing. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_vi_divot"))
-                d->info = "Allow the game's horizontal three-pixel median filter at partially covered edges. Independent of other VI filters. Restart content to apply.";
+                d->info = "Allow the game's horizontal three-pixel median filter at partially covered edges. Independent of other VI filters. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_vi_resample"))
-                d->info = "Allow the game's native VI bilinear resampling. Disabled uses point sampling without disabling edge reconstruction, dedithering or divot filtering. Restart content to apply.";
+                d->info = "Allow the game's native VI bilinear resampling. Disabled uses point sampling without disabling edge reconstruction, dedithering or divot filtering. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_vi_gamma"))
-                d->info = "Allow gamma correction when requested by the game. Independent of gamma dithering. Restart content to apply.";
+                d->info = "Allow gamma correction when requested by the game. Independent of gamma dithering. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_vi_gamma_dither"))
-                d->info = "Allow gamma dithering when requested by the game. Independent of gamma correction. Restart content to apply.";
+                d->info = "Allow gamma dithering when requested by the game. Independent of gamma correction. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_timing"))
                 d->info = "Off disables CPU cache timing. Fast models cache tags and hit/miss timing. Accurate models full CPU cache contents. RSP HLE is selected separately. All settings retain component clocks and work-based RDP timing. Restart content to apply.";
             if (!strcmp(d->key, "wtfn64_rsp_hle"))
@@ -261,20 +263,18 @@ void renderer_read_options(retro_environment_t env)
     struct renderer_settings *s = &renderer_settings;
     const char *v;
     memset(s, 0, sizeof(*s));
-    v = value(env, "wtfn64_timing", "fast");
+    v = value(env, "wtfn64_timing", "accurate");
     s->per_cycle_timing = strcmp(v, "accurate") == 0;
     s->fast_cpu_timing = strcmp(v, "off") != 0 && strcmp(v, "no-cache") != 0;
     /* Consult the old boolean only when the frontend has no level saved. */
     v = value(env, "wtfn64_hle", "");
     s->hle = (!strcmp(v, "Off") || !strcmp(v, "off")) ? HLE_OFF :
         (!strcmp(v, "RSP HLE") || !strcmp(v, "rsp")) ? HLE_RSP :
-        toggle(env, "wtfn64_rsp_hle", true) ? HLE_RSP : HLE_OFF;
+        toggle(env, "wtfn64_rsp_hle", false) ? HLE_RSP : HLE_OFF;
     s->rsp_hle = s->hle != HLE_OFF;
     s->lle_graphics = s->lle_audio = !s->rsp_hle;
     s->component_timing = true;
 #ifdef N64EMU_USF
-    /* USF snapshots were captured with the ripper's fixed task deadlines.
-     * Work-derived SP timing can dispatch threads omitted from the rip. */
     s->component_timing = false;
 #endif
 #ifdef HAVE_PARALLEL_RDP
@@ -299,7 +299,30 @@ void renderer_read_options(retro_environment_t env)
     if (!strcmp(value(env, "wtfn64_renderer", "softrdp"), "dx11"))
         s->renderer = RENDERER_DX11;
 #endif
+
+#endif
+    v = value(env, "wtfn64_angrylion_threads", "6");
+    s->threads = strcmp(v, "auto") == 0 ? 0 : (unsigned)atoi(v);
+    if (strcmp(v, "auto") != 0 && (s->threads < 2 || s->threads > 10 || s->threads % 2))
+        s->threads = 6;
+    s->performance_only = toggle(env, "wtfn64_performance_cores", true);
+    s->upscale = s->renderer == RENDERER_SOFTRDP ?
+        scale(env, "wtfn64_angrylion_upscale", 4) : scale(env, "wtfn64_parallel_upscale", 8);
+    if (renderer_native_gpu(s->renderer))
+        s->upscale = scale(env, "wtfn64_glrdp_upscale", 8);
+    if(renderer_legacy_gpu(s->renderer))s->upscale=scale(env,"wtfn64_legacy_upscale",4);
+    renderer_read_live_options(env);
+    s->ss_readbacks = toggle(env, "wtfn64_ss_readbacks", false);
+    s->ss_dither = toggle(env, "wtfn64_ss_dither", false);
+}
+
+void renderer_read_live_options(retro_environment_t env)
+{
+    struct renderer_settings *s = &renderer_settings;
+#ifdef HAVE_GLRDP
+    const char *v;
     s->glrdp = glrdp_default_config();
+    s->glrdp.specialize_shaders = toggle(env, "wtfn64_glrdp_shader_specialization", false);
     s->glrdp.blending = !strcmp(value(env, "wtfn64_glrdp_blending", "accurate"), "fast") ?
         GLRDP_ARITHMETIC_FAST : GLRDP_ARITHMETIC_ACCURATE;
     s->glrdp.combiner = !strcmp(value(env, "wtfn64_glrdp_combiner", "accurate"), "fast") ?
@@ -309,7 +332,6 @@ void renderer_read_options(retro_environment_t env)
     s->glrdp.texture_filter = strcmp(value(env, "wtfn64_glrdp_texture_filter", "native"), "point") != 0;
     s->glrdp.accurate_texcoords = strcmp(value(env, "wtfn64_glrdp_texcoords", "accurate"), "fast") != 0;
     s->glrdp.accurate_shading = strcmp(value(env, "wtfn64_glrdp_shading", "accurate"), "fast") != 0;
-    s->glrdp.specialize_shaders = toggle(env, "wtfn64_glrdp_shader_specialization", false);
     s->glrdp.texture_lod = toggle(env, "wtfn64_glrdp_texture_lod", true);
     s->glrdp.color_dither = toggle(env, "wtfn64_glrdp_color_dither", true);
     s->glrdp.alpha_dither = toggle(env, "wtfn64_glrdp_alpha_dither", true);
@@ -326,25 +348,13 @@ void renderer_read_options(retro_environment_t env)
     s->glrdp.vi_gamma = toggle(env, "wtfn64_glrdp_vi_gamma", true);
     s->glrdp.vi_gamma_dither = toggle(env, "wtfn64_glrdp_vi_gamma_dither", true);
 #endif
-    v = value(env, "wtfn64_angrylion_threads", "6");
-    s->threads = strcmp(v, "auto") == 0 ? 0 : (unsigned)atoi(v);
-    if (strcmp(v, "auto") != 0 && (s->threads < 2 || s->threads > 10 || s->threads % 2))
-        s->threads = 6;
-    s->performance_only = toggle(env, "wtfn64_performance_cores", true);
-    s->upscale = s->renderer == RENDERER_SOFTRDP ?
-        scale(env, "wtfn64_angrylion_upscale", 4) : scale(env, "wtfn64_parallel_upscale", 8);
-    if (renderer_native_gpu(s->renderer))
-        s->upscale = scale(env, "wtfn64_glrdp_upscale", 8);
-    if(renderer_legacy_gpu(s->renderer))s->upscale=scale(env,"wtfn64_legacy_upscale",4);
+    s->downscale = (unsigned)atoi(value(env, "wtfn64_parallel_downscale", "0"));
+    if (s->downscale > 3) s->downscale = 0;
+    s->native_lod = toggle(env, "wtfn64_native_lod", true);
+    s->native_tex_rect = toggle(env, "wtfn64_native_tex_rect", true);
     s->vi_filter = toggle(env, "wtfn64_vi_filter", true);
     s->dedither = toggle(env, "wtfn64_vi_dedither", true);
     s->blur = toggle(env, "wtfn64_vi_blur", true);
     s->overscan = toggle(env, "wtfn64_crop_overscan", false);
     s->bob = strcmp(value(env, "wtfn64_angrylion_deinterlace", "weave"), "bob") == 0;
-    s->downscale = (unsigned)atoi(value(env, "wtfn64_parallel_downscale", "0"));
-    if (s->downscale > 3) s->downscale = 0;
-    s->native_lod = toggle(env, "wtfn64_native_lod", true);
-    s->native_tex_rect = toggle(env, "wtfn64_native_tex_rect", true);
-    s->ss_readbacks = toggle(env, "wtfn64_ss_readbacks", false);
-    s->ss_dither = toggle(env, "wtfn64_ss_dither", false);
 }

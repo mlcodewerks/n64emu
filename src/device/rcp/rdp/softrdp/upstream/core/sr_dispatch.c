@@ -29,6 +29,7 @@
     sr_context *sr_create##suffix(const sr_host_interface *host);              \
     void sr_destroy##suffix(sr_context *ctx);                                  \
     void sr_set_host##suffix(sr_context *ctx, const sr_host_interface *host);  \
+    void sr_set_vi_filters##suffix(sr_context *ctx, bool, bool, bool);          \
     sr_result sr_process_rdp_list##suffix(sr_context *ctx);                    \
     void sr_flush##suffix(sr_context *ctx);                                    \
     uint32_t sr_debug_read_sample##suffix(const sr_context *ctx,               \
@@ -53,6 +54,7 @@ typedef struct sr_core_api {
     sr_context *(*create)(const sr_host_interface *);
     void (*destroy)(sr_context *);
     void (*set_host)(sr_context *, const sr_host_interface *);
+    void (*set_vi_filters)(sr_context *, bool, bool, bool);
     sr_result (*process_rdp_list)(sr_context *);
     void (*flush)(sr_context *);
     uint32_t (*debug_read_sample)(const sr_context *, uint32_t, uint32_t);
@@ -68,6 +70,7 @@ typedef struct sr_core_api {
 
 #define SR_CORE_TABLE(suffix) {                                                \
     sr_create##suffix, sr_destroy##suffix, sr_set_host##suffix,                \
+    sr_set_vi_filters##suffix,                                                \
     sr_process_rdp_list##suffix, sr_flush##suffix,                             \
     sr_debug_read_sample##suffix, sr_get_vi_frame_info##suffix,                \
     sr_update_screen##suffix, sr_get_debug_stats##suffix,                      \
@@ -127,6 +130,12 @@ void sr_set_host(sr_context *ctx, const sr_host_interface *host)
     sr_context_wrapper *wrapper = (sr_context_wrapper *)ctx;
     if (!wrapper) return;
     wrapper->api->set_host(wrapper->inner, host);
+}
+
+void sr_set_vi_filters(sr_context *ctx, bool filter, bool dedither, bool divot)
+{
+    sr_context_wrapper *wrapper = (sr_context_wrapper *)ctx;
+    if (wrapper) wrapper->api->set_vi_filters(wrapper->inner, filter, dedither, divot);
 }
 
 sr_result sr_process_rdp_list(sr_context *ctx)

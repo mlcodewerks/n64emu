@@ -209,6 +209,7 @@ void glrdp_begin_frame() {
         if (glrdp_dx11) glrdp_dx11_prepare_frame();
 #endif
         if (!frame_guard) frame_guard = std::make_unique<GLStateGuard>();
+        if (renderer) renderer->set_rendering_config(renderer_settings.glrdp);
     } catch (const std::exception &e) {
         error("frame state", e.what());
     }

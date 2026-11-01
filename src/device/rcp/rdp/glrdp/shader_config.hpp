@@ -4,7 +4,7 @@
 #include <string>
 
 // Only draw-shader settings belong here. VI choices do not invalidate a
-// specialization. The generic program handles later configuration changes.
+// specialization. Draw-setting changes rebuild the active specialization.
 inline std::uint32_t glrdp_shader_config_key(const GLRDPConfig &c) {
     return unsigned(c.coverage) | (unsigned(c.blending) << 2) |
            (unsigned(c.combiner) << 3) | (unsigned(c.texture_filter) << 4) |

@@ -27,13 +27,7 @@ class RDPRenderer {
         output_fbo_ = fbo;
     }
     void set_internal_resolution_scale(int scale);
-    void set_rendering_config(GLRDPConfig config) {
-        flush();
-        config_ = glrdp_validate_config(config);
-        program_ = specialized_program_ && config_.specialize_shaders &&
-                   glrdp_shader_config_key(config_) == specialized_key_
-                       ? specialized_program_ : generic_program_;
-    }
+    void set_rendering_config(GLRDPConfig config);
     void flush();
     struct SubmissionStats {
         std::uint64_t primitives = 0, draws = 0, batches = 0, batched_primitives = 0;
@@ -128,6 +122,7 @@ class RDPRenderer {
     }
     GLint uniform(GLuint program, const char *name);
     void initialize_samplers(GLuint program);
+    void specialize_programs();
     std::unordered_map<GLuint, std::unordered_map<std::string, GLint>> uniforms_;
     std::unordered_map<GLuint, std::array<std::uint64_t, 9>> combiner_values_;
     std::unordered_map<GLuint, std::array<std::uint64_t, 9>> configuration_values_;
@@ -150,6 +145,7 @@ class RDPRenderer {
     GLuint generic_program_ = 0, specialized_program_ = 0;
     GLuint ordered_generic_program_ = 0, ordered_specialized_program_ = 0;
     std::uint32_t specialized_key_ = 0;
+    std::string specialization_vertex_, specialization_fragment_;
     GLuint program_ = 0, present_program_ = 0, final_present_program_ = 0, vao_ = 0, vbo_ = 0;
     GLuint image_fbo_ = 0, default_depth_image_ = 0;
     int image_width_ = 0, image_height_ = 0;

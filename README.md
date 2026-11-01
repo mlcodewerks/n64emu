@@ -32,11 +32,11 @@ Many bits of info was gleaned from CEN64, Simple64, Ares and MAME. \
 Many thanks to the authors of these emulators. \
 Thanks to [LongplayArchive](https://www.youtube.com/user/Longplayarchive) for the useful NTSC N64 hardware reference behaviour recordings.
 
-The **HLE level** option selects **Off** or **RSP HLE** (default), independently of CPU cache timing. 
+The **HLE level** option selects **Off** (default) or **RSP HLE**, independently of CPU cache timing.
 Off executes all RSP programs natively in cycle-based LLE; RSP HLE accelerates supported graphics, audio and task microcode 
 with RSP LLE fallback for those ucodes not supported.
 
-**CPU cache timing** selects **Off** (only counts base CPU cycles), **Fast** (base cycles + tags-only cache emulation for performance), or **Accurate** (base cycles + complete cache/pipeline emulation)
+**CPU cache timing** selects **Off** (only counts base CPU cycles), **Fast** (base cycles + tags-only cache emulation for performance), or **Accurate** (default; base cycles + complete cache/pipeline emulation)
 
 This emulator fork is based on  **very** extensive tests such as:
 - Lemmy's nemu64-test

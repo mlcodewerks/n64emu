@@ -166,8 +166,9 @@ static bool vk_publish_scanout(unsigned &out_width, unsigned &out_height)
 	opts.crop_rect.enable = renderer_settings.overscan;
 	opts.vi.aa = renderer_settings.vi_filter;
 	opts.vi.scale = renderer_settings.vi_filter;
-	opts.vi.dither_filter = renderer_settings.dedither;
-	opts.vi.divot_filter = renderer_settings.blur;
+	opts.vi.dither_filter = renderer_settings.vi_filter && renderer_settings.dedither;
+	opts.vi.divot_filter = renderer_settings.vi_filter && renderer_settings.blur;
+	opts.vi.gamma_dither = renderer_settings.vi_filter;
 	opts.downscale_steps = renderer_settings.downscale;
 
 	image = frontend->scanout(opts);
@@ -230,7 +231,11 @@ void vk_rasterize()
 	if (vk_hw && vk_hw->wait_sync_index)
 		vk_hw->wait_sync_index(vk_hw->handle);
 
-	frontend->set_vi_register(RDP::VIRegister::Control, *GET_GFX_INFO(VI_STATUS_REG));
+	/* Gamma has no ScanoutOptions switch. Override the latched copy only. */
+	uint32_t vi_control = *GET_GFX_INFO(VI_STATUS_REG);
+	if (!renderer_settings.vi_filter)
+		vi_control &= ~((1u << 2) | (1u << 3));
+	frontend->set_vi_register(RDP::VIRegister::Control, vi_control);
 	frontend->set_vi_register(RDP::VIRegister::Origin, *GET_GFX_INFO(VI_ORIGIN_REG));
 	frontend->set_vi_register(RDP::VIRegister::Width, *GET_GFX_INFO(VI_WIDTH_REG));
 	frontend->set_vi_register(RDP::VIRegister::Intr, *GET_GFX_INFO(VI_INTR_REG));
@@ -351,6 +356,12 @@ void vk_destroy()
 		return;
 
 	running = false;
+	if (device)
+	{
+		if (frontend)
+			frontend->idle();
+		device->wait_idle();
+	}
 	retro_image_handles.clear();
 	retro_images.clear();
 	frontend.reset();
