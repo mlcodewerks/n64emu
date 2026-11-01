@@ -17,19 +17,21 @@ Personal N64 emulator code playset for anything with:
 
 ## How?
 
-Making a garbage fire by hacking on parallel-n64 to see what the heck happens, if any, until almost nothing of the original core remains.
+Making a garbage fire by hacking on parallel-n64 until almost nothing of the original core remains.
 
 This includes:
-- Complete bit-exact HLE with cycle based-timing for **all** commercial game RSP tasks, based on disassembly of the entire NTSC N64 game library's tasks.
-- GL2+GL3.3+GL4/GLES2/GLES3/DX9+DX11 based raster LLE RDP.
+- Complete bit-exact HLE with cycle based-timing for **all** commercial game RSP tasks, based on disassembly of the entire NTSC N64 game library's tasks. Measurements have been done to count how long each RSP tasks takes to execute to fit in with a cycle-based timing system.
+- GL2+GL3.3+GL4/GLES2/GLES3/DX9+DX11 raster-based LLE RDP.
 - Vectorised+threaded LLE RDP (SoftRDP).
 - Compute shader-based LLE RDP (parallel-RDP). 
 - Cycle-based JITs for both RSP and main CPU.
 - Cycle-based timing of all components like all RCP interfaces.
-- RDP timing stall/delay simulation based on countless RDP timing tests and commercial game hardware recordings.
+- RDP timing stall/delay simulation based on countless RDP timing tests.
 - USF playback support.
 
-Many bits of info was gleaned from CEN64, Simple64, Ares and MAME. Many thanks to the authors of these emulators. 
+Many bits of info was gleaned from CEN64, Simple64, Ares and MAME. \
+Many thanks to the authors of these emulators. \
+Thanks to [LongplayArchive](https://www.youtube.com/user/Longplayarchive) for the useful NTSC N64 hardware reference behaviour recordings.
 
 The **HLE level** option selects **Off** or **RSP HLE** (default), independently of CPU cache timing. 
 Off executes all RSP programs natively in cycle-based LLE; RSP HLE accelerates supported graphics, audio and task microcode 
@@ -42,6 +44,4 @@ This emulator fork is based on  **very** extensive tests such as:
 - Wiseguy's cache timing tests
 - Thar0's RDP timing/CPU instruction tests
 - Dillonb's rsp-ruination
-
-[As well as countless tests with reference NTSC N64 hardware game recordings](https://www.youtube.com/playlist?list=PLILjRAt8_i888z_8QISC6EE7fcaqCPnPF) 
 

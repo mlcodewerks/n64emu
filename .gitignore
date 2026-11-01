@@ -22,6 +22,7 @@ benchmarks/*
 !benchmarks/usf_checks.c
 !benchmarks/usf_file_checks.c
 !benchmarks/usf-validation.json
+!benchmarks/usf-playback-validation.json
 !benchmarks/portable_checks.mk
 !benchmarks/libretro_portable_checks.c
 /build/

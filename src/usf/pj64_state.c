@@ -106,13 +106,20 @@ int parallax_usf_load_pj64(const uint8_t *data, size_t size) {
     load_eventqueue_infos(&r->cp0, (const char *)events);
     vi_rebase_timing(&g_dev.vi, vi_timer ? vi_timer : 781250);
     g_dev.ai.regs[AI_STATUS_REG] = 0;
+    /* The saved DMA is discarded; its latched AI interrupt must be too. */
+    g_dev.mi.regs[MI_INTR_REG] &= ~MI_INTR_AI;
     memset(g_dev.ai.fifo, 0, sizeof(g_dev.ai.fifo));
     g_dev.ai.last_read = 0;
     g_dev.ai.samples_format_changed = 1;
     ai_rebase_timing(&g_dev.ai);
     if (parallax_usf_fifo_enabled()) {
         g_dev.ai.regs[AI_STATUS_REG] = 0x40000000;
-        add_interrupt_event(&r->cp0, AI_INT, 1);
+        /* Recreate the ripper's initial busy period without replaying samples. */
+        uint64_t frames = (g_dev.ai.regs[AI_LEN_REG] & 0x3fff8u) / 4;
+        uint64_t clock = g_dev.ai.regs[AI_DACRATE_REG] ? g_dev.vi.clock : 44100;
+        uint64_t clocks = frames * (g_dev.ai.regs[AI_DACRATE_REG] + 1u);
+        unsigned delay = (unsigned)((clocks * 46875000 + clock - 1) / clock);
+        add_interrupt_event(&r->cp0, AI_INT, delay ? delay : 1);
     }
     uint32_t rsp_state[PARALLEL_RSP_STATE_WORDS] = {0};
     rsp_state[0] = g_dev.sp.regs2[SP_PC_REG] & 0xffc;

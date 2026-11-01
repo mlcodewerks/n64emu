@@ -461,8 +461,17 @@ int validate_pi_request(struct pi_controller* pi)
     return 1;
 }
 
-static unsigned int pi_dma_duration(const struct pi_controller* pi, uint32_t address, uint32_t length)
+static unsigned int pi_dma_duration(const struct pi_controller* pi, uint32_t address,
+                                    uint32_t length, int cart_to_dram)
 {
+#ifdef PARALLAX_USF
+    /* Trimmed USFs retain the paths visited with the ripper's PI scheduler. */
+    if (!parallax_usf_compare_enabled() || !parallax_usf_fifo_enabled())
+        return 0;
+    return cart_to_dram && address >= 0x10000000 && address < 0x1fc00000
+        ? length / 8 : 0x1000;
+#else
+    (void)cart_to_dram;
     unsigned domain = address >> 24;
     unsigned base = domain == 5 || (domain >= 8 && domain <= 15)
         ? PI_BSD_DOM2_LAT_REG : PI_BSD_DOM1_LAT_REG;
@@ -484,6 +493,7 @@ static unsigned int pi_dma_duration(const struct pi_controller* pi, uint32_t add
         ((pi->regs[base+1] & 255) + (pi->regs[base+3] & 3) + 2)*bytes/2 +
         buffers*28 + partial;
     return (unsigned int)((clocks*3 + 3)/4);
+#endif
 }
 
 static void dma_pi_read(struct pi_controller* pi)
@@ -509,7 +519,7 @@ static void dma_pi_read(struct pi_controller* pi)
     pre_framebuffer_read(&pi->dp->fb, dram_addr);
 
     length = (length + 1) & ~1u;
-    unsigned int cycles = pi_dma_duration(pi, cart_addr, length);
+    unsigned int cycles = pi_dma_duration(pi, cart_addr, length, 0);
     uint32_t available = dram_addr < pi->ri->rdram->dram_size
         ? (uint32_t)pi->ri->rdram->dram_size - dram_addr : 0;
     if (available > length) available = length;
@@ -531,7 +541,7 @@ static void dma_pi_write(struct pi_controller* pi)
     uint32_t dram_addr = pi->regs[PI_DRAM_ADDR_REG] & 0xfffffe;
     uint32_t length = (pi->regs[PI_WR_LEN_REG] & UINT32_C(0x00ffffff)) + 1;
     uint32_t bus_length = (length + 1) & ~1u;
-    unsigned int cycles = pi_dma_duration(pi, cart_addr, length);
+    unsigned int cycles = pi_dma_duration(pi, cart_addr, length, 1);
     uint8_t* dram = (uint8_t*)pi->ri->rdram->dram;
 
     const struct pi_dma_handler* handler = NULL;
