@@ -943,6 +943,11 @@ Func CPU::get_vector_block(uint32_t instruction)
 {
     unsigned op=instruction&63;
     bool generic=op<0x30 && !quantize_opcode(op);
+#ifdef PARALLAX_RSP_JIT32
+    // IA-32/AAPCS32 leaves specialize the same optimized vector IR for their
+    // smaller register files rather than using the 64-bit leaf argument ABI.
+    generic=false;
+#endif
     uint32_t key=generic?(0x80000000u|op):instruction;
     auto found=vector_blocks.find(key);
     if(found!=vector_blocks.end())return found->second;
@@ -2353,7 +2358,7 @@ ReturnMode CPU::run(uint32_t cycle_limit)
 			*state.cp0.cr[CP0_REGISTER_SP_STATUS] |= SP_STATUS_BROKE | SP_STATUS_HALT;
 			if (*state.cp0.cr[CP0_REGISTER_SP_STATUS] & SP_STATUS_INTR_BREAK)
 				*state.cp0.irq |= 1;
-#ifndef PARALLEL_INTEGRATION
+#if !defined(PARALLEL_INTEGRATION) && !defined(PARALLAX_RSP_TEST_SILENT)
 			print_registers();
 #endif
 			return MODE_BREAK;

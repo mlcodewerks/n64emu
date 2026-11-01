@@ -10,6 +10,10 @@
  */
 static osal_force_inline unsigned int r4300_base_cycles(uint32_t op, uint32_t status)
 {
+#ifdef PARALLAX_USF
+    (void)op; (void)status;
+    return 1;
+#else
     unsigned int fmt = (op >> 21) & 31;
     unsigned int fn = op & 63;
     /* MTC0/DMTC0 occupy two CPU clocks (Nemu's hardware timing table). */
@@ -41,6 +45,7 @@ static osal_force_inline unsigned int r4300_base_cycles(uint32_t op, uint32_t st
         }
     }
     return 1;
+#endif
 }
 
 static osal_force_inline void cp0_step_cycles(struct cp0* cp0, unsigned int cycles)
@@ -70,11 +75,19 @@ static osal_force_inline uint32_t r4300_read_count(const struct r4300_core* r)
 
 static osal_force_inline unsigned int r4300_issue_reservation(unsigned int compatibility)
 {
+#ifdef PARALLAX_USF
+    /* The USF ripper advanced COUNT by two per instruction: four CPU clocks,
+     * including the one-clock baseline. Use the same clock in native regions,
+     * precise side exits, delay slots and polling shortcuts. */
+    (void)compatibility;
+    return 3;
+#else
     /* The native per-cycle model already includes issue in its base cost.
      * Cache storage does not determine the issue rate: tags-only timing can
      * use the same interlocks. Only explicit compatibility profiles or
      * untimed CPU execution retain the compatibility issue envelope. */
     return compatibility != 0;
+#endif
 }
 
 static osal_force_inline unsigned int r4300_pipeline_issue_cycles(

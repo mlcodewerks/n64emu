@@ -12,6 +12,19 @@ ifeq ($(WITH_DYNAREC),x86_64)
     PARALLAXJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
     PARALLAXJIT_SOURCE = $(PARALLAXJIT_DIR)/parallaxjit_x64.cpp
     INCFLAGS += -I$(ROOT_DIR)/deps/xbyak
+else ifeq ($(WITH_DYNAREC),x86)
+    DYNAREC_USED := 1
+    COREFLAGS += -DHAVE_PARALLAXJIT
+    PARALLAXJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
+    PARALLAXJIT_SOURCE = $(PARALLAXJIT_DIR)/parallaxjit_x86.cpp
+    INCFLAGS += -I$(ROOT_DIR)/deps/xbyak
+else ifeq ($(WITH_DYNAREC),arm)
+ifneq (,$(filter -DOS_LINUX,$(COREFLAGS)))
+    DYNAREC_USED := 1
+    COREFLAGS += -DHAVE_PARALLAXJIT
+    PARALLAXJIT_DIR = $(CORE_DIR)/src/device/r4300/jit
+    PARALLAXJIT_SOURCE = $(PARALLAXJIT_DIR)/parallaxjit_arm32.cpp
+endif
 else ifeq ($(WITH_DYNAREC),aarch64)
 ifneq (,$(filter -DOS_LINUX,$(COREFLAGS)))
     DYNAREC_USED := 1
@@ -68,9 +81,6 @@ SOURCES_C = \
 	$(CORE_DIR)/src/device/r4300/r4300_core.c \
 	$(CORE_DIR)/src/device/r4300/tlb.c \
 	$(CORE_DIR)/src/device/rcp/rcp.c \
-	$(CORE_DIR)/src/device/rcp/rdp/fb.c \
-	$(CORE_DIR)/src/device/rcp/rdp/rdp_core.c \
-	$(CORE_DIR)/src/device/rcp/rdp/rdp_hle_fifo.c \
 	$(CORE_DIR)/src/device/rcp/rsp/rsp_core.c \
 	$(CORE_DIR)/src/device/rcp/rsp/rsp_dma_memory.c \
 	$(CORE_DIR)/src/device/rdram.c \
@@ -86,7 +96,14 @@ RSP_HLE_DIR = $(CORE_DIR)/src/device/rcp/rsp/hle
 SOURCES_C += $(wildcard $(RSP_HLE_DIR)/*.c) \
              $(CORE_DIR)/src/device/rcp/rsp/optional_rsp.c
 SOURCES_C += $(LIBRETRO_COMM_DIR)/encodings/encoding_crc32.c
-SOURCES_C += $(CORE_DIR)/src/renderer_options.c \
+SOURCES_C += $(CORE_DIR)/src/renderer_options.c
+ifeq ($(USF),1)
+# Audio decoders contain no RDP renderer, display-list walker, framebuffer
+# protection, presentation code, renderer worker pool or image/video decoder.
+SOURCES_C := $(filter-out $(RSP_HLE_DIR)/rdp_emit%.c $(addprefix $(RSP_HLE_DIR)/,jpeg.c hvqm.c re2.c),$(SOURCES_C))
+SOURCES_C += $(CORE_DIR)/src/usf/rdp_stubs.c
+else
+SOURCES_C += $(addprefix $(CORE_DIR)/src/device/rcp/rdp/,fb.c rdp_core.c rdp_hle_fifo.c) \
              $(CORE_DIR)/src/device/rcp/rdp/performance_cores.c
 SOURCES_C += $(SOFTRDP_DIR)/worker_pool.c \
              $(SOFTRDP_DIR)/presenter.c \
@@ -95,6 +112,7 @@ include $(CORE_DIR)/src/device/rcp/rdp/softrdp/softrdp.mk
 # Keep the software rasterizer optimized in debug builds.
 $(SOFTRDP_DIR)/worker_pool.o: CFLAGS += -O3
 $(SOFTRDP_DIR)/worker_pool.o: $(CORE_DIR)/src/device/rcp/rdp/performance_cores.h
+endif
 $(CORE_DIR)/src/libretro.o: $(CORE_DIR)/src/renderer_options.h
 $(CORE_DIR)/src/renderer_options.o: $(CORE_DIR)/src/renderer_options.h
 $(CORE_DIR)/src/device/rcp/rdp/performance_cores.o: $(CORE_DIR)/src/device/rcp/rdp/performance_cores.h
@@ -201,12 +219,6 @@ SOURCES_C += $(ROOT_DIR)/src/libretro.c \
 				   $(RSPDIR_PARALLEL)/jit_allocator.cpp \
 				   $(wildcard $(RSPDIR_PARALLEL)/rsp/*.cpp) \
 				   $(wildcard $(RSPDIR_PARALLEL)/arch/$(PARALLEL_RSP_ARCH)/rsp/*.cpp)
-ifneq ($(DEBUG_JIT),)
-	CXXFLAGS += -DDEBUG_JIT
-	SOURCES_CXX += $(RSPDIR_PARALLEL)/debug_jit.cpp \
-				   $(RSPDIR_PARALLEL)/rsp.cpp
-	LDFLAGS += -ldl
-else
 ifeq ($(RSP_BACKEND),interpreter)
 	SOURCES_CXX += $(RSPDIR_PARALLEL)/rsp_interpreter.cpp
 	COREFLAGS += -DPARALLAX_RSP_INTERPRETER
@@ -217,7 +229,6 @@ ifneq (,$(filter aarch64 arm64,$(ARCH)))
 	SOURCES_CXX += $(filter-out $(PARALLAXJIT_SOURCE),$(ROOT_DIR)/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp)
 else
 	INCFLAGS += -I$(ROOT_DIR)/deps/xbyak
-endif
 endif
 endif
 

@@ -117,6 +117,14 @@ src/device/rcp/rdp/softrdp/.build-config
 src/device/rcp/rdp/softrdp/build/
 src/device/rcp/rsp/p_rsp/simd-build/
 
+# 32-bit native emitter differential checks; keep generated binaries local.
+!benchmarks/jit32/
+benchmarks/jit32/*
+!benchmarks/jit32/*.cpp
+!benchmarks/jit32/*.py
+!benchmarks/jit32/*.mk
+!benchmarks/jit32/*.md
+
 # Backend-removal validation; preserve backups and binaries locally only.
 !benchmarks/backend-removal/
 benchmarks/backend-removal/*

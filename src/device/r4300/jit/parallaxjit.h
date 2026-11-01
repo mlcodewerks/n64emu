@@ -2,7 +2,11 @@
 #ifndef PARALLAX_PARALLAXJIT_H
 #define PARALLAX_PARALLAXJIT_H
 #ifndef PARALLAXJIT_BACKEND_NAME
-#if defined(__aarch64__)
+#if defined(__i386__) || defined(_M_IX86)
+#define PARALLAXJIT_BACKEND_NAME "parallaxjit-x86"
+#elif defined(__arm__)
+#define PARALLAXJIT_BACKEND_NAME "parallaxjit-arm32"
+#elif defined(__aarch64__)
 #define PARALLAXJIT_BACKEND_NAME "parallaxjit-arm64"
 #else
 #define PARALLAXJIT_BACKEND_NAME "parallaxjit-x64"

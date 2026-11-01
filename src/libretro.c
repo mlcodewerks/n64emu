@@ -727,8 +727,10 @@ void retro_run(void)
     else
 #endif
     {
+#ifndef PARALLAX_USF
         extern void softrdp_present(bool new_frame);
         softrdp_present(libretro_swap_buffer);
+#endif
     }
 }
 void retro_reset(void)
@@ -896,6 +898,7 @@ void event_set_gameshark(int active)
 
 
 
+#ifndef PARALLAX_USF
 void renderer_process_display_list(void)
 {
 }
@@ -1065,6 +1068,8 @@ void renderer_framebuffer_read_range(unsigned address, unsigned size) {
     renderer_framebuffer_read(address);
 }
 
+
+#endif /* !PARALLAX_USF: audio builds supply renderer stubs. */
 
 #if defined(PARALLAX_HEADLESS_BENCHMARK)
 /* Sample at the video callback, before the next field changes VI registers. */

@@ -60,6 +60,11 @@ static int64_t ai_count_deadline(const struct ai_controller* ai, int64_t clock)
 
 static void ai_emit_idle(struct ai_controller* ai, int64_t now)
 {
+#ifdef PARALLAX_USF
+    /* A USF stream contains submitted DMA buffers, not DAC idle time. */
+    ai->idle_clock = now;
+    ai->idle_phase = 0;
+#else
     int64_t elapsed = now - ai->idle_clock;
     unsigned divider = ai->regs[AI_DACRATE_REG] + 1u;
     if (elapsed <= 0) return;
@@ -79,6 +84,7 @@ static void ai_emit_idle(struct ai_controller* ai, int64_t now)
 #endif
         ai->iaout->push_idle_samples(ai->aout, frames);
     }
+#endif
 }
 
 static uint32_t get_remaining_dma_length(struct ai_controller* ai)
@@ -138,6 +144,14 @@ static void do_dma(struct ai_controller* ai, struct ai_dma* dma, int64_t start)
     /* schedule end of dma event */
     cp0_update_count(ai->mi->r4300);
     struct cp0* cp0 = &ai->mi->r4300->cp0;
+#ifdef PARALLAX_USF
+    /* Older rips omit the idle-thread context and expect an immediate AI
+     * completion. _enablefifofull opts into the timed, two-entry FIFO. */
+    if (!parallax_usf_fifo_enabled()) {
+        add_interrupt_event_count(cp0, AI_INT, cp0->regs[CP0_COUNT_REG]);
+        return;
+    }
+#endif
     add_interrupt_event_count(cp0, AI_INT, cp0->regs[CP0_COUNT_REG] +
         (uint32_t)(ai_count_deadline(ai, start + dma->duration) - cp0->count_clock));
 #ifdef AI_TIMING_OBSERVE
@@ -780,6 +794,10 @@ static void copy_pif_rdram(struct si_controller* si)
 
 static unsigned int si_duration(struct si_controller* si, int read)
 {
+#ifdef PARALLAX_USF
+    (void)si; (void)read;
+    return parallax_usf_compare_enabled() && parallax_usf_fifo_enabled() ? 0x900 : 0;
+#else
     if (si->dma_duration) return si->dma_duration; 
     unsigned clocks = read ? 13600 : 4065;
     if (read) {
@@ -798,6 +816,7 @@ static unsigned int si_duration(struct si_controller* si, int read)
         }
     }
     return (clocks*3 + 3)/4;
+#endif
 }
 
 static void dma_si_write(struct si_controller* si)

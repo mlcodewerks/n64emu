@@ -74,6 +74,10 @@ static int fpu_output(struct r4300_core* cpu, uint64_t* bits, int single)
  * ordinary execution latency. Classify raw bits without host FP side effects. */
 static unsigned fpu_extra_cycles(struct r4300_core *cpu,uint32_t op,uint64_t result,int have_result)
 {
+#ifdef PARALLAX_USF
+    (void)cpu; (void)op; (void)result; (void)have_result;
+    return 0;
+#else
     unsigned fmt=RS_OF(op),fn=op&63;
     unsigned extra=r4300_base_cycles(op,cpu->cp0.regs[CP0_STATUS_REG])-1;
     if(cpu->compat_issue_clock)return extra;
@@ -103,6 +107,7 @@ static unsigned fpu_extra_cycles(struct r4300_core *cpu,uint32_t op,uint64_t res
     if(fn==2 && have_result && !(result&exponent) && !(cpu->cp1.fcr31&0x180))return 1;
     if(fn==4 && (sa || (a&(single?UINT64_C(0x80000000):UINT64_C(0x8000000000000000)))))return 1;
     return extra;
+#endif
 }
 static int fpu_prepare_unimplemented(struct r4300_core *cpu,unsigned extra)
 {

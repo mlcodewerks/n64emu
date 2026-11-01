@@ -88,7 +88,7 @@ static void emit_region_guard(const struct parallaxjit_config* config, unsigned 
      * Only the first fetch can refill the instruction micro-TLB. Reserve one
      * interlock/compatibility clock per instruction, plus one for restored
      * simultaneous LDI/DCB history at entry. */
-    unsigned compatibility = !config->cache_timing && config->compat_issue_clock ? count : 0;
+    unsigned compatibility = !config->cache_timing ? count * r4300_issue_reservation(config->compat_issue_clock) : 0;
     unsigned cached_bound = base + compatibility, uncached_bound = base + compatibility;
     if (config->cache_timing && count) {
         uint32_t pc = config->virtual_pc + start * 4;

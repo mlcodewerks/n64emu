@@ -201,7 +201,7 @@ static void scalar_peepholes()
     for(unsigned op=0;op<7;op++)for(auto imm:immediates)for(unsigned alias=0;alias<3;alias++) {
         unsigned d=alias==0?JIT_R0:alias==1?JIT_R1:JIT_V(3);
         Emitter emit;emit.frame(256);emit.getarg(JIT_V0);
-        emit.ldxi(JIT_R0,JIT_V0,0);emit.ldxi(JIT_R1,JIT_V0,8);
+        emit.ldxi(JIT_R0,JIT_V0,0);emit.ldxi(JIT_R1,JIT_V0,sizeof(HostWord));
         switch(op) {
         case 0:emit.addi(d,JIT_R0,imm);break;
         case 1:emit.andi(d,JIT_R0,imm);break;
@@ -216,16 +216,16 @@ static void scalar_peepholes()
         emit.retr(d);HostWord size;emit.get_code(&size);
         void *code=memory.allocate_code(size);require(code!=nullptr,"peephole allocation");
         emit.set_code(code,size);emit.emit();require(Allocator::commit_code(code,size),"peephole executable memory");
-        auto function=reinterpret_cast<uint64_t (*)(const uint64_t*)>(code);
+        auto function=reinterpret_cast<HostUWord (*)(const HostUWord*)>(code);
         for(unsigned sample=0;sample<128;sample++) {
-            uint64_t args[]={sample==0?0:sample==1?~uint64_t(0):sample==2?uint64_t(1)<<63:random(),random()};
-            uint64_t value=args[0],expected=0,immediate=uint64_t(imm);
+            HostUWord args[]={sample==0?HostUWord(0):sample==1?~HostUWord(0):sample==2?HostUWord(1)<<(sizeof(HostWord)*8-1):HostUWord(random()),HostUWord(random())};
+            HostUWord value=args[0],expected=0,immediate=HostUWord(imm);
             switch(op) {
             case 0:expected=value+immediate;break;case 1:expected=value&immediate;break;
             case 2:expected=value|immediate;break;case 3:expected=value^immediate;break;
-            case 4:expected=value>>63;break;case 5:expected=value==0;break;case 6:expected=value!=0;break;
+            case 4:expected=value>>(sizeof(HostWord)*8-1);break;case 5:expected=value==0;break;case 6:expected=value!=0;break;
             }
-            require(function(args)==expected,"64-bit peephole semantics or register aliasing");
+            require(function(args)==expected,"host-word peephole semantics or register aliasing");
         }
     }
     std::puts("21,504 full-width scalar peephole cases passed.");
@@ -318,6 +318,10 @@ int main()
 #ifndef PARALLAX_RSP_INTERPRETER
     call_abi(); scalar_peepholes();
 #endif
+#ifdef PARALLAX_RSP_EMITTER_ONLY
+    std::puts("RSP emitter ABI and scalar checks passed.");
+#else
     scalar_registers(); branches_and_slices(); helpers_and_invalidation();optimizer_boundaries();vector_quad_memory();vector_small_memory();
     std::puts("RSP scalar, register-cache, branch, helper, timeslice and invalidation checks passed.");
+#endif
 }

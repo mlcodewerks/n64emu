@@ -89,13 +89,8 @@ bool environment(unsigned command, void *data) {
         else if (!std::strcmp(v->key, "wtfn64_hle"))
             v->value = active && active->hle ? "RSP HLE" : "Off";
         else if (!std::strcmp(v->key, "wtfn64_timing")) {
-#ifdef PARALLAX_CPU_INTERPRETER
-            // Base CPU cycles match lazyusf2 without the portable cache-tag cost.
-            // AI/DAC and interrupt scheduling retain their normal timing.
+            // USF snapshots require the ripper's legacy instruction clock.
             v->value = "off";
-#else
-            v->value = "fast";
-#endif
         }
         else if (!std::strcmp(v->key, "wtfn64_angrylion_threads"))
             v->value = "1";

@@ -272,6 +272,11 @@ void renderer_read_options(retro_environment_t env)
     s->rsp_hle = s->hle != HLE_OFF;
     s->lle_graphics = s->lle_audio = !s->rsp_hle;
     s->component_timing = true;
+#ifdef PARALLAX_USF
+    /* USF snapshots were captured with the ripper's fixed task deadlines.
+     * Work-derived SP timing can dispatch threads omitted from the rip. */
+    s->component_timing = false;
+#endif
 #ifdef HAVE_PARALLEL_RDP
     if (strcmp(value(env, "wtfn64_renderer", "softrdp"), "parallel-rdp") == 0)
         s->renderer = RENDERER_PARALLEL;

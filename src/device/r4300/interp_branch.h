@@ -16,7 +16,7 @@ static osal_force_inline int interp_direct_nop_delay(struct r4300_core* r)
     if (*(uint32_t*)((uint8_t*)r->mem->base + (pc & UINT32_C(0x1ffffffc))) != 0)
         return 0;
     /* The delay-slot interrupt remains deferred until the branch resolves. */
-    cp0_step_cycles(&r->cp0, 1 + (r->compat_issue_clock != 0));
+    cp0_step_cycles(&r->cp0, 1 + r4300_issue_reservation(r->compat_issue_clock));
     ++r->retired_ops;
     r->instruction_pc.addr = pc + 4;
     r->regs[0] = 0;
@@ -81,7 +81,7 @@ static osal_force_inline void interp_idle_advance(struct r4300_core* r)
     cp0_update_count(r);
     if (r->cp0.cycle_count < 0) {
         uint64_t clocks=(uint64_t)(-r->cp0.cycle_count)*2-r->cp0.count_phase;
-        r->retired_ops+=clocks/(1+(r->compat_issue_clock!=0));
+        r->retired_ops+=clocks/(1+r4300_issue_reservation(r->compat_issue_clock));
         r->cp0.regs[CP0_COUNT_REG] += (uint32_t)(-r->cp0.cycle_count);
         r->cp0.count_clock += -r->cp0.cycle_count;
         r->cp0.count_phase = 0;

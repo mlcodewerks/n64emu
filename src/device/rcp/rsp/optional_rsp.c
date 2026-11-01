@@ -181,6 +181,10 @@ void optional_rsp_init(rsp_memory rsp_info)
 
 static int graphics_supported_memory(const uint32_t *task, unsigned char *ram, unsigned char *dmem)
 {
+#ifdef PARALLAX_USF
+    (void)task; (void)ram; (void)dmem;
+    return 0;
+#else
     unsigned int sum = 0, i;
     graphics_checksum=0;
 
@@ -226,6 +230,7 @@ static int graphics_supported_memory(const uint32_t *task, unsigned char *ram, u
         sum == 0x25c16 || sum == 0x25c53)
         return !(task[1] & 1) || hle_stream_can_resume(sum);
     return rdp_emit_hle_supported(ram, 0x800000, task[4], task[6], task[7]);
+#endif
 }
 static int graphics_supported(const uint32_t *task)
 { return graphics_supported_memory(task, info.RDRAM, info.DMEM); }
@@ -321,6 +326,17 @@ unsigned int optional_rsp_execute(unsigned int cycles)
 {
     native_dispatch = 0;
     const uint32_t *task = (const uint32_t *)(info.DMEM + 0xfc0);
+#ifdef PARALLAX_USF
+    /* Some rips submit a display list during startup. Acknowledge the task
+     * and its DP completion without running a graphics microcode or renderer,
+     * including when the caller requests LLE audio. */
+    if (task[0] == 1u && task[3] <= 0x1000u) {
+        *info.SP_STATUS_REG |= SP_STATUS_HALT | SP_STATUS_BROKE | SP_STATUS_SIG2;
+        if (*info.SP_STATUS_REG & SP_STATUS_INTR_BREAK) *info.MI_INTR_REG |= MI_INTR_SP;
+        signal_rcp_interrupt(&g_dev.mi, MI_INTR_DP);
+        return 0;
+    }
+#endif
     enum hle_task_kind kind;
     /* Fresh launches and OS yield relaunches still validate their ucode.
      * Only the unfinished task that already owns the SP may reuse it. */

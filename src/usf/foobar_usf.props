@@ -23,7 +23,7 @@
   </ItemGroup>
   <Target Name="CheckParallaxUSF" BeforeTargets="PrepareForBuild" Condition="'$(UseParallaxUSF)' == 'true'">
     <Error Condition="!Exists('$(ParallaxUSFDirectory)\parallax_usf.lib') or !Exists('$(ParallaxUSFDirectory)\parallax_usf.dll')"
-           Text="Build the $(Platform) Parallax USF library into $(ParallaxUSFDirectory), or set UseParallaxUSF=false to build lazyusf2." />
+           Text="Build the $(Platform) Parallax USF DLL, then run tools/build_usf_import_library.ps1 -Architecture $(Platform) -BuildDirectory &quot;$(ParallaxUSFDirectory)&quot; to generate its MSVC import library, or set UseParallaxUSF=false to build lazyusf2." />
   </Target>
   <Target Name="CopyParallaxUSF" AfterTargets="Build" Condition="'$(UseParallaxUSF)' == 'true'">
     <Copy SourceFiles="$(ParallaxUSFDirectory)\parallax_usf.dll" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />

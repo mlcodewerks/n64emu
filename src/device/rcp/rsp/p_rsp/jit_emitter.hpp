@@ -2,6 +2,10 @@
 // block boundaries and delay slots; this layer owns SIMD allocation and the ABI.
 #ifndef RSP_JIT_EMITTER_HPP
 #define RSP_JIT_EMITTER_HPP
+#if defined(__i386__) || defined(_M_IX86) || defined(__arm__) || defined(PARALLAX_JIT32_CROSS_ARM)
+#define PARALLAX_RSP_JIT32 1
+#include "jit_emitter32.hpp"
+#else
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -597,4 +601,5 @@ public:
 #endif
 };
 } }
+#endif
 #endif
