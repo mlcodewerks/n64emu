@@ -260,6 +260,51 @@ int main(int argc, char **argv) {
         }
         free(regression);
     }
+    /* Legacy USF floating point keeps subnormal envelopes alive. Verify raw
+     * results before submitting PCM, including inexact underflow and integer
+     * conversions. A hardware unimplemented-operation trap must not run. */
+    const struct {
+        unsigned op, move;
+        uint64_t a, b, result;
+    } gradual_underflow[] = {
+        {0x46020102, 0x440f2000, 0x00400000, 0x40000000, 0x00800000}, /* MUL.S */
+        {0x46020102, 0x440f2000, 0x00800000, 0x3f000000, 0x00400000},
+        {0x46020102, 0x440f2000, 0x00800000, 0x3eaaaaab, 0x002aaaab},
+        {0x46020102, 0x440f2000, 0x00000001, 0x3f000000, 0},
+        {0x46220102, 0x442f2000, UINT64_C(0x0008000000000000), UINT64_C(0x4000000000000000), UINT64_C(0x0010000000000000)}, /* MUL.D */
+        {0x46220102, 0x442f2000, UINT64_C(0x0010000000000000), UINT64_C(0x3fe0000000000000), UINT64_C(0x0008000000000000)},
+        {0x4600010d, 0x440f2000, 0x00400000, 0, 0}, /* TRUNC.W.S */
+        {0x4620010d, 0x440f2000, UINT64_C(0x0008000000000000), 0, 0}, /* TRUNC.W.D */
+        {0x46000121, 0x442f2000, 0x00400000, 0, UINT64_C(0x3800000000000000)}, /* CVT.D.S */
+        {0x46200120, 0x440f2000, UINT64_C(0x0008000000000000), 0, 0}, /* CVT.S.D */
+    };
+    for (unsigned test = 0; test < sizeof(gradual_underflow)/sizeof(gradual_underflow[0]); ++test) {
+        unsigned char *regression = state_image(0, 0x400000);
+        CHECK(regression);
+        const unsigned prefix[] = {
+            gradual_underflow[test].op, gradual_underflow[test].move,
+            0x11ee0004, 0, 0x3c0d8000, 0x340f03e7, 0xadaf1000
+        };
+        memmove(regression + 0x75c + sizeof(prefix), regression + 0x75c, 15*4);
+        for (unsigned i = 0; i < sizeof(prefix)/4; ++i)
+            put32(regression + 0x75c + i*4, prefix[i]);
+        put32(regression + 0x75c + sizeof(prefix) + 13*4, 0x08000006 + sizeof(prefix)/4);
+        put32(regression + 80 + 14*8, (unsigned)gradual_underflow[test].result);
+        put32(regression + 80 + 14*8 + 4, (unsigned)(gradual_underflow[test].result >> 32));
+        put32(regression + 336, (unsigned)gradual_underflow[test].a);
+        put32(regression + 340, (unsigned)(gradual_underflow[test].a >> 32));
+        put32(regression + 336 + 2*8, (unsigned)gradual_underflow[test].b);
+        put32(regression + 340 + 2*8, (unsigned)(gradual_underflow[test].b >> 32));
+        for (int flush = 0; flush <= 1; ++flush) {
+            put32(regression + 844, flush ? 0x01000800 : 0); /* FCR31, including the rip's FS/invalid-enable bits */
+            p_usf_upload_save_state(c, regression, 0x40275c);
+            const char *fp_error = p_usf_render(c, audio, 1, &rate);
+            if (fp_error || audio[0] != 100 || audio[1] != -100)
+                fprintf(stderr, "USF gradual-underflow regression %u (FS %d): %s\n", test, flush, fp_error ? fp_error : "PCM mismatch");
+            CHECK(!fp_error && audio[0] == 100 && audio[1] == -100);
+        }
+        free(regression);
+    }
     p_usf_shutdown(c);
     free(c);
     free(irq_image);
@@ -271,7 +316,7 @@ int main(int argc, char **argv) {
     free(image);
     free(image_b);
     free(section);
-    printf("USF sparse upload, PCM, skip, restart, contexts, flags, resampling, DMA, legacy clock/SI/BREAK and graphics-stub checks passed "
+    printf("USF sparse upload, PCM, skip, restart, contexts, flags, resampling, DMA, legacy clock/SI/BREAK, gradual underflow and graphics-stub checks passed "
            "(%d Hz).\n",
            rate);
     return 0;
