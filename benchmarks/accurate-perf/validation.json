@@ -1,0 +1,430 @@
+{
+  "date": "2026-11-02",
+  "baseline_revision": "05733f7",
+  "build": "make -j8 platform=win ARCH=x86_64 USF=0",
+  "environment": {
+    "os": "Windows x64",
+    "cpu": "Intel Core i7-13620H",
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "compiler": "MinGW GCC 16.2.0",
+    "retroarch": "1.22.2 (e84ba6b)"
+  },
+  "baseline_core_sha256": "eb4226d820f860a6d986827e1954078095e2b79c0d69e14f74d035b8ae7c2ce3",
+  "candidate_core_sha256": "1a44d5bce7797289f8074ecd208c7d796c51df429a8d0842687aba4fd961d129",
+  "settings": {
+    "timing": "Accurate",
+    "rsp_hle": "Off",
+    "resolution_scale": 1,
+    "shader_specialization": "disabled",
+    "vsync": false,
+    "threaded_video": false,
+    "audio_playback": false,
+    "input": "neutral",
+    "frames": 2400,
+    "warmup_frames": 480
+  },
+  "measurement": "QPC around actual retro_run, exclusive of RAM hashing and final serialization; throughput = baseline/candidate - 1. Component benchmarks are separate from whole-game measurements.",
+  "component_benchmarks": {
+    "load": {
+      "baseline_median_s": 0.2,
+      "candidate_median_s": 0.134,
+      "throughput_gain_percent": 49.25373134328359,
+      "samples": [
+        {
+          "baseline_s": 0.195,
+          "candidate_s": 0.136
+        },
+        {
+          "baseline_s": 0.201,
+          "candidate_s": 0.132
+        },
+        {
+          "baseline_s": 0.198,
+          "candidate_s": 0.134
+        },
+        {
+          "baseline_s": 0.201,
+          "candidate_s": 0.135
+        },
+        {
+          "baseline_s": 0.2,
+          "candidate_s": 0.132
+        }
+      ],
+      "guest_timing_and_result_equal": true,
+      "result": "COUNT=32001000 phase=0 result=ffffffffc0644ffc"
+    },
+    "store": {
+      "baseline_median_s": 0.261,
+      "candidate_median_s": 0.202,
+      "throughput_gain_percent": 29.20792079207921,
+      "samples": [
+        {
+          "baseline_s": 0.261,
+          "candidate_s": 0.2
+        },
+        {
+          "baseline_s": 0.257,
+          "candidate_s": 0.202
+        },
+        {
+          "baseline_s": 0.256,
+          "candidate_s": 0.205
+        },
+        {
+          "baseline_s": 0.261,
+          "candidate_s": 0.204
+        },
+        {
+          "baseline_s": 0.261,
+          "candidate_s": 0.202
+        }
+      ],
+      "guest_timing_and_result_equal": true,
+      "result": "COUNT=64000999 phase=1 result=20f"
+    },
+    "load-fastmem": {
+      "baseline_median_s": 0.171,
+      "candidate_median_s": 0.127,
+      "throughput_gain_percent": 34.645669291338585,
+      "samples": [
+        {
+          "baseline_s": 0.168,
+          "candidate_s": 0.126
+        },
+        {
+          "baseline_s": 0.17,
+          "candidate_s": 0.127
+        },
+        {
+          "baseline_s": 0.172,
+          "candidate_s": 0.129
+        },
+        {
+          "baseline_s": 0.172,
+          "candidate_s": 0.128
+        },
+        {
+          "baseline_s": 0.171,
+          "candidate_s": 0.127
+        }
+      ],
+      "guest_timing_and_result_equal": true,
+      "result": "COUNT=32001000 phase=0 result=ffffffffc0644ffc"
+    },
+    "store-fastmem": {
+      "baseline_median_s": 0.166,
+      "candidate_median_s": 0.163,
+      "throughput_gain_percent": 1.8404907975460238,
+      "samples": [
+        {
+          "baseline_s": 0.167,
+          "candidate_s": 0.163
+        },
+        {
+          "baseline_s": 0.173,
+          "candidate_s": 0.161
+        },
+        {
+          "baseline_s": 0.166,
+          "candidate_s": 0.168
+        },
+        {
+          "baseline_s": 0.166,
+          "candidate_s": 0.16
+        },
+        {
+          "baseline_s": 0.161,
+          "candidate_s": 0.163
+        }
+      ],
+      "guest_timing_and_result_equal": true,
+      "result": "COUNT=64000999 phase=1 result=20f"
+    },
+    "rsp-mixed": {
+      "baseline_median_s": 0.131974,
+      "candidate_median_s": 0.096644,
+      "throughput_gain_percent": 36.55684781259056,
+      "samples": [
+        {
+          "baseline_s": 0.131091,
+          "candidate_s": 0.096644
+        },
+        {
+          "baseline_s": 0.130999,
+          "candidate_s": 0.096348
+        },
+        {
+          "baseline_s": 0.131974,
+          "candidate_s": 0.096455
+        },
+        {
+          "baseline_s": 0.133537,
+          "candidate_s": 0.097395
+        },
+        {
+          "baseline_s": 0.132268,
+          "candidate_s": 0.096842
+        }
+      ],
+      "guest_timing_and_result_equal": true,
+      "result": "cycles=255 scalar=28000056 vector_hash=07e884dfcd12901c"
+    }
+  },
+  "retroarch_performance": {
+    "legacy_gl2": {
+      "rom": "Banjo-Kazooie (USA) (Rev 1).z64",
+      "order": [
+        "baseline then candidate",
+        "candidate then baseline"
+      ],
+      "pairs": [
+        {
+          "baseline_run": "verified-baseline-legacy",
+          "candidate_run": "verified-legacy",
+          "baseline": {
+            "frames": 2400,
+            "core_ms": 74483.6359,
+            "warm_ms": 52856.1668
+          },
+          "candidate": {
+            "frames": 2400,
+            "core_ms": 65643.1314,
+            "warm_ms": 43942.7082
+          },
+          "overall_throughput_gain_percent": 13.467524037099787,
+          "warm_throughput_gain_percent": 20.284272328941256,
+          "baseline_exit": 0,
+          "candidate_exit": 0,
+          "equivalence": {
+            "ram_audio": true,
+            "final.png": true,
+            "final.state": true
+          },
+          "image_sha256": "541ceda83b7d5bbc5846f9e4ce5119c6ca5b73326a157169564e31e9b5ebc905",
+          "state_sha256": "b766d8f9d46fb9726b183651b80feb93df82acd51fd9026faef35e464221d36e"
+        },
+        {
+          "baseline_run": "repeat-baseline-legacy",
+          "candidate_run": "repeat-legacy",
+          "baseline": {
+            "frames": 2400,
+            "core_ms": 75742.214,
+            "warm_ms": 52684.4568
+          },
+          "candidate": {
+            "frames": 2400,
+            "core_ms": 63620.7169,
+            "warm_ms": 42291.6376
+          },
+          "overall_throughput_gain_percent": 19.052751510255316,
+          "warm_throughput_gain_percent": 24.574170662996497,
+          "baseline_exit": 0,
+          "candidate_exit": 0,
+          "equivalence": {
+            "ram_audio": true,
+            "final.png": true,
+            "final.state": true
+          },
+          "image_sha256": "541ceda83b7d5bbc5846f9e4ce5119c6ca5b73326a157169564e31e9b5ebc905",
+          "state_sha256": "b766d8f9d46fb9726b183651b80feb93df82acd51fd9026faef35e464221d36e"
+        }
+      ],
+      "median": {
+        "overall": {
+          "baseline_median_ms": 75112.92495,
+          "candidate_median_ms": 64631.92415,
+          "throughput_gain_percent": 16.216445569027684
+        },
+        "warm": {
+          "baseline_median_ms": 52770.311799999996,
+          "candidate_median_ms": 43117.172900000005,
+          "throughput_gain_percent": 22.388153607353022
+        }
+      }
+    },
+    "glrdp": {
+      "baseline_run": "verified-baseline-glrdp",
+      "candidate_run": "verified-glrdp",
+      "baseline": {
+        "frames": 2400,
+        "core_ms": 31721.6605,
+        "warm_ms": 23860.0324
+      },
+      "candidate": {
+        "frames": 2400,
+        "core_ms": 31524.9533,
+        "warm_ms": 23539.6949
+      },
+      "overall_throughput_gain_percent": 0.6239730099774743,
+      "warm_throughput_gain_percent": 1.3608396428281821,
+      "baseline_exit": 0,
+      "candidate_exit": 0,
+      "equivalence": {
+        "ram_audio": true,
+        "final.png": true,
+        "final.state": true
+      },
+      "image_sha256": "0fc2553d953907f804767adfe52a2d07d319b6dd4450baafdc96dc6f9826bd36",
+      "state_sha256": "6954650f5637e5b30dc6c3fee8c1948a1d9a20375aaa4ad34bec857993dc82ad"
+    },
+    "parallel_rdp": {
+      "baseline_run": "verified-baseline-dk64-parallel",
+      "candidate_run": "verified-dk64-parallel",
+      "baseline": {
+        "frames": 2400,
+        "core_ms": 33545.8591,
+        "warm_ms": 28044.4427
+      },
+      "candidate": {
+        "frames": 2400,
+        "core_ms": 33251.2415,
+        "warm_ms": 27794.9526
+      },
+      "overall_throughput_gain_percent": 0.8860348868477752,
+      "warm_throughput_gain_percent": 0.897609373868824,
+      "baseline_exit": 0,
+      "candidate_exit": 0,
+      "equivalence": {
+        "ram_audio": false,
+        "final.png": true,
+        "final.state": true
+      },
+      "image_sha256": "f98596108f4a2a5a8697e667ea589822c50a2029c2afefc404aeeddcd6960154",
+      "state_sha256": "868672de25603eb4c1e8d96990afb83798c53f7a64b1d8cf5e253f771888250d"
+    }
+  },
+  "parallel_equivalence": {
+    "method": "Separate checkpoint-only run: wait for frontend Vulkan device idle under its queue lock, then serialize/hash full state and RAM every 120 frames. These timings are excluded from performance claims.",
+    "result": {
+      "baseline_run": "fenced-baseline-dk64-parallel",
+      "candidate_run": "fenced-dk64-parallel",
+      "baseline": {
+        "frames": 2400,
+        "core_ms": 33965.3909,
+        "warm_ms": 28494.8545
+      },
+      "candidate": {
+        "frames": 2400,
+        "core_ms": 35212.6107,
+        "warm_ms": 29711.7161
+      },
+      "overall_throughput_gain_percent": -3.541969127554634,
+      "warm_throughput_gain_percent": -4.095561481216492,
+      "baseline_exit": 0,
+      "candidate_exit": 0,
+      "equivalence": {
+        "ram_audio": true,
+        "state_checkpoints": true,
+        "final.png": true,
+        "final.state": true
+      },
+      "image_sha256": "f98596108f4a2a5a8697e667ea589822c50a2029c2afefc404aeeddcd6960154",
+      "state_sha256": "868672de25603eb4c1e8d96990afb83798c53f7a64b1d8cf5e253f771888250d"
+    },
+    "full_state_checkpoints": 20,
+    "raw_checkpoint_note": "Without a GPU fence, intermediate raw RAM/state hashes also differ between runs of the same unchanged baseline. An earlier serialize-only checkpoint attempt still raced GPU writes; all fenced checkpoints match."
+  },
+  "checks": {
+    "command": "make -f benchmarks/accurate-perf/checks.mk check",
+    "result": "passed",
+    "cpu_state_and_timing_differentials": 8768,
+    "mixed_rsp_interpreter_differentials": 2048,
+    "rsp_scalar_peepholes": 21504,
+    "rsp_quad_packed_transfers": 98304,
+    "rsp_small_transfers": 36864,
+    "rsp_native_vu": 786432,
+    "rsp_cop2_transfers": 147456,
+    "rsp_fused_vector_differentials": 32768,
+    "rsp_fused_integrated_blocks": 2048,
+    "rsp_scalar_cache_blocks": 1024,
+    "rsp_branches_helpers_timeslices_invalidation": "passed",
+    "gl_binding_cache_dependencies_ownership_and_deletion": "passed",
+    "archived_cpu_timing_suite": "Attempted, but stops at the interpreter FP timing expectation in benchmarks/cpu_fpu_cop0.h:59. Its assertions were not changed; this full suite is not claimed as passing."
+  },
+  "retroarch_smoke": [
+    {
+      "tag": "live-glrdp",
+      "renderer": "glrdp",
+      "rom": "Banjo-Kazooie (USA) (Rev 1).z64",
+      "proxy": true,
+      "exit": 0,
+      "live_result": [
+        "LIVE_RESULT frames=480 updates=6 option_reads=182"
+      ],
+      "errors": []
+    },
+    {
+      "tag": "live-legacy",
+      "renderer": "gl2",
+      "rom": "Banjo-Kazooie (USA) (Rev 1).z64",
+      "proxy": true,
+      "exit": 0,
+      "live_result": [
+        "LIVE_RESULT frames=480 updates=6 option_reads=182"
+      ],
+      "errors": []
+    },
+    {
+      "tag": "live-parallel",
+      "renderer": "parallel-rdp",
+      "rom": "Donkey Kong 64 (USA).z64",
+      "proxy": true,
+      "exit": 0,
+      "live_result": [
+        "LIVE_RESULT frames=480 updates=6 option_reads=182"
+      ],
+      "errors": []
+    },
+    {
+      "tag": "live-soft",
+      "renderer": "softrdp",
+      "rom": "Donkey Kong 64 (USA).z64",
+      "proxy": true,
+      "exit": 0,
+      "live_result": [
+        "LIVE_RESULT frames=479 updates=5 option_reads=156"
+      ],
+      "errors": []
+    },
+    {
+      "tag": "live-soft-481",
+      "renderer": "softrdp",
+      "rom": "Donkey Kong 64 (USA).z64",
+      "proxy": true,
+      "exit": 0,
+      "live_result": [
+        "LIVE_RESULT frames=480 updates=6 option_reads=182"
+      ],
+      "errors": []
+    },
+    {
+      "tag": "direct-exit-dk64-1",
+      "renderer": "parallel-rdp",
+      "rom": "Donkey Kong 64 (USA).z64",
+      "proxy": false,
+      "exit": 0,
+      "live_result": [],
+      "errors": []
+    },
+    {
+      "tag": "direct-exit-banjo",
+      "renderer": "parallel-rdp",
+      "rom": "Banjo-Kazooie (USA) (Rev 1).z64",
+      "proxy": false,
+      "exit": 0,
+      "live_result": [],
+      "errors": []
+    },
+    {
+      "tag": "direct-exit-dk64-2",
+      "renderer": "parallel-rdp",
+      "rom": "Donkey Kong 64 (USA).z64",
+      "proxy": false,
+      "exit": 0,
+      "live_result": [],
+      "errors": []
+    }
+  ],
+  "scope": "Neutral-input boot/intro workloads on two ROMs. Legacy GL2 and isolated CPU/RSP gains exceed 15%; a 15% whole-game GLRDP/parallel-rdp gain is not established. Matched captures/differentials are regression evidence, not proof for every ROM or GPU. Linux and other GPU backends were not runtime-tested."
+}

@@ -44,7 +44,8 @@ static void reference(r4300_core& state,uint32_t op) {
 static unsigned linked_count;
 static n64emujit_entry linked_body;
 static n64emujit_entry link(r4300_core*){return ++linked_count<100000?linked_body:nullptr;}
-int main() {
+int main(int argc, char** argv) {
+    bool tail_only = argc == 2 && !std::strcmp(argv[1], "--tail-only");
     auto* jit=n64emujit_create();require(jit,"code arena allocation");
     auto actual=std::make_unique<r4300_core>(),expected=std::make_unique<r4300_core>();
     std::mt19937_64 random(0x33324a4954);std::vector<uint32_t> instructions;
@@ -54,6 +55,7 @@ int main() {
     for(unsigned fn:{0u,2u,3u,4u,6u,7u,15u,16u,17u,18u,19u,20u,22u,23u,33u,35u,36u,37u,38u,39u,42u,43u,45u,47u,56u,58u,59u,60u,62u,63u})
         for(unsigned shift:{0u,1u,15u,31u})for(unsigned dest:{0u,1u,2u,3u})
             instructions.push_back((1<<21)|(2<<16)|(dest<<11)|(shift<<6)|fn);
+    if (tail_only) instructions.clear();
     unsigned cases=0;
     for(uint32_t op:instructions) {
         require(n64emujit_has_native(&op,1,0,0,0),"native opcode selection");
@@ -73,7 +75,13 @@ int main() {
     uint32_t increment=(25u<<26)|(1<<21)|(1<<16)|1;
     n64emujit_config config={};config.link=link;config.chain_entry=&linked_body;
     auto function=n64emujit_compile_optimized(jit,nullptr,&increment,1,step,&config);require(function,"linked block compilation");
+    require(linked_body==function,"paired JIT links must publish ordinary ABI entries");
     actual->regs[1]=0;function(actual.get());require(actual->regs[1]==100000,"tail links must execute without growing the host stack");
+    if (tail_only) {
+        n64emujit_destroy(jit);
+        std::puts("CPU JIT32: 100000 ABI tail calls passed.");
+        return 0;
+    }
     auto old=function;auto generation=n64emujit_generation(jit);
     for(unsigned i=0;n64emujit_entry_valid(jit,old,generation)&&i<100000;i++)require(n64emujit_compile(jit,nullptr,&increment,1,step),"arena recycling");
     require(!n64emujit_entry_valid(jit,old,generation),"recycled segment invalidates old entries");
