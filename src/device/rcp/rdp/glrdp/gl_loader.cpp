@@ -106,6 +106,8 @@ decltype(glad_glViewport) glad_glViewport = nullptr;
     glad_##name = reinterpret_cast<decltype(glad_##name)>(resolver(#name));                        \
     if (!glad_##name)                                                                              \
     return false
+#include "gl_state_cache.inc"
+
 bool load_gl33(retro_hw_get_proc_address_t resolver, bool gles3) {
     glrdp_image_load_store = false;
     glrdp_fragment_interlock = false;
@@ -248,6 +250,7 @@ bool load_gl33(retro_hw_get_proc_address_t resolver, bool gles3) {
         }
     }
     glrdp_fragment_interlock &= glrdp_image_load_store;
+    install_binding_cache();
     return true;
 }
 #undef LOAD

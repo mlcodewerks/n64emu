@@ -15,7 +15,7 @@ void init_cp1(struct cp1* cp1)
 void poweron_cp1(struct cp1* cp1)
 {
     memset(cp1->regs, 0, 32 * sizeof(cp1->regs[0]));
-    *r4300_cp1_fcr0(cp1) = UINT32_C(0x511);
+    *r4300_cp1_fcr0(cp1) = UINT32_C(0xa00);
     *r4300_cp1_fcr31(cp1) = 0;
 
     set_fpr_pointers(cp1, UINT32_C(0x34000000)); /* c0_status value at poweron */

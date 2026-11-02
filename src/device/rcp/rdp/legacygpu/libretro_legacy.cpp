@@ -55,25 +55,28 @@ struct Lock {
     }
 #endif
 };
+unsigned session_depth = 0;
 struct Session {
     Lock lock;
     Device *held = nullptr;
     Session() {
         if (device) {
             held = device.get();
-            held->begin_raster();
+            if (session_depth == 0) held->begin_raster();
+            ++session_depth;
         }
     }
     ~Session() {
-        if (held)
-            held->end_raster();
+        if (held && --session_depth == 0) held->end_raster();
     }
 };
+std::unique_ptr<Session> frame_session;
 void create_renderer() {
     if (opened && device && !renderer)
         renderer = std::make_unique<RasterRenderer>(*device, rdram_memory, renderer_settings.upscale);
 }
 void context_destroy() {
+    frame_session.reset();
     ready = false;
     Lock lock;
     if (device) {
@@ -305,6 +308,12 @@ extern "C" void legacygpu_process_commands() {
     }
     *gfx_info.DPC_CURRENT_REG = end;
 }
+extern "C" void legacygpu_begin_frame() {
+    try {
+        if (ready && !d3d && !frame_session) frame_session = std::make_unique<Session>();
+    } catch (const std::exception &e) { error("frame state", e); }
+}
+extern "C" void legacygpu_end_frame() { frame_session.reset(); }
 extern "C" void legacygpu_scanout() {
     if (!ready || !opened || !renderer || !parser)
         return;

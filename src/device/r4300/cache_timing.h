@@ -50,6 +50,33 @@ static osal_force_inline int r4300_access_cached(struct r4300_core* r, uint32_t 
     return r4300_mapped_access_cached(r, va);
 }
 
+/* An older dirty-line writeback owns the memory bus before an IF miss
+ * discovered at this issue boundary. Predict it without performing a TLB
+ * refill or changing architectural state; the memory instruction still
+ * performs its ordinary checks and transfer afterwards. */
+static R4300_CACHE_NOINLINE int r4300_instruction_writeback(struct r4300_core* r, uint32_t op)
+{
+    unsigned major = op >> 26;
+    if (major < 0x20) return 0;
+    uint64_t effective = (uint64_t)r->regs[(op >> 21) & 31] + (uint64_t)(int64_t)(int16_t)op;
+    uint32_t va = (uint32_t)effective, pa = va;
+    uint32_t tag = r->dcache_tags[(va >> 4) & 511];
+    if ((tag & 3) != 3) return 0;
+    unsigned cache_op = (op >> 16) & 31;
+    if (major == 0x2f && cache_op == 1) return 1;
+    if ((va & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)) {
+        uint32_t map = r->cp0.tlb.LUT_r[va >> 12];
+        if (!map) return 0;
+        pa = (map & UINT32_C(0xfffff000)) | (va & 4095);
+    }
+    int hit = (tag & ~2u) == ((pa & UINT32_C(0x1ffff000)) | 1);
+    if (major == 0x2f) {
+        if (cache_op == 0x15 || cache_op == 0x19) return hit;
+        return cache_op == 0x0d && !hit;
+    }
+    return !hit && r4300_access_cached(r, va);
+}
+
 /* The VR4300 instruction micro-TLB is a fully-associative two-entry cache of
  * 4 KiB JTLB translations. A hit is free; refilling a valid JTLB translation
  * costs three PClocks. Store the current LUT translation with the VPN so a
@@ -179,13 +206,13 @@ static R4300_CACHE_NOINLINE void r4300_dcache_refill(struct r4300_core* r,
 /* Return cacheability as well as charging the access, so callers do not repeat
  * the segment/config checks or mapped-address TLB scan. Keep the hit path
  * inline; the compiler can retain the larger refill/writeback paths as calls. */
-static osal_force_inline int r4300_data_access_cycles(struct r4300_core* r, uint32_t va,
-                                           uint32_t pa, int write)
+static osal_force_inline int r4300_data_access_cycles_explicit(struct r4300_core* r, uint32_t va,
+                                           uint32_t pa, int write, int cached)
 {
     uint32_t* tag;
     uint32_t key;
     if (!r->cache_timing) return 0;
-    if (!r4300_access_cached(r, va)) {
+    if (!cached) {
         /* CEN64 fault.h: distinguish RCP's posted handoff from RAM reads. */
         uint32_t physical = pa & 0x1fffffff;
         unsigned cycles = R4300_UNCACHED_DATA_CYCLES;
@@ -214,6 +241,12 @@ static osal_force_inline int r4300_data_access_cycles(struct r4300_core* r, uint
     return r->cache_timing != 2;
 }
 
+static osal_force_inline int r4300_data_access_cycles(struct r4300_core* r, uint32_t va,
+                                                    uint32_t pa, int write)
+{
+    return r4300_data_access_cycles_explicit(r, va, pa, write, r4300_access_cached(r, va));
+}
+
 static inline void r4300_icache_discard_shadow(struct r4300_core *r,unsigned index)
 {
     uint32_t tag=r->icache_shadow_tags[index];
@@ -235,13 +268,18 @@ static osal_force_inline unsigned int r4300_fetch_cycles_internal(struct r4300_c
     uint32_t key;
     unsigned int cycles = 0;
     if (!r->cache_timing) return 0;
-    if ((va & 0xc0000000) != 0x80000000) {
+    int cached;
+    if (r->pc_extension) {
+        uint64_t effective = (r->pc_extension & UINT64_C(0xffffffff00000000)) | va;
+        if (!r4300_translate_address64(r, effective, 2, &pa, &cached)) return 0;
+        cycles += r4300_itlb_access_cycles(r, (uint32_t)(effective >> 12), pa & UINT32_C(0xfffff000));
+    } else if ((va & 0xc0000000) != 0x80000000) {
         uint32_t page = r->cp0.tlb.LUT_r[va >> 12];
         if (!page) return 0; /* The dispatcher handles translation faults. */
         cycles += r4300_itlb_access_cycles(r, va >> 12, page & UINT32_C(0xfffff000));
         pa = (page & 0xfffff000) | (va & 0xfff);
     }
-    if (!r4300_access_cached(r, va)) {
+    if (!(r->pc_extension ? cached : r4300_access_cached(r, va))) {
         r4300_icache_fill_wait(r);
         r4300_write_buffer_drain(r);
         return cycles + R4300_UNCACHED_FETCH_CYCLES;
@@ -293,10 +331,12 @@ static inline void r4300_cache_operation(struct r4300_core* r, unsigned op,
         if(op==0x14)r4300_icache_discard_shadow(r,index);
     }
     switch (op) {
-    case 0x00: *tag &= ~1u; break;
+    case 0x00: *tag = key & ~1u; break;
     case 0x01:
-        if ((*tag & 3) == 3) { r4300_dcache_writeback(r, va); *tag |= 2; }
-        *tag &= ~1u;
+        if (*tag & 1) {
+            if (*tag & 2) { r4300_dcache_writeback(r, va); *tag |= 2; }
+            *tag = (key & ~1u) | (*tag & 2);
+        }
         break;
     case 0x04: case 0x05:
         r->cp0.regs[CP0_TAGLO_REG] = ((*tag & 0xfffff000) >> 4) |
@@ -324,7 +364,18 @@ static inline void r4300_cache_operation(struct r4300_core* r, unsigned op,
             *tag &= ~1u;
         }
         break;
-    case 0x18: if (hit) cp0_step_cycles(&r->cp0, R4300_ICACHE_FILL_CYCLES); break;
+    case 0x18:
+        if (hit) {
+            unsigned index = (va >> 5) & 511;
+            r4300_icache_materialize(r, index);
+            uint32_t line = (pa & UINT32_C(0x1fffffe0));
+            if (r->jit) invalidate_r4300_cached_code(r, line, 32);
+            for (unsigned i = 0; i < 8; ++i)
+                mem_write32(mem_get_handler(r->mem, line), line + i * 4,
+                    r->icache_shadow_words[index][i], ~UINT32_C(0));
+            cp0_step_cycles(&r->cp0, R4300_ICACHE_FILL_CYCLES);
+        }
+        break;
     case 0x19:
         if (hit && (*tag & 2)) r4300_dcache_writeback(r, va);
         break;

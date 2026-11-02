@@ -15,6 +15,8 @@ void legacygpu_reset(void);
 bool legacygpu_materialize(void);
 void legacygpu_process_commands(void);
 void legacygpu_scanout(void);
+void legacygpu_begin_frame(void);
+void legacygpu_end_frame(void);
 void legacygpu_framebuffer_read(uint32_t address, uint32_t bytes);
 void legacygpu_framebuffer_write(uint32_t address, uint32_t bytes);
 bool legacygpu_framebuffer_pages(uint8_t *pages, unsigned count);

@@ -74,18 +74,39 @@ static osal_force_inline void interp_mem_write32(const struct mem_handler* handl
     handler->write32(handler->opaque, address, value, mask);
 }
 
-/* Recent libdragon uses uncached XKPHYS for PI/MMIO. Preserve the full
- * effective address until this decode, including 32-bit physical addresses
- * outside the compatibility KSEG windows. Other extended segments retain
- * the existing translator; this is not an extended-TLB implementation. */
-static osal_force_inline int interp_xkphys_uncached(struct r4300_core *r,
-    uint64_t effective, uint32_t *physical)
+static osal_force_inline int interp_reverse_endian(const struct r4300_core *r)
 {
-    if ((effective >> 32) != UINT32_C(0x90000000)) return 0;
     uint32_t status = r->cp0.regs[CP0_STATUS_REG];
-    if (!(status & CP0_STATUS_KX) ||
-        (!(status & (CP0_STATUS_EXL | CP0_STATUS_ERL)) && (status & 0x18))) return 0;
-    *physical = (uint32_t)effective;
+    return (status & (CP0_STATUS_RE | CP0_STATUS_MODE_MASK | CP0_STATUS_EXL | CP0_STATUS_ERL)) ==
+        (CP0_STATUS_RE | UINT32_C(0x10));
+}
+
+/* The common compatibility address never needs a segment scan in kernel mode. */
+static osal_force_inline int interp_address_valid(struct r4300_core *r, uint64_t address, int w)
+{
+    uint32_t status = r->cp0.regs[CP0_STATUS_REG];
+    if (INTERP_MEM_LIKELY(address == (uint64_t)(int64_t)(int32_t)address &&
+        ((status & (CP0_STATUS_EXL | CP0_STATUS_ERL)) || !(status & CP0_STATUS_MODE_MASK)))) return 1;
+    return r4300_address_valid(r, address, w);
+}
+
+static osal_force_inline int interp_resolve_address(struct r4300_core *r,
+    uint64_t effective, int w, uint32_t *physical, int *cached)
+{
+    if (INTERP_MEM_UNLIKELY(!interp_address_valid(r, effective, w))) {
+        /* Accessors run after ADD_TO_PC. Segment faults point at the access. */
+        if (!(r->cp0.regs[CP0_CAUSE_REG] & CP0_CAUSE_BD)) r->cp0.regs[CP0_EPC_REG] -= 4;
+        return 0;
+    }
+    if (INTERP_MEM_UNLIKELY(effective != (uint64_t)(int64_t)(int32_t)effective))
+        return r4300_translate_address64(r, effective, w, physical, cached);
+    uint32_t address = (uint32_t)effective;
+    if (INTERP_MEM_UNLIKELY((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000))) {
+        *physical = interp_translate_address(r, address, w);
+        if (!*physical) return 0;
+    } else *physical = address;
+    *physical &= UINT32_C(0x1fffffff);
+    *cached = r4300_access_cached(r, address);
     return 1;
 }
 
@@ -99,20 +120,21 @@ static osal_force_inline void interp_xkphys_store_invalidate(struct r4300_core *
     }
 }
 
-/* MI repeats an uncached doubleword write across up to 128 bytes. The row
- * counter wraps within 2 KiB. libdragon's hardware memset uses full SDs;
- * partial bus writes continue through the ordinary masked-store path. */
-static osal_force_inline int interp_mi_repeat_dword(struct r4300_core *r,
-    uint32_t physical, uint64_t value, uint64_t mask)
+/* MI repeats the SysAD data pattern, independent of byte enables. The
+ * initial byte lane consumes the front of the programmed transfer length. */
+static osal_force_inline int interp_mi_repeat(struct r4300_core *r,
+    uint32_t physical, uint64_t value)
 {
-    if (mask != UINT64_MAX || physical >= UINT32_C(0x03f00000) || !r->mi ||
+    if (physical >= UINT32_C(0x03f00000) || !r->mi ||
         !(r->mi->regs[MI_INIT_MODE_REG] & 0x80)) return 0;
     unsigned length = (r->mi->regs[MI_INIT_MODE_REG] & 0x7f) + 1;
+    unsigned skip = physical & 7;
+    length = length > skip ? length - skip : 0;
     r->mi->regs[MI_INIT_MODE_REG] &= ~UINT32_C(0x80);
-    for (unsigned i=0; i<length; i++) {
+    for (unsigned i = 0; i < length; i++) {
         uint32_t address = (physical & ~UINT32_C(0x7ff)) | ((physical + i) & 0x7ff);
         unsigned shift = 24 - (address & 3) * 8;
-        uint32_t byte = (uint32_t)(value >> (56 - (i & 7) * 8)) & 0xff;
+        uint32_t byte = (uint32_t)(value >> (56 - (address & 7) * 8)) & 0xff;
         interp_xkphys_store_invalidate(r, address, 1);
         interp_mem_write32(&r->mem->handlers[address >> 16], address & ~UINT32_C(3),
             byte << shift, UINT32_C(0xff) << shift);
@@ -120,69 +142,50 @@ static osal_force_inline int interp_mi_repeat_dword(struct r4300_core *r,
     return 1;
 }
 
-static osal_force_inline int interp_read_aligned_word(struct r4300_core* r4300,
+static osal_force_inline int interp_read_sized_word(struct r4300_core* r4300,
                                                       uint64_t effective,
-                                                      uint32_t* value)
+                                                      uint32_t* value, unsigned size)
 {
-    uint32_t address = (uint32_t)effective;
-    if (INTERP_MEM_UNLIKELY(interp_xkphys_uncached(r4300, effective, &address))) {
-        r4300_data_access_cycles(r4300, UINT32_C(0xa0000000), address, 0);
-        address &= ~UINT32_C(3);
-        interp_mem_read32(&r4300->mem->handlers[address >> 16], address, value);
-        return 1;
-    }
-    const uint32_t virtual_address = address;
-    if (INTERP_MEM_UNLIKELY((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)))
-    {
-        address = interp_translate_address(r4300, address, 0);
-        if (INTERP_MEM_UNLIKELY(address == 0))
-            return 0;
-    }
+    uint32_t address;
+    int cached;
+    const uint32_t virtual_address = (uint32_t)effective;
+    if (!interp_resolve_address(r4300, effective, 0, &address, &cached)) return 0;
 
-    if (r4300_data_access_cycles(r4300, virtual_address, address, 0)) {
+    if (interp_reverse_endian(r4300)) address ^= 4;
+    if (r4300_data_access_cycles_explicit(r4300, virtual_address, address, 0, cached)) {
         *value = r4300->dcache_words[(virtual_address >> 4) & 511][(address >> 2) & 3];
         return 1;
     }
-    address &= UINT32_C(0x1ffffffc);
+    int cart_narrow = size < 4 && address >= UINT32_C(0x10000000) && address < UINT32_C(0x1fc00000);
+    if (cart_narrow) address = (address + (address & 2)) & ~UINT32_C(3);
+    else address &= ~UINT32_C(3);
     interp_mem_read32(&r4300->mem->handlers[address >> 16], address, value);
+    if (cart_narrow && (effective & 2)) *value >>= 16;
     return 1;
+}
+
+static osal_force_inline int interp_read_aligned_word(struct r4300_core* r,
+    uint64_t effective, uint32_t* value)
+{
+    return interp_read_sized_word(r, effective, value, 4);
 }
 
 static osal_force_inline int interp_read_aligned_dword(struct r4300_core* r4300,
                                                        uint64_t effective,
                                                        uint64_t* value)
 {
-    uint32_t address = (uint32_t)effective;
-    if (INTERP_MEM_UNLIKELY(interp_xkphys_uncached(r4300, effective, &address))) {
-        uint32_t hi, lo;
-        r4300_data_access_cycles(r4300, UINT32_C(0xa0000000), address, 0);
-        address &= ~UINT32_C(3);
-        const struct mem_handler *handler = &r4300->mem->handlers[address >> 16];
-        interp_mem_read32(handler, address, &hi);
-        interp_mem_read32(handler, address + 4, &lo);
-        *value = ((uint64_t)hi << 32) | lo;
-        return 1;
-    }
-    const uint32_t virtual_address = address;
-    uint32_t w0;
-    uint32_t w1;
+    uint32_t address;
+    int cached;
+    const uint32_t virtual_address = (uint32_t)effective;
+    if (!interp_resolve_address(r4300, effective, 0, &address, &cached)) return 0;
+    uint32_t w0, w1;
 
-    if (INTERP_MEM_UNLIKELY((address & UINT32_C(7)) != 0))
-        core_log(CORE_LOG_WARNING, "Unaligned dword read %08x", address);
-
-    if (INTERP_MEM_UNLIKELY((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)))
-    {
-        address = interp_translate_address(r4300, address, 0);
-        if (INTERP_MEM_UNLIKELY(address == 0))
-            return 0;
-    }
-
-    if (r4300_data_access_cycles(r4300, virtual_address, address, 0)) {
+    if (r4300_data_access_cycles_explicit(r4300, virtual_address, address, 0, cached)) {
         uint32_t* words = r4300->dcache_words[(virtual_address >> 4) & 511];
         *value = ((uint64_t)words[(address >> 2) & 3] << 32) | words[((address >> 2) & 3) + 1];
         return 1;
     }
-    address &= UINT32_C(0x1ffffffc);
+    address &= ~UINT32_C(3);
     const struct mem_handler* handler = &r4300->mem->handlers[address >> 16];
     interp_mem_read32(handler, address + 0, &w0);
     interp_mem_read32(handler, address + 4, &w1);
@@ -195,21 +198,12 @@ static osal_force_inline int interp_write_aligned_word(struct r4300_core* r4300,
                                                        uint32_t value,
                                                        uint32_t mask)
 {
-    uint32_t address = (uint32_t)effective;
-    if (INTERP_MEM_UNLIKELY(interp_xkphys_uncached(r4300, effective, &address))) {
-        interp_xkphys_store_invalidate(r4300, address, 4);
-        r4300_data_access_cycles(r4300, UINT32_C(0xa0000000), address, 1);
-        address &= ~UINT32_C(3);
-        interp_mem_write32(&r4300->mem->handlers[address >> 16], address, value, mask);
-        return 1;
-    }
-    const uint32_t virtual_address = address;
-    if (INTERP_MEM_UNLIKELY((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)))
-    {
-        address = interp_translate_address(r4300, address, 1);
-        if (INTERP_MEM_UNLIKELY(address == 0))
-            return 0;
-    }
+    uint32_t address;
+    int cached;
+    const uint32_t virtual_address = (uint32_t)effective;
+    if (!interp_resolve_address(r4300, effective, 1, &address, &cached)) return 0;
+
+    if (interp_reverse_endian(r4300)) address ^= 4;
 
     /* Translation is complete: a clear physical-page bit means no decoded
      * instruction can be invalidated by this store. Page generations still
@@ -219,11 +213,12 @@ static osal_force_inline int interp_write_aligned_word(struct r4300_core* r4300,
         ((r4300->cached_code_pages[code_page >> 6] >> (code_page & 63)) & 1)))
         invalidate_r4300_cached_code(r4300, address, 4);
 
-    if (r4300_data_access_cycles(r4300, virtual_address, address, 1)) {
+    if (r4300_data_access_cycles_explicit(r4300, virtual_address, address, 1, cached)) {
         masked_write(&r4300->dcache_words[(virtual_address >> 4) & 511][(address >> 2) & 3], value, mask);
         return 1;
     }
-    address &= UINT32_C(0x1ffffffc);
+    if (!cached && interp_mi_repeat(r4300, address, ((uint64_t)value << 32) | value)) return 1;
+    address &= ~UINT32_C(3);
     interp_mem_write32(&r4300->mem->handlers[address >> 16], address, value, mask);
     return 1;
 }
@@ -233,44 +228,27 @@ static osal_force_inline int interp_write_aligned_dword(struct r4300_core* r4300
                                                         uint64_t value,
                                                         uint64_t mask)
 {
-    uint32_t address = (uint32_t)effective;
-    if (INTERP_MEM_UNLIKELY(interp_xkphys_uncached(r4300, effective, &address))) {
-        interp_xkphys_store_invalidate(r4300, address, 8);
-        r4300_data_access_cycles(r4300, UINT32_C(0xa0000000), address, 1);
-        address &= ~UINT32_C(3);
-        if (interp_mi_repeat_dword(r4300, address, value, mask)) return 1;
-        const struct mem_handler *handler = &r4300->mem->handlers[address >> 16];
-        interp_mem_write32(handler, address, (uint32_t)(value >> 32), (uint32_t)(mask >> 32));
-        if ((address & UINT32_C(0xffffe000)) != UINT32_C(0x04000000))
-            interp_mem_write32(handler, address + 4, (uint32_t)value, (uint32_t)mask);
-        return 1;
-    }
-    const uint32_t virtual_address = address;
-    if (INTERP_MEM_UNLIKELY((address & UINT32_C(7)) != 0))
-        core_log(CORE_LOG_WARNING, "Unaligned dword write %08x", address);
+    uint32_t address;
+    int cached;
+    const uint32_t virtual_address = (uint32_t)effective;
+    if (!interp_resolve_address(r4300, effective, 1, &address, &cached)) return 0;
 
-    if (INTERP_MEM_UNLIKELY((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)))
-    {
-        address = interp_translate_address(r4300, address, 1);
-        if (INTERP_MEM_UNLIKELY(address == 0))
-            return 0;
-    }
-
+    address &= ~UINT32_C(7);
     uint32_t code_page = (address & UINT32_C(0x1fffffff)) >> 12;
     if (INTERP_MEM_UNLIKELY(r4300->cached_code_pages != NULL &&
         ((r4300->cached_code_pages[code_page >> 6] >> (code_page & 63)) & 1)))
         invalidate_r4300_cached_code(r4300, address, 8);
 
-    if (r4300_data_access_cycles(r4300, virtual_address, address, 1)) {
+    if (r4300_data_access_cycles_explicit(r4300, virtual_address, address, 1, cached)) {
         uint32_t* words = r4300->dcache_words[(virtual_address >> 4) & 511];
         masked_write(&words[(address >> 2) & 3], (uint32_t)(value >> 32), (uint32_t)(mask >> 32));
         masked_write(&words[((address >> 2) & 3) + 1], (uint32_t)value, (uint32_t)mask);
         return 1;
     }
-    address &= UINT32_C(0x1ffffffc);
+    address &= ~UINT32_C(3);
     const struct mem_handler* handler = &r4300->mem->handlers[address >> 16];
-    if (!r4300_access_cached(r4300, virtual_address) &&
-        interp_mi_repeat_dword(r4300, address, value, mask)) return 1;
+    if (!cached &&
+        interp_mi_repeat(r4300, address, value)) return 1;
     interp_mem_write32(handler, address + 0, (uint32_t)(value >> 32), (uint32_t)(mask >> 32));
     /* SP memory accepts only the first word of a CPU doubleword store. */
     if((address&UINT32_C(0xffffe000))==UINT32_C(0x04000000))return 1;
@@ -280,9 +258,9 @@ static osal_force_inline int interp_write_aligned_dword(struct r4300_core* r4300
 
 static osal_force_inline int check_alignment(struct r4300_core* r4300, uint64_t address, unsigned int mask, int store)
 {
+    if (!interp_address_valid(r4300, address, store)) return 1;
     if ((address & mask) == 0) return 0;
-    cp0_set_fault_address(r4300, (address >> 32) == UINT32_C(0x90000000) ?
-        address : (uint64_t)(int64_t)(int32_t)address);
+    cp0_set_fault_address(r4300, address);
     r4300->cp0.regs[CP0_CAUSE_REG] =
         (r4300->cp0.regs[CP0_CAUSE_REG] & ~UINT32_C(0x3000007c)) |
         (store ? CP0_CAUSE_EXCCODE_ADES : CP0_CAUSE_EXCCODE_ADEL);

@@ -3,6 +3,8 @@
 #include <libretro.h>
 // Resolve only through the frontend's current context.
 bool load_gl33(retro_hw_get_proc_address_t resolver, bool gles3);
+void glrdp_begin_binding_cache();
+void glrdp_end_binding_cache();
 extern bool glrdp_gles3;
 // Desktop GL4.3 only: image load/store plus attachmentless rasterization.
 extern bool glrdp_image_load_store;

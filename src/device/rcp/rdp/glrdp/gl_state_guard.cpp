@@ -127,6 +127,7 @@ GLStateGuard::GLStateGuard() {
     glDisable(GL_RASTERIZER_DISCARD);
     glDisable(GL_POLYGON_OFFSET_FILL);
     guard_active = true;
+    glrdp_begin_binding_cache();
 }
 
 GLStateGuard::~GLStateGuard() {
@@ -137,6 +138,7 @@ GLStateGuard::~GLStateGuard() {
     if (nested_)
         return;
     guard_active = false;
+    glrdp_end_binding_cache();
     if (glrdp_image_load_store) {
         for (unsigned unit = 0; unit < image_units_.size(); ++unit) {
             const auto &image = image_units_[unit];

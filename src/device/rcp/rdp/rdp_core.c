@@ -229,6 +229,11 @@ static void retire_counters(struct rdp_core *dp, int64_t now)
 }
 static void read_busy(struct rdp_core *dp, unsigned reg, int from_rsp)
 {
+    if (reg == DPC_STATUS_REG && dp->pipe_sync_deadline > 0 &&
+        busy_now(dp, from_rsp) >= dp->pipe_sync_deadline * 4) {
+        dp->dpc_regs[DPC_STATUS_REG] &= ~UINT32_C(0x28);
+        dp->pipe_sync_deadline = 0;
+    }
     if (!dp->instruction_timing || reg < DPC_BUFBUSY_REG || reg > DPC_TMEM_REG) return;
     int64_t now = busy_now(dp, from_rsp);
     dp->dpc_regs[reg] = rdp_counter_value(&dp->counters, reg - DPC_BUFBUSY_REG, now);
@@ -324,6 +329,8 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
     renderer_process_commands();
     protect_framebuffers(&dp->fb);
     dp->dpc_regs[DPC_STATUS_REG] |= DPC_STATUS_CBUF_READY;
+    if (sync.seen && !dp->timing.pos && ((dp->timing.words[0] >> 24) & 63) == 0x29)
+        dp->pipe_sync_deadline = dp->timing.deadline > 0 ? dp->timing.deadline : 1;
 
     /* Only SyncFull raises a DP edge. Preserve already pending interrupts. */
 #ifdef RDP_TIMING_OBSERVE_QUEUE
@@ -459,6 +466,7 @@ void poweron_rdp(struct rdp_core* dp)
     dp->do_on_unfreeze = 0;
     dp->clock_base = 0;
     dp->clock_offset = 0;
+    dp->pipe_sync_deadline = 0;
     rdp_counters_reset(&dp->counters);
     memset(&dp->timing, 0, sizeof(dp->timing));
     dp->timing.right = dp->timing.bottom = 4095;
@@ -531,6 +539,10 @@ static void write_dpc_regs_from(void* opaque, uint32_t address, uint32_t value, 
         {
             dp->dpc_regs[DPC_CURRENT_REG] = dp->dpc_regs[DPC_START_REG];
             dp->dpc_regs[DPC_STATUS_REG] &= ~DPC_STATUS_START_VALID;
+        }
+        if (!(dp->dpc_regs[DPC_STATUS_REG] & DPC_STATUS_FREEZE)) {
+            dp->dpc_regs[DPC_STATUS_REG] |= UINT32_C(0xa8);
+            dp->pipe_sync_deadline = -1;
         }
         process_dpc_commands(dp, from_rsp);
         break;

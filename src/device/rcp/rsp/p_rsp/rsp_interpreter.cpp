@@ -190,9 +190,8 @@ ReturnMode Interpreter::step(uint32_t op) {
         case 10:
             r[rt] = int32_t(r[rs]) < int32_t(int16_t(op));
             break;
-        // Match the existing RSP emitter's immediate interpretation.
         case 11:
-            r[rt] = r[rs] < uint16_t(op);
+            r[rt] = r[rs] < uint32_t(int32_t(int16_t(op)));
             break;
         case 12:
             r[rt] = r[rs] & uint16_t(op);

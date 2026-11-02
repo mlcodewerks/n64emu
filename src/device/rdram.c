@@ -124,12 +124,13 @@ void poweron_rdram(struct rdram* rdram)
     for (module = 0; module < modules; ++module) {
         rdram->regs[module][RDRAM_CONFIG_REG] = UINT32_C(0xb4190010);
         rdram->regs[module][RDRAM_DEVICE_ID_REG] = UINT32_C(0x00000000);
-        rdram->regs[module][RDRAM_DELAY_REG] = UINT32_C(0x230b0223);
-        rdram->regs[module][RDRAM_MODE_REG] = UINT32_C(0xc4c0c0c0);
+        rdram->regs[module][RDRAM_DELAY_REG] = UINT32_C(0x2b3b1a0b);
+        rdram->regs[module][RDRAM_MODE_REG] = UINT32_C(0xc0c0c0c0);
         rdram->regs[module][RDRAM_REF_ROW_REG] = UINT32_C(0x00000000);
-        rdram->regs[module][RDRAM_MIN_INTERVAL_REG] = UINT32_C(0x0040c0e0);
+        rdram->regs[module][RDRAM_RAS_INTERVAL_REG] = UINT32_C(0x101c0a04);
+        rdram->regs[module][RDRAM_MIN_INTERVAL_REG] = UINT32_C(0x00000000);
         rdram->regs[module][RDRAM_ADDR_SELECT_REG] = UINT32_C(0x00000000);
-        rdram->regs[module][RDRAM_DEVICE_MANUF_REG] = UINT32_C(0x00000500);
+        rdram->regs[module][RDRAM_DEVICE_MANUF_REG] = UINT32_C(0x00000000);
     }
 }
 
@@ -138,6 +139,7 @@ void read_rdram_regs(void* opaque, uint32_t address, uint32_t* value)
 {
     struct rdram* rdram = (struct rdram*)opaque;
     uint32_t reg = rdram_reg(address);
+    if (reg >= RDRAM_REGS_COUNT) { *value = 0; return; }
     size_t module;
 
     if (address & RDRAM_BCAST_ADDRESS_MASK) {
@@ -163,6 +165,7 @@ void write_rdram_regs(void* opaque, uint32_t address, uint32_t value, uint32_t m
 {
     struct rdram* rdram = (struct rdram*)opaque;
     uint32_t reg = rdram_reg(address);
+    if (reg >= RDRAM_REGS_COUNT) return;
     size_t module;
     size_t modules = get_modules_count(rdram);
 

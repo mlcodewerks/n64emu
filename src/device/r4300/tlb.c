@@ -11,6 +11,80 @@
 #include <assert.h>
 #include <string.h>
 
+/* Segment checks precede translation. EXL/ERL select kernel addressing;
+ * otherwise KSU selects both the accessible segments and the X enable. */
+int r4300_address_valid(struct r4300_core* r, uint64_t address, int w)
+{
+    uint32_t status = r->cp0.regs[CP0_STATUS_REG];
+    unsigned mode = status & (CP0_STATUS_EXL | CP0_STATUS_ERL) ? 0 : (status >> 3) & 3;
+    uint32_t x = mode == 0 ? CP0_STATUS_KX : mode == 1 ? CP0_STATUS_SX : CP0_STATUS_UX;
+    int canonical = address == (uint64_t)(int64_t)(int32_t)address;
+    int valid;
+    if (canonical) {
+        uint32_t a = (uint32_t)address;
+        valid = a < 0x80000000u || mode == 0 ||
+            (mode == 1 && a >= 0xc0000000u && a < 0xe0000000u);
+    } else {
+        unsigned region = address >> 62;
+        valid = (status & x) != 0;
+        if (region == 2)
+            valid &= mode == 0 && !(address & UINT64_C(0x07ffffff00000000));
+        else {
+            valid &= !(address & UINT64_C(0x3fffff0000000000));
+            valid &= region == 0 || (region == 1 && mode <= 1) || (region == 3 && mode == 0);
+            if (region == 3 && address >= UINT64_C(0xc00000ff80000000)) valid = 0;
+        }
+    }
+    if (valid) return 1;
+    cp0_set_fault_address(r, address);
+    r->cp0.regs[CP0_CAUSE_REG] = (r->cp0.regs[CP0_CAUSE_REG] & ~UINT32_C(0x3000007c)) |
+        (w == 1 ? CP0_CAUSE_EXCCODE_ADES : CP0_CAUSE_EXCCODE_ADEL);
+    exception_general(r);
+    return 0;
+}
+
+int r4300_translate_address64(struct r4300_core* r, uint64_t address, int w,
+                            uint32_t* physical, int* cached)
+{
+    if ((address >> 62) == 2) {
+        *physical = (uint32_t)address;
+        *cached = ((address >> 59) & 7) != 2;
+        return 1;
+    }
+    uint64_t hi = address & UINT64_C(0xc00000ffffffe000);
+    unsigned asid = r->cp0.regs[CP0_ENTRYHI_REG] & 255;
+    int matched = 0, modified = 0;
+    for (unsigned i = 0; i < 32; ++i) {
+        const struct tlb_entry* e = &r->cp0.tlb.entries[i];
+        uint64_t mask = (uint64_t)(unsigned short)e->mask << 13;
+        uint64_t entry = ((uint64_t)r->cp0.tlb_entryhi_hi[i] << 32) | ((uint64_t)e->vpn2 << 13);
+        if ((hi & ~mask) != (entry & ~mask) || (!e->g && e->asid != asid)) continue;
+        matched = 1;
+        unsigned page_size = ((unsigned short)e->mask + 1u) << 12;
+        int odd = (address & page_size) != 0;
+        int valid = odd ? e->v_odd : e->v_even;
+        modified = valid && w == 1 && !(odd ? e->d_odd : e->d_even);
+        if (!valid || modified) break;
+        *physical = ((odd ? e->pfn_odd : e->pfn_even) << 12 & ~(page_size - 1)) |
+            ((uint32_t)address & (page_size - 1));
+        *cached = (odd ? e->c_odd : e->c_even) != 2;
+        return 1;
+    }
+    int nested = (r->cp0.regs[CP0_STATUS_REG] & CP0_STATUS_EXL) != 0;
+    r->cp0.regs[CP0_CAUSE_REG] = (r->cp0.regs[CP0_CAUSE_REG] & ~UINT32_C(0x3000007c)) |
+        (modified ? CP0_CAUSE_EXCCODE_MOD : w == 1 ? CP0_CAUSE_EXCCODE_TLBS : CP0_CAUSE_EXCCODE_TLBL);
+    cp0_set_fault_address(r, address);
+    r->cp0.regs[CP0_ENTRYHI_REG] = (uint32_t)hi | asid;
+    r->cp0.regs_hi[CP0_ENTRYHI_REG] = (uint32_t)(hi >> 32);
+    /* Data helpers run after the PC increment; fetches run at the fault PC. */
+    if (w != 2 && !nested) r->instruction_pc.addr -= 4;
+    exception_general(r);
+    if (!nested && !matched)
+        generic_jump_to(r, (r->cp0.regs[CP0_STATUS_REG] & CP0_STATUS_BEV) ?
+            UINT32_C(0xbfc00280) : UINT32_C(0x80000080));
+    return 0;
+}
+
 void poweron_tlb(struct tlb* tlb)
 {
     /* clear TLB entries */

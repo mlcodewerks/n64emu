@@ -193,7 +193,7 @@ bool Compiler::instruction(uint32_t op) {
 static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,unsigned count,
     n64emujit_step callback,const n64emujit_config* config) {
     if(!jit||!ops||!callback||!count||count>32)return nullptr;
-    Compiler compiler;auto& host=compiler.host;host.frame();host.incoming_state();size_t chain=host.size();
+    Compiler compiler;auto& host=compiler.host;host.frame();host.incoming_state();
     Label exit;
     for(unsigned i=0;i<count;i++) {
         if(native_instruction(ops[i])) {
@@ -203,7 +203,15 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
     }
     if(config&&config->link) {
         host.mov(0,Assembler::STATE);host.argument(0,0);host.call(reinterpret_cast<const void*>(config->link));++compiler.calls;
-        host.immediate(CMP,0,0);host.branch(exit,EQ);host.jump_register(0);
+        host.immediate(CMP,0,0);host.branch(exit,EQ);
+#ifdef N64EMU_JIT32_ARM
+        host.mov(12,0);host.mov(0,Assembler::STATE);
+        host.leave();host.jump_register(12);
+#else
+        /* Publish ordinary ABI entries. Unwind this frame before the tail
+         * jump so a successor never inherits another block's frame layout. */
+        host.leave();host.jump_register(0);
+#endif
     }
     host.bind(exit);host.leave();host.ret();
     size_t bytes=host.size(),reserve=(bytes+15)&~size_t(15);
@@ -223,7 +231,7 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
 #endif
     if(!code_protect(jit->code+page_start,page_end-page_start,1))return nullptr;
     publication.published=true;jit->used+=reserve;++jit->blocks;jit->native+=compiler.native;jit->bytes+=bytes;jit->calls+=compiler.calls;
-    if(config&&config->chain_entry)*config->chain_entry=reinterpret_cast<n64emujit_entry>(entry+chain);
+    if(config&&config->chain_entry)*config->chain_entry=reinterpret_cast<n64emujit_entry>(entry);
     return reinterpret_cast<n64emujit_entry>(entry);
 }
 }

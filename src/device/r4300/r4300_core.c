@@ -56,6 +56,7 @@ void poweron_r4300(struct r4300_core* r4300)
     *r4300_pc_struct(r4300) = NULL;
     r4300->delay_slot = 0;
     r4300->skip_jump = 0;
+    r4300->pc_extension = 0;
     r4300->reset_hard_job = 0;
     r4300->stop = 0;
     r4300->startup =1;
@@ -141,15 +142,22 @@ uint32_t *fast_mem_access(struct r4300_core* r4300, uint32_t address)
      * Removing error checking saves some time, but the emulator may crash. */
 
     uint32_t virtual_address = address;
-    if ((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)) {
+    int cached;
+    if (r4300->pc_extension) {
+        uint64_t effective = (r4300->pc_extension & UINT64_C(0xffffffff00000000)) | address;
+        if (!r4300_translate_address64(r4300, effective, 2, &address, &cached)) return NULL;
+    } else if ((address & UINT32_C(0xc0000000)) != UINT32_C(0x80000000)) {
         address = virtual_to_physical_address(r4300, address, 2);
         if (address == 0) // TLB exception
             return NULL;
     }
 
     address &= UINT32_C(0x1ffffffc);
+    uint32_t status = r4300->cp0.regs[CP0_STATUS_REG];
+    if ((status & (CP0_STATUS_RE | CP0_STATUS_MODE_MASK | CP0_STATUS_EXL | CP0_STATUS_ERL)) ==
+        (CP0_STATUS_RE | UINT32_C(0x10))) address ^= 4;
 
-    if (r4300->cache_timing && r4300_access_cached(r4300,virtual_address)) {
+    if (r4300->cache_timing && (r4300->pc_extension ? cached : r4300_access_cached(r4300,virtual_address))) {
         unsigned index=(virtual_address>>5)&511;
         uint32_t key=(address&0x1ffff000u)|1;
         if(r4300->icache_tags[index]==key && r4300->icache_shadow_tags[index]==key)
@@ -265,7 +273,15 @@ void invalidate_r4300_cached_code(struct r4300_core* r4300, uint32_t address, si
 
 void generic_jump_to(struct r4300_core* r4300, uint32_t address)
 {
+    r4300->pc_extension = 0;
     *r4300_pc(r4300) = address;
+}
+
+void generic_jump_to64(struct r4300_core* r4300, uint64_t address)
+{
+    generic_jump_to(r4300, (uint32_t)address);
+    if (address != (uint64_t)(int64_t)(int32_t)address)
+        r4300->pc_extension = (address & UINT64_C(0xffffffff00000000)) | 1;
 }
 
 

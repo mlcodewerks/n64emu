@@ -320,18 +320,19 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
     emit_addimm(ADDRESS, (int16_t)instruction, ADDRESS);
     }
     exit->registers = regcache;
-    // XKPHYS must reach the shared handler before the address is truncated.
+    // Preserve extended addresses and reject malformed compatibility pointers.
     if (constant_address) {
-        if (((base_constant + uint64_t(int64_t(int16_t(instruction)))) >> 32) == UINT32_C(0x90000000)) {
+        uint64_t effective = base_constant + uint64_t(int64_t(int16_t(instruction)));
+        if (effective != uint64_t(int64_t(int32_t(effective)))) {
             assert(exit->guard_count < 16);
             exit->guards[exit->guard_count++] = emit_b();
         }
     } else {
-        emit_shift_reg(T0, 5, 32, 1);
-        emit_imm_op(7, T0, UINT32_C(0x90000000), 0);
-        memory_guard(exit, 4);
+        JIT(sxtw(XReg(T1), WReg(ADDRESS)));
+        emit_reg_op(0x39, T1, T0, 1);
+        memory_guard(exit, 5);
     }
-    if (write && size == 8) {
+    if (write) {
         emit_mem(0x8b, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, mi));
         emit_mem_imm(0xf7, 0, 0, T0, -1, 0, offsetof(struct mi_controller, regs[MI_INIT_MODE_REG]), 0x80);
         memory_guard(exit, 5);

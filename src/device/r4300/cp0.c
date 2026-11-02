@@ -29,7 +29,7 @@ void poweron_cp0(struct cp0* cp0)
     cp0_regs[CP0_RANDOM_REG] = UINT32_C(31);
     cp0_regs[CP0_STATUS_REG]= UINT32_C(0x34000000);
     cp0_regs[CP0_CONFIG_REG]= UINT32_C(0x7006e463);
-    cp0_regs[CP0_PREVID_REG] = UINT32_C(0xb00);
+    cp0_regs[CP0_PREVID_REG] = UINT32_C(0xb22);
     cp0_regs[CP0_COUNT_REG] = UINT32_C(0x5000);
     cp0_regs[CP0_CAUSE_REG] = UINT32_C(0x5c);
     cp0_regs[CP0_CONTEXT_REG] = UINT32_C(0x7ffff0);
@@ -217,6 +217,8 @@ void cp0_set_fault_address(struct r4300_core *r,uint64_t address)
     struct cp0 *cp=&r->cp0;
     cp->regs[CP0_BADVADDR_REG]=(uint32_t)address;
     cp->regs_hi[CP0_BADVADDR_REG]=(uint32_t)(address>>32);
+    cp->regs[CP0_ENTRYHI_REG]=(cp->regs[CP0_ENTRYHI_REG]&255)|((uint32_t)address&UINT32_C(0xffffe000));
+    cp->regs_hi[CP0_ENTRYHI_REG]=(uint32_t)((address&UINT64_C(0xc00000ff00000000))>>32);
     cp->regs[CP0_CONTEXT_REG]=(cp->regs[CP0_CONTEXT_REG]&UINT32_C(0xff800000))|
         ((uint32_t)(address>>9)&UINT32_C(0x007ffff0));
     uint64_t x=((uint64_t)cp->regs_hi[CP0_XCONTEXT_REG]<<32)|cp->regs[CP0_XCONTEXT_REG];
@@ -233,6 +235,7 @@ void TLB_refill_exception(struct r4300_core* r4300, uint32_t address, int w)
     if(!r4300->compat_issue_clock)cp0_step_cycles(&r4300->cp0,w==2?3:4);
     for(i=0;w==1 && i<32;++i) {
         const struct tlb_entry *e=&r4300->cp0.tlb.entries[i];
+        if(r4300->cp0.tlb_entryhi_hi[i] != ((int32_t)address < 0 ? UINT32_C(0xc00000ff) : 0))continue;
         if(!e->g && e->asid!=(cp0_regs[CP0_ENTRYHI_REG]&255))continue;
         if(address>=e->start_even && address<=e->end_even) {modified=e->v_even&&!e->d_even;break;}
         if(address>=e->start_odd && address<=e->end_odd) {modified=e->v_odd&&!e->d_odd;break;}
@@ -259,7 +262,7 @@ void TLB_refill_exception(struct r4300_core* r4300, uint32_t address, int w)
     {
        
         cp0_regs[CP0_EPC_REG] = *r4300_pc(r4300);
-        r4300->cp0.regs_hi[CP0_EPC_REG] = (int32_t)*r4300_pc(r4300) < 0 ? UINT32_MAX : 0;
+        r4300->cp0.regs_hi[CP0_EPC_REG] = (uint32_t)(r4300_pc64(r4300) >> 32);
 
         cp0_regs[CP0_CAUSE_REG] &= ~CP0_CAUSE_BD;
         cp0_regs[CP0_STATUS_REG] |= CP0_STATUS_EXL;
@@ -270,6 +273,7 @@ void TLB_refill_exception(struct r4300_core* r4300, uint32_t address, int w)
 
         for (i = 0; i < 32; i++)
         {
+            if(r4300->cp0.tlb_entryhi_hi[i] != ((int32_t)address < 0 ? UINT32_C(0xc00000ff) : 0))continue;
             if(!r4300->cp0.tlb.entries[i].g && r4300->cp0.tlb.entries[i].asid!=(cp0_regs[CP0_ENTRYHI_REG]&255))continue;
             if (/*r4300->cp0.tlb.entries[i].v_even &&*/ address >= r4300->cp0.tlb.entries[i].start_even &&
                     address <= r4300->cp0.tlb.entries[i].end_even) {
@@ -283,7 +287,7 @@ void TLB_refill_exception(struct r4300_core* r4300, uint32_t address, int w)
 
         generic_jump_to(r4300, (usual_handler)
                 ? UINT32_C(0x80000180)
-                : UINT32_C(0x80000000));
+                : (cp0_regs[CP0_STATUS_REG]&CP0_STATUS_KX) ? UINT32_C(0x80000080) : UINT32_C(0x80000000));
     }
 
     if (!nested) {
@@ -337,10 +341,12 @@ void exception_general(struct r4300_core* r4300)
             const uint32_t *next=fast_mem_access(r4300,next_pc);
             unsigned major=next?*next>>26:0;
             unsigned ce=major>=0x10&&major<=0x13?major&3:0;
+            const uint32_t *current=fast_mem_access(r4300,*r4300_pc(r4300));
+            if(r4300->delay_slot && current && (*current >> 26)==17 && ((*current >> 21)&31)==6)ce=0;
             cp0_regs[CP0_CAUSE_REG]=(cp0_regs[CP0_CAUSE_REG]&~UINT32_C(0x30000000))|(ce<<28);
         }
         cp0_regs[CP0_EPC_REG] = *r4300_pc(r4300);
-        r4300->cp0.regs_hi[CP0_EPC_REG] = (int32_t)*r4300_pc(r4300) < 0 ? UINT32_MAX : 0;
+        r4300->cp0.regs_hi[CP0_EPC_REG] = (uint32_t)(r4300_pc64(r4300) >> 32);
         if (r4300->delay_slot == 1 || r4300->delay_slot == 3) {
             cp0_regs[CP0_CAUSE_REG] |= CP0_CAUSE_BD;
             cp0_regs[CP0_EPC_REG] -= 4;

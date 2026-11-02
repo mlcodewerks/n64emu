@@ -48,5 +48,8 @@ void tlb_unmap(struct tlb* tlb, size_t entry);
 void tlb_map(struct tlb* tlb, size_t entry);
 
 uint32_t virtual_to_physical_address(struct r4300_core* r4300, uint32_t address, int w);
+int r4300_address_valid(struct r4300_core* r4300, uint64_t address, int w);
+int r4300_translate_address64(struct r4300_core* r4300, uint64_t address, int w,
+                            uint32_t* physical, int* cached);
 
 #endif /* N64EMU_DEVICE_R4300_TLB_H */

@@ -517,6 +517,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 struct regcache_state annul_registers;
                 struct memory_exit prepare = {0};
                 emit_region_guard(config, i, end - i, base, memory_count, &prepare);
+
                 if(ram_delay&&i==branch_index&&config->cache_timing&&!config->compat_issue_clock) {
                     uint32_t pc=config->virtual_pc+i*4,key=(config->physical_page<<12)|1;
                     emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,icache_tags)+((pc>>5)&511)*4,key);memory_guard(&prepare,5);
@@ -529,7 +530,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 regcache_begin(ops, i, end);
                 if(ram_delay && i==branch_index)emit_ram_delay_checkpoint(config->virtual_pc+i*4,ops[branch_index],false);
                 emit_mem_imm(0xc7, 0, 0, RSP, -1, 0, 8,0);
-                if (memory_region || likely_region) regcache.allow_dead_store = 0;
+                if (memory_region || likely_region || (branch_region && branch_major == 0)) regcache.allow_dead_store = 0;
                 emit_movimm(0, R13);
                 int pipeline_live = 1;
                 unsigned pending_cycles=0,pending_fetches=0;
@@ -541,6 +542,17 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                     int check_line = j == i || ((config->virtual_pc + j * 4) >> 5) !=
                         ((config->virtual_pc + (j - 1) * 4) >> 5);
                     enum r4300_opcode instruction_op = r4300_get_idec(ops[j])->opcode;
+                    if (j == branch_index && (instruction_op == R4300_OP_JR || instruction_op == R4300_OP_JALR)) {
+                        if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
+                        struct memory_exit* exit = &memory_exits[memory_exit_count++];
+                        *exit = {};
+                        exit->start = i; exit->index = j; exit->end = end;
+                        emit_state_load(gpr_offset((ops[j] >> 21) & 31), RAX);
+                        JIT(movsxd(Xbyak::Reg64(RDX), Xbyak::Reg32(RAX)));
+                        emit_reg_op(0x39, RDX, RAX, 1);
+                        exit->registers = regcache;
+                        memory_guard(exit, 5);
+                    }
                     if((check_line||((config->virtual_pc+j*4)&31)>=24)&&!config->compat_issue_clock&&(pending_cycles||pending_fetches)) {
                         emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;
                     }
@@ -628,6 +640,10 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
             regcache_flush();
             emit_region_commit_native(config, exit->start, exit->index - exit->start, 0);
             exits[exit_count++] = emit_step(block, exit->index, 2, step);
+            if (exit->index == branch_index) {
+                exits[exit_count++] = emit_b();
+                continue;
+            }
             unsigned base = 0, memory_count = 0;
             for (unsigned j = exit->index + 1; j < exit->end; ++j) {
                 base += r4300_base_cycles(ops[j], 0);

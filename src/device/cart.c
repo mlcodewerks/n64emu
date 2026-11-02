@@ -352,10 +352,11 @@ void read_cart_rom(void* opaque, uint32_t address, uint32_t* value)
     if (cart_rom->pi->regs[PI_STATUS_REG] & PI_STATUS_IO_BUSY)
     {
         *value = cart_rom->last_write;
+        cart_rom->pi->regs[PI_STATUS_REG] &= ~PI_STATUS_IO_BUSY;
     }
     else
     {
-        *value = *(uint32_t*)(cart_rom->rom + addr);
+        *value = addr + 4 <= cart_rom->rom_size ? *(uint32_t*)(cart_rom->rom + addr) : 0;
     }
 }
 
@@ -364,7 +365,7 @@ void write_cart_rom(void* opaque, uint32_t address, uint32_t value, uint32_t mas
     struct cart_rom* cart_rom = (struct cart_rom*)opaque;
     if (!validate_pi_request(cart_rom->pi))
         return;
-    cart_rom->last_write = value & mask;
+    cart_rom->last_write = value; /* PI ignores CPU byte enables. */
 
     /* Mark IO as busy */
     cart_rom->pi->regs[PI_STATUS_REG] |= PI_STATUS_IO_BUSY;

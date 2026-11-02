@@ -203,3 +203,15 @@ benchmarks/libdragon/*
 !benchmarks/libdragon/*.mk
 !benchmarks/libdragon/*.md
 !benchmarks/libdragon/validation.json
+
+# Accurate/LLE optimizer sources and compact evidence; generated runs stay local.
+!benchmarks/accurate-perf/
+benchmarks/accurate-perf/*
+!benchmarks/accurate-perf/cpu_cache_checks.c
+!benchmarks/accurate-perf/checks.mk
+!benchmarks/accurate-perf/rsp_mixed_checks.cpp
+!benchmarks/accurate-perf/gl_binding_checks.cpp
+!benchmarks/accurate-perf/perf_proxy.c
+!benchmarks/accurate-perf/retroarch_bench.py
+!benchmarks/accurate-perf/README.md
+!benchmarks/accurate-perf/validation.json

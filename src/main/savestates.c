@@ -42,7 +42,7 @@ _Static_assert(RDP_RASTER_STATE_OFFSET + 192 <= 20480,
     "RDP raster state overlaps optional HLE state");
 
 static const char* savestate_magic = "M64+SAVE";
-static const int savestate_latest_version = 0x00012100; /* 1.33: native pipeline and pending fetch deadlines */
+static const int savestate_latest_version = 0x00012200; /* 1.34: extended PC and DP pipe fence */
 
 struct savestate_work {
     char *data;
@@ -332,6 +332,16 @@ int core_state_load(struct device* dev, const void *data)
     memset(dev->r4300.icache_tags, 0, sizeof(dev->r4300.icache_tags));
     memset(dev->r4300.dcache_tags, 0, sizeof(dev->r4300.dcache_tags));
     memset(&dev->dp.timing, 0, sizeof(dev->dp.timing));
+    dev->dp.pipe_sync_deadline = 0;
+    if (version >= 0x00012200) {
+        curr = data_0001_0200 + 3936;
+        dev->r4300.pc_extension = GETDATA(curr, uint64_t);
+        dev->dp.pipe_sync_deadline = GETDATA(curr, int64_t);
+        if ((dev->r4300.pc_extension & UINT64_C(0xffffffff)) > 1 ||
+            dev->dp.pipe_sync_deadline < -1 || dev->dp.pipe_sync_deadline > INT64_MAX / 4) {
+            free(savestateData); return 0;
+        }
+    }
     dev->dp.timing.right = dev->dp.timing.bottom = 4095;
 
     if (version == 0x00010200)
@@ -1392,6 +1402,9 @@ int core_state_save(const struct device* dev, void *data)
     PUTDATA(curr, int64_t, dev->ai.dma_start_clock);
     PUTDATA(curr, int64_t, dev->ai.idle_clock);
     PUTDATA(curr, uint64_t, dev->ai.idle_phase);
+    curr = save->data + 16788288 + sizeof(queue) + 4 + 3936;
+    PUTDATA(curr, uint64_t, dev->r4300.pc_extension);
+    PUTDATA(curr, int64_t, dev->dp.pipe_sync_deadline);
 
     /* Reserved bytes before the cache extension; older states clear history. */
     curr = save->data + 16788288 + sizeof(queue) + 4 + 4032;

@@ -116,7 +116,7 @@ void init_device(struct device* dev,
         /* memory map */
         { A(MM_RDRAM_DRAM, dram_size-1), CORE_MEMORY_RDRAM, { &dev->rdram, RW(rdram_dram) } },
         { A(MM_RDRAM_REGS, 0xfffff), CORE_MEMORY_RDRAMREG, { &dev->rdram, RW(rdram_regs) } },
-        { A(MM_RSP_MEM, 0xffff), CORE_MEMORY_RSPMEM, { &dev->sp, RW(rsp_mem) } },
+        { A(MM_RSP_MEM, 0x3ffff), CORE_MEMORY_RSPMEM, { &dev->sp, RW(rsp_mem) } },
         { A(MM_RSP_REGS, 0xffff), CORE_MEMORY_RSPREG, { &dev->sp, RW(rsp_regs) } },
         { A(MM_RSP_REGS2, 0xffff), CORE_MEMORY_RSP, { &dev->sp, RW(rsp_regs2) } },
         { A(MM_DPC_REGS, 0xffff), CORE_MEMORY_DP, { &dev->dp, RW(dpc_regs) } },
@@ -130,8 +130,8 @@ void init_device(struct device* dev,
         { A(MM_DOM2_ADDR1, 0xffffff), CORE_MEMORY_NOTHING, { NULL, RW(open_bus) } },
         { A(MM_DD_ROM, 0x1ffffff), CORE_MEMORY_NOTHING, { NULL, RW(open_bus) } },
         { A(MM_DOM2_ADDR2, 0x1ffff), CORE_MEMORY_FLASHRAMSTAT, { &dev->cart, RW(cart_dom2)  } },
+        { MM_CART_ROM, UINT32_C(0x1fbfffff), CORE_MEMORY_ROM, { &dev->cart.cart_rom, RW(cart_rom) } },
         { A(MM_IS_VIEWER, 0xfff), CORE_MEMORY_NOTHING, { &dev->is, RW(is_viewer) } },
-        { A(MM_CART_ROM, rom_size-1), CORE_MEMORY_ROM, { &dev->cart.cart_rom, RW(cart_rom) } },
         { A(MM_PIF_MEM, 0xffff), CORE_MEMORY_PIF, { &dev->pif, RW(pif_mem) } }
     };
 

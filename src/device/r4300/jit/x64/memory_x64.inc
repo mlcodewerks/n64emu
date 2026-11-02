@@ -30,9 +30,10 @@ static void memory_guard(struct memory_exit* exit, unsigned condition)
 static void emit_write_buffer_drain_native(const struct n64emujit_config* config,unsigned unissued=0)
 {
     if(config->compat_issue_clock)return;
+    emit_mem_imm(0x83,0,7,R12,-1,0,offsetof(struct r4300_core,write_buffer_count),0);
+    auto *empty=emit_jump(4);
     JIT(push(Xbyak::Reg64(RAX)));JIT(push(Xbyak::Reg64(RDX)));
     emit_mem(0x8b,0,RAX,R12,-1,0,offsetof(struct r4300_core,write_buffer_count));
-    emit_reg_op(0x85,RAX,RAX,0);auto *empty=emit_jump(4);
     emit_addimm(RAX,-1,RAX);
     emit_mem(0x8b,1,RDX,R12,RAX,3,offsetof(struct r4300_core,write_buffer_end));
     emit_mem(0x8b,1,RAX,R12,-1,0,offsetof(struct r4300_core,cp0.count_clock));
@@ -43,14 +44,14 @@ static void emit_write_buffer_drain_native(const struct n64emujit_config* config
     emit_reg_op(0x85,RDX,RDX,1);auto *retired=emit_jump(14);
     emit_reg_op(0x01,RDX,R13,1);patch_jump(retired,out);
     emit_state_imm(offsetof(struct r4300_core,write_buffer_count),0,0);
-    patch_jump(empty,out);JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RAX)));
+    JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RAX)));patch_jump(empty,out);
 }
 static void emit_icache_fill_wait_native(const struct n64emujit_config* config,unsigned unissued=0,unsigned index=UINT32_MAX)
 {
     if(config->compat_issue_clock)return;
-    JIT(push(Xbyak::Reg64(RAX)));JIT(push(Xbyak::Reg64(RDX)));JIT(push(Xbyak::Reg64(RCX)));
     emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,icache_fill_index),index==UINT32_MAX?0:index+1);
     auto *skip=emit_jump(index==UINT32_MAX?4:5);
+    JIT(push(Xbyak::Reg64(RAX)));JIT(push(Xbyak::Reg64(RDX)));JIT(push(Xbyak::Reg64(RCX)));
     emit_mem(0x8b,1,RDX,R12,-1,0,offsetof(struct r4300_core,icache_fill_end));
     emit_mem(0x8b,1,RAX,R12,-1,0,offsetof(struct r4300_core,cp0.count_clock));
     emit_shift_reg(RAX,4,1,1);emit_reg_op(0x29,RAX,RDX,1);
@@ -60,7 +61,7 @@ static void emit_icache_fill_wait_native(const struct n64emujit_config* config,u
     emit_reg_op(0x85,RDX,RDX,1);auto *ready=emit_jump(14);
     emit_reg_op(0x01,RDX,R13,1);patch_jump(ready,out);
     emit_state_imm(offsetof(struct r4300_core,icache_fill_index),0,0);
-    patch_jump(skip,out);JIT(pop(Xbyak::Reg64(RCX)));JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RAX)));
+    JIT(pop(Xbyak::Reg64(RCX)));JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RAX)));patch_jump(skip,out);
 }
 static void emit_icache_prefetch_native(const struct n64emujit_config* config,unsigned unissued,unsigned index)
 {
@@ -126,21 +127,20 @@ static void emit_branch_prefetch(const struct n64emujit_config* config,unsigned 
 {
     if(!config->cache_timing||config->compat_issue_clock)return;
     emit_mem_imm(0xf7,0,0,RSP,-1,0,4,2);auto *uncached=emit_jump(4);
-    JIT(push(Xbyak::Reg64(RAX)));JIT(push(Xbyak::Reg64(RCX)));JIT(push(Xbyak::Reg64(RDX)));
-    emit_mov(R14,RAX);emit_imm_op(4,RAX,UINT32_C(0xfffff000),0);
-    emit_imm_op(7,RAX,config->virtual_pc&UINT32_C(0xfffff000),0);auto *different_page=emit_jump(5);
-    emit_mov(R14,RCX);emit_shift_reg(RCX,5,5,0);emit_imm_op(4,RCX,511,0);
+    // R11 is reserved scratch: the overwhelmingly common hit needs no saves.
+    emit_mov(R14,R11);emit_imm_op(4,R11,UINT32_C(0xfffff000),0);
+    emit_imm_op(7,R11,config->virtual_pc&UINT32_C(0xfffff000),0);auto *different_page=emit_jump(5);
+    emit_mov(R14,R11);emit_shift_reg(R11,5,5,0);emit_imm_op(4,R11,511,0);
     uint32_t key=(config->physical_page<<12)|1;
-    emit_mem_imm(0x81,0,7,R12,RCX,2,offsetof(struct r4300_core,icache_tags),key);auto *hit=emit_jump(4);
+    emit_mem_imm(0x81,0,7,R12,R11,2,offsetof(struct r4300_core,icache_tags),key);auto *hit=emit_jump(4);
     if(cold_exit) {
-        /* A RAM-delay guard can rewind the branch. Leave a cold target's
-         * metadata untouched until the precise branch owns that fetch. */
-        JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RCX)));JIT(pop(Xbyak::Reg64(RAX)));
+        // A rewind must leave the target fetch to the precise branch.
         *cold_exit=emit_b();
-        patch_jump(hit,out);patch_jump(different_page,out);
-        JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RCX)));JIT(pop(Xbyak::Reg64(RAX)));patch_jump(uncached,out);
+        patch_jump(hit,out);patch_jump(different_page,out);patch_jump(uncached,out);
         return;
     }
+    JIT(push(Xbyak::Reg64(RAX)));JIT(push(Xbyak::Reg64(RCX)));JIT(push(Xbyak::Reg64(RDX)));
+    emit_mov(R11,RCX);
     emit_icache_fill_wait_native(config);
     emit_mem(0x8b,0,RAX,R12,RCX,2,offsetof(struct r4300_core,icache_shadow_tags));
     emit_reg_op(0x85,RAX,RAX,0);auto *plain=emit_jump(4);
@@ -152,8 +152,9 @@ static void emit_branch_prefetch(const struct n64emujit_config* config,unsigned 
     emit_mem_imm(0xc7,0,0,R12,RCX,2,offsetof(struct r4300_core,icache_shadow_tags),0);
     patch_jump(plain,out);
     emit_mem_imm(0xc7,0,0,R12,RCX,2,offsetof(struct r4300_core,icache_tags),key);
-    emit_icache_prefetch_native(config,0,UINT32_MAX);patch_jump(hit,out);patch_jump(different_page,out);
-    JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RCX)));JIT(pop(Xbyak::Reg64(RAX)));patch_jump(uncached,out);
+    emit_icache_prefetch_native(config,0,UINT32_MAX);
+    JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RCX)));JIT(pop(Xbyak::Reg64(RAX)));
+    patch_jump(hit,out);patch_jump(different_page,out);patch_jump(uncached,out);
 }
 /* Fetch state changes happen only after the current instruction's guards.
  * A region stays on one code page, so its first fetch establishes the exact
@@ -212,10 +213,12 @@ static void emit_fetch_native(const struct n64emujit_config* config, unsigned in
 }
 static void emit_pipeline_clear(void)
 {
-    emit_state_imm(offsetof(struct r4300_core, pipeline_load_mask), 0, 1);
-    emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_result_mask), 0, 1);
-    emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_cc), 0, 0);
-    emit_state_imm(offsetof(struct r4300_core, pipeline_cached_store), 0, 0);
+    static_assert(offsetof(struct r4300_core,pipeline_fpu_result_mask)==offsetof(struct r4300_core,pipeline_load_mask)+8 &&
+        offsetof(struct r4300_core,pipeline_fpu_cc)==offsetof(struct r4300_core,pipeline_load_mask)+16 &&
+        offsetof(struct r4300_core,pipeline_cached_store)==offsetof(struct r4300_core,pipeline_load_mask)+20,"packed pipeline history");
+    JIT(pxor(Xbyak::Xmm(0),Xbyak::Xmm(0)));
+    JIT(movdqu(Xbyak::util::ptr[Xbyak::Reg64(R12)+offsetof(struct r4300_core,pipeline_load_mask)],Xbyak::Xmm(0)));
+    JIT(movq(Xbyak::util::ptr[Xbyak::Reg64(R12)+offsetof(struct r4300_core,pipeline_fpu_cc)],Xbyak::Xmm(0)));
 }
 /* Native timing cannot absorb LDI in a compatibility issue reservation. Test
  * raw fields just like the hardware's deliberately imprecise detector. */
@@ -238,20 +241,26 @@ static void emit_ldi_native(uint32_t instruction, int fp, uint32_t previous, int
         }
         return;
     }
-    unsigned rs = (instruction >> 21) & 31, rt = (instruction >> 16) & 31;
+    unsigned rt = (instruction >> 16) & 31;
     uint32_t candidates = r4300_pipeline_ldi_gprs(instruction);
     if (!fp && !candidates) return;
     emit_mem(0x8b, 1, RAX, R12, -1, 0, offsetof(struct r4300_core, pipeline_load_mask));
     unsigned char* fpr_history = NULL;
     if (fp) {
+        // Restored history can contain both banks. The shared detector gives
+        // FPR history priority, rather than treating an integer base match as
+        // an additional FP dependency in that case.
+        emit_mov64(RAX,RDX);emit_shift_reg(RDX,5,32,1);
+        emit_reg_op(0x85,RDX,RDX,0);auto *fpr=emit_jump(5);
+        emit_imm_op(4,RAX,candidates,0);auto *selected=emit_b();
+        patch_jump(fpr,out);
         emit_movimm64(UINT64_C(1) << (32 + rt), RDX);
         if (rt & 1) {
             emit_mem_imm(0xf7, 0, 0, R12, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
             unsigned char* fr = emit_jump(5);
             emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)), RDX); patch_jump(fr, out);
         }
-        if(rs)JIT(bts(Xbyak::Reg64(RDX),rs));
-        emit_reg_op(0x21, RDX, RAX, 1);
+        emit_reg_op(0x21, RDX, RAX, 1);patch_jump(selected,out);
     } else {
         emit_mov64(RAX, RDX); emit_shift_reg(RDX, 5, 32, 1);
         emit_reg_op(0x85, RDX, RDX, 0); fpr_history = emit_jump(5);
@@ -330,18 +339,19 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
     emit_addimm(R11, (int16_t)instruction, R11);
     }
     exit->registers = regcache;
-    // XKPHYS must reach the shared handler before the address is truncated.
+    // Preserve extended addresses and reject malformed compatibility pointers.
     if (constant_address) {
-        if (((base_constant + uint64_t(int64_t(int16_t(instruction)))) >> 32) == UINT32_C(0x90000000)) {
+        uint64_t effective = base_constant + uint64_t(int64_t(int16_t(instruction)));
+        if (effective != uint64_t(int64_t(int32_t(effective)))) {
             assert(exit->guard_count < 16);
             exit->guards[exit->guard_count++] = emit_b();
         }
     } else {
-        emit_shift_reg(RAX, 5, 32, 1);
-        emit_imm_op(7, RAX, UINT32_C(0x90000000), 0);
-        memory_guard(exit, 4);
+        JIT(movsxd(Xbyak::Reg64(RDX), Xbyak::Reg32(R11)));
+        emit_reg_op(0x39, RDX, RAX, 1);
+        memory_guard(exit, 5);
     }
-    if (write && size == 8) {
+    if (write) {
         emit_mem(0x8b, 1, RAX, R12, -1, 0, offsetof(struct r4300_core, mi));
         emit_mem_imm(0xf7, 0, 0, RAX, -1, 0, offsetof(struct mi_controller, regs[MI_INIT_MODE_REG]), 0x80);
         memory_guard(exit, 5);
@@ -354,8 +364,48 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_mov(R11, RAX); emit_imm_op(4, RAX, size - 1, 0);
         emit_reg_op(0x85, RAX, RAX, 0); memory_guard(exit, 5);
     }
+    unsigned char *direct_cache_hit = nullptr;
+    if (config->cache_timing == 1 && (!write || !config->fastmem) &&
+        (!constant_address || (fixed_direct && !(address & UINT32_C(0x20000000))))) {
+        // A real D-cache hit uses its resident bytes, even if backing RAM is
+        // GPU-owned or its handler has changed. KSEG0 needs no TLB/probe. Keep
+        // the full address, alignment, CU1 and MI guards above this shortcut.
+        // Tracked-code stores still need the shared invalidator; all misses,
+        // mapped accesses and tags-only mode retain the backing-memory path.
+        unsigned char *misses[4]; unsigned misses_count = 0;
+        if (!constant_address) {
+            emit_mov(R11,RAX);emit_imm_op(4,RAX,UINT32_C(0xe0000000),0);
+            emit_imm_op(7,RAX,UINT32_C(0x80000000),0);
+            misses[misses_count++] = emit_jump(5);
+        }
+        if ((config->virtual_pc & UINT32_C(0xe0000000)) == UINT32_C(0x80000000))
+            emit_mem_imm(0xf7,0,0,RSP,-1,0,4,2);
+        else {
+            emit_mem(0x8b,0,RAX,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_CONFIG_REG]));
+            emit_imm_op(4,RAX,7,0);emit_imm_op(7,RAX,2,0);
+        }
+        misses[misses_count++] = emit_jump(4);
+        emit_mov(R11,RCX);emit_shift_reg(RCX,5,4,0);emit_imm_op(4,RCX,511,0);
+        emit_mem(0x8b,0,RAX,R12,RCX,2,offsetof(struct r4300_core,dcache_tags));
+        emit_imm_op(4,RAX,~UINT32_C(2),0);
+        emit_mov(R11,RDX);emit_imm_op(4,RDX,UINT32_C(0x1ffff000),0);emit_imm_op(1,RDX,1,0);
+        emit_reg_op(0x39,RDX,RAX,0);misses[misses_count++] = emit_jump(5);
+        if (write) {
+            emit_mov(R11,RDX);emit_imm_op(4,RDX,UINT32_C(0x1ffff000),0);emit_shift_reg(RDX,5,12,0);
+            emit_mem(0x8b,1,RAX,R12,-1,0,offsetof(struct r4300_core,cached_code_pages));
+            JIT(bt(host_mem(64,RAX,-1,0,0),Xbyak::Reg64(RDX)));
+            misses[misses_count++] = emit_jump(2);
+            emit_mem_imm(0x81,0,1,R12,RCX,2,offsetof(struct r4300_core,dcache_tags),2);
+        }
+        emit_mov(R11,R14);emit_imm_op(4,R14,UINT32_C(0x1ffc),0);
+        emit_mem(0x8d,1,R14,R12,R14,0,offsetof(struct r4300_core,dcache_words));
+        emit_movimm(1,RCX);emit_movimm(r4300_dcache_hit_cycles(config->compat_issue_clock),RDX);
+        direct_cache_hit = emit_b();
+        for (unsigned n=0;n<misses_count;++n)patch_jump(misses[n],out);
+    }
     if (config->fastmem) {
-        /* The read probe precedes every cache/timing/guest side effect. Invalid
+        /* Outside the resident KSEG0 read shortcut, probe before any new
+         * cache/timing/guest side effect. Invalid
          * translations and protected code writes point at a private no-access
          * page; the host handler redirects this exact PC to the precise exit. */
         emit_movimm64((intptr_t)config->fastmem, R14);
@@ -499,6 +549,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
             patch_jump(larger, out); emit_movimm(R4300_UNCACHED_DATA_CYCLES, RDX); patch_jump(bus_ready, out);
         } else emit_movimm(R4300_UNCACHED_DATA_CYCLES, RDX);
         if(data_ready)patch_jump(data_ready,out);
+        if(direct_cache_hit)patch_jump(direct_cache_hit,out);
         emit_fetch_native(config, index, exit->start, 1, check_line);
         emit_reg_op(0x01, RDX, R13, 0);
         if (!r4300_issue_reservation(config->compat_issue_clock)) {

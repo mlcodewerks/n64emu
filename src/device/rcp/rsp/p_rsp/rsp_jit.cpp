@@ -1075,8 +1075,6 @@ bool CPU::jit_fold_scalar(Emitter *_jit, uint32_t instr)
     uint32_t imm = uint32_t(int32_t(int16_t(instr)));
     if (type >= 12) imm = uint16_t(instr);
     if (type == 15) return constant(rt, imm << 16);
-    // Keep SLTIU's existing RSP/reference immediate interpretation.
-    if (type == 11) imm = uint16_t(instr);
     if (kx) {
         switch (type) {
         case 8: case 9: return constant(rt, x + imm);
@@ -1659,7 +1657,13 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 
 	case 013: // SLTIU
 	{
-		TWO_REG_IMM_OP(lti_u, uint16_t, zext);
+		unsigned rs = (instr >> 21) & 31, rt = (instr >> 16) & 31;
+        if (rt) {
+            unsigned source = regs.load_mips_register_zext(_jit, rs);
+            unsigned dest = regs.modify_mips_register(_jit, rt);
+            _jit->lti_u(dest, source, HostWord(uint32_t(int32_t(int16_t(instr)))));
+            regs.unlock_mips_register(rs); regs.unlock_mips_register(rt);
+        }
 		break;
 	}
 
@@ -1792,6 +1796,7 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 		break;
 	}
 
+	case 047: // LWU has the same 32-bit scalar result on the RSP.
 	case 043: // LW
 	{
 		jit_emit_load_operation(_jit, pc, instr,
@@ -2214,21 +2219,31 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 
 		uint32_t instr = state.imem[pc_word + i];
 
-        unsigned vector_count = 1;
-#ifndef TRACE
+        unsigned vector_count = 1, span_count = 1;
+        uint32_t vector_words[8] = {instr};
         // First instructions can resolve a latent delay slot; branch targets
         // and ordinary delay slots also require individually visible state.
         auto vector_only = [](uint32_t instruction) {
             unsigned op = instruction & 63;
             return (instruction >> 25) == 0x25 && !quantize_opcode(op) && (op < 0x30 || op > 0x36);
         };
-        if (i && !last_info.branch && vector_only(instr))
-            while (vector_count < 8 && i + vector_count < instruction_count &&
-                   !block_entry[i + vector_count] && vector_only(state.imem[pc_word + i + vector_count]))
-                ++vector_count;
+#ifndef TRACE
+        if (i && !last_info.branch && vector_only(instr)) {
+            unsigned scanned = 1;
+            while (vector_count < 8 && scanned < 32 && i + scanned < instruction_count &&
+                   !block_entry[i + scanned]) {
+                uint32_t next = state.imem[pc_word + i + scanned];
+                unsigned dest; uint32_t reads;
+                if (vector_only(next)) {
+                    vector_words[vector_count++] = next;
+                    span_count = scanned + 1;
+                } else if (!scalar_access(next, dest, reads)) break;
+                ++scanned;
+            }
+        }
 #endif
         unsigned cycle_cost = 0;
-        for (unsigned j = 0; j < vector_count; j++) cycle_cost += timing_cost[i + j];
+        for (unsigned j = 0; j < span_count; j++) cycle_cost += timing_cost[i + j];
 		// Count execution, including loop iterations and branch delay slots.
 		// Emit before instructions that can return to the task scheduler.
 		// Omit zero-cost pair members and coalesced arithmetic updates, avoiding
@@ -2261,10 +2276,21 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 		InstructionInfo inst_info = {};
         if (vector_count > 1) {
 #ifdef RSP_JIT_PROFILE
-            if(profile){profile->spans[i]=vector_count;_jit->profile_counter(profile->hits+i);}
+            if(profile){profile->spans[i]=span_count;_jit->profile_counter(profile->hits+i);}
 #endif
-            _jit->native_vector_call(get_vector_sequence(state.imem + pc_word + i, vector_count));
-            i += vector_count - 1;
+            // Pure scalar ALU operations and vector arithmetic touch disjoint
+            // state. Keep each stream in order, then fuse the vector stream.
+            // Entry/delay slots, memory, CP0 and reciprocal operations remain
+            // barriers; the original pipeline costs above are unchanged.
+            for (unsigned j = 1; j < span_count; ++j) {
+                uint32_t scalar = state.imem[pc_word + i + j];
+                if (vector_only(scalar)) continue;
+                InstructionInfo scalar_info = {};
+                jit_instruction(_jit, (pc_word + i + j) << 2,
+                    dead_scalar[i + j] ? 0 : scalar, scalar_info, last_info, false, false);
+            }
+            _jit->native_vector_call(get_vector_sequence(vector_words, vector_count));
+            i += span_count - 1;
         } else {
 #ifdef RSP_JIT_PROFILE
             if(profile){profile->spans[i]=1;_jit->profile_counter(profile->hits+i);}

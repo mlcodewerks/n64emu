@@ -250,6 +250,33 @@ unsigned int fpu_native_eval(unsigned int fmt, unsigned int fn,
             ((flags >> 1) & 4) | ((flags << 1) & 8) | ((flags << 4) & 16);
     }
 #endif
+    /* ARM32's ABI helpers for int64 -> float/double need not update FPSCR,
+     * and need not honor its rounding mode. Encode the conversion directly
+     * so guest rounding and inexact exceptions do not depend on the host ABI. */
+    if ((fmt == 20 || fmt == 21) && (fn == 32 || fn == 33)) {
+        int64_t value = fmt == 20 ? (int64_t)(int32_t)abits : (int64_t)abits;
+        uint64_t magnitude = value < 0 ? UINT64_C(0) - (uint64_t)value : (uint64_t)value;
+        unsigned int precision = fn == 32 ? 23 : 52;
+        unsigned int top = 0;
+        if (!magnitude) { *bits = 0; return 0; }
+        for (uint64_t remaining = magnitude; remaining >>= 1;) ++top;
+        unsigned int drop = top > precision ? top - precision : 0;
+        uint64_t significand = drop ? magnitude >> drop : magnitude << (precision - top);
+        uint64_t remainder = drop ? magnitude & ((UINT64_C(1) << drop) - 1) : 0;
+        if (remainder) {
+            uint64_t halfway = UINT64_C(1) << (drop - 1);
+            int increment = rm == 0 ? (remainder > halfway ||
+                (remainder == halfway && (significand & 1))) :
+                rm == 2 ? value > 0 : rm == 3 && value < 0;
+            if (increment && ++significand == (UINT64_C(1) << (precision + 1))) {
+                significand >>= 1; ++top;
+            }
+        }
+        *bits = ((uint64_t)(value < 0) << (fn == 32 ? 31 : 63)) |
+            ((uint64_t)(top + (fn == 32 ? 127 : 1023)) << precision) |
+            (significand & ((UINT64_C(1) << precision) - 1));
+        return remainder != 0;
+    }
     cp1_reg a, b, result;
     fenv_t environment;
     static const int rounding[4] = {FE_TONEAREST, FE_TOWARDZERO, FE_UPWARD, FE_DOWNWARD};

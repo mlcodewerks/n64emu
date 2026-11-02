@@ -1518,7 +1518,10 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
 
 static n64emujit_entry ci_jit_link(struct r4300_core* r)
 {
-    if (breakloop || r->prefetch_valid || r->irq_writeback_pending || r->delay_slot || r->stop || (r->instruction_pc.addr & 3)) return NULL;
+    if (breakloop || r->prefetch_valid || r->irq_writeback_pending || r->delay_slot || r->stop ||
+        r->pc_extension || (r->instruction_pc.addr & 3) ||
+        ((r->cp0.regs[CP0_STATUS_REG] & CP0_STATUS_MODE_MASK) &&
+         !(r->cp0.regs[CP0_STATUS_REG] & (CP0_STATUS_EXL | CP0_STATUS_ERL)))) return NULL;
     struct r4300_jit_state* state = r->jit;
     uint32_t pc = r->instruction_pc.addr;
     /* Do not fetch, compile, run a polling shortcut or recycle an arena from
@@ -1584,7 +1587,9 @@ static void ci_execute_jit(struct r4300_core* r, int one)
 #ifdef N64EMU_USF
     if (n64emu_usf_yield()) { breakloop = true; return; }
 #endif
-    if(r->prefetch_valid||r->irq_writeback_pending){r4300_ops_execute_one(r);return;}
+    if(r->prefetch_valid||r->irq_writeback_pending||r->pc_extension||
+        ((r->cp0.regs[CP0_STATUS_REG]&CP0_STATUS_MODE_MASK)&&
+         !(r->cp0.regs[CP0_STATUS_REG]&(CP0_STATUS_EXL|CP0_STATUS_ERL)))){r4300_ops_execute_one(r);return;}
     /* A delay slot remains one precise instruction, never a nested native
      * compilation that could recycle the caller's executable arena. */
     if (r->delay_slot) { ci_execute_one(r); return; }

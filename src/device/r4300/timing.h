@@ -107,7 +107,8 @@ static osal_force_inline int r4300_begin_prefetched_instruction_cycles(struct r4
     /* IF is two instructions ahead of the committing store. Capture the next
      * line now, but let older instructions retire while its fill is pending.
      * Stay within this translation; speculative fetch must not raise faults. */
-    if(cache_timing&&!issue&&(pc&31)>=24&&(pc&0xfff)<0xff8&&r4300_access_cached(r4300,pc))
+    if(cache_timing&&!issue&&(pc&31)>=24&&(pc&0xfff)<0xff8&&r4300_access_cached(r4300,pc)&&
+       !r4300_instruction_writeback(r4300,op))
         r4300_prefetch_access_cycles(r4300,pc+8);
     uint32_t status = r4300->cp0.regs[CP0_STATUS_REG];
     if ((status & CP0_STATUS_MODE_MASK) && !(status & (CP0_STATUS_EXL | CP0_STATUS_ERL))) {

@@ -81,6 +81,8 @@ struct rdp_core
     unsigned char do_on_unfreeze;
     uint32_t clock_base;
     uint32_t clock_offset;
+    /* -1: open pipe; positive: FullSync completion in COUNT ticks. */
+    int64_t pipe_sync_deadline;
 
     struct fb fb;
 

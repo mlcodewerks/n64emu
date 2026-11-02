@@ -1,7 +1,11 @@
 
 static void emit_direct_links(void* block, const struct n64emujit_config* config)
 {
-    unsigned char* misses[17]; unsigned miss_count = 0;
+    unsigned char* misses[19]; unsigned miss_count = 0;
+    /* The cache key is a 32-bit kernel PC. Extended and privileged-mode
+     * transitions must return through the precise dispatcher. */
+    emit_mem_imm(0x81,1,7,R12,-1,0,offsetof(struct r4300_core,pc_extension),0); misses[miss_count++] = emit_jump(5);
+    emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_MODE_MASK); misses[miss_count++] = emit_jump(5);
     if(!config->compat_issue_clock){emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,irq_writeback_pending),0);misses[miss_count++]=emit_jump(5);}
     emit_movimm64((intptr_t)&breakloop,RAX);
     emit_mem_imm(0x80,0,7,RAX,-1,0,0,0); misses[miss_count++] = emit_jump(5);

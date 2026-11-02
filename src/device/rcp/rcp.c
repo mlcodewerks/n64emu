@@ -568,16 +568,41 @@ static void dma_pi_write(struct pi_controller* pi)
         return;
     }
 
-    if (length >= 0x7f && (length & 1))
-        length += 1;
-    if (length <= 0x80)
-        length = length > (dram_addr & 7) ? length - (dram_addr & 7) : 0;
+    unsigned misalign = dram_addr & 7;
+    unsigned first_span = 2048 - (dram_addr & 2047);
+    if (first_span > 128 - misalign) first_span = 128 - misalign;
+    unsigned round_threshold = first_span < 8 ? first_span : first_span - 2;
+    if (length >= round_threshold) length = (length + 1) & ~1u;
+    if (length < first_span) length = length > misalign ? length - misalign : 0;
+    unsigned second_hole = first_span + 128 - misalign;
+    int short_first = first_span < 8;
+    if (short_first && length > second_hole) length += misalign;
     uint32_t available = dram_addr < pi->ri->rdram->dram_size
         ? (uint32_t)pi->ri->rdram->dram_size - dram_addr : 0;
     if (available > length) available = length;
     if (available) {
         invalidate_r4300_cached_code(pi->mi->r4300, dram_addr, available);
-        handler->dma_write(opaque, dram, dram_addr, cart_addr, available);
+        if (!misalign) handler->dma_write(opaque, dram, dram_addr, cart_addr, available);
+        else {
+            /* PI's first 128-byte buffer loses the initial destination lanes.
+             * At a short RDRAM-page boundary, the following buffer inherits
+             * that lane displacement too. Read every source byte, including
+             * the bytes consumed by holes, without modifying their RAM lanes. */
+            uint8_t buffer[128];
+            uint32_t buffered = UINT32_MAX;
+            for (unsigned i = 0; i < available; ++i) {
+                unsigned hole_begin = first_span > misalign ? first_span - misalign : 0;
+                if (i >= hole_begin && i < first_span) continue;
+                if (short_first && i >= second_hole && i < second_hole + misalign) continue;
+                unsigned source = short_first && i >= second_hole ? i - misalign : i;
+                unsigned block = source & ~127u;
+                if (buffered != block) {
+                    handler->dma_write(opaque, buffer, 0, cart_addr + block, sizeof(buffer));
+                    buffered = block;
+                }
+                dram[(dram_addr + i) ^ S8] = buffer[(source & 127) ^ S8];
+            }
+        }
     }
 
     if (available) {

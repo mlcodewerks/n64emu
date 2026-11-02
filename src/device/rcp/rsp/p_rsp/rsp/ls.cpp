@@ -298,17 +298,15 @@ extern "C"
 	void RSP_STV(RSP::CPUState *rsp, unsigned rt, unsigned e, int offset, unsigned base)
 	{
 		TRACE_LS(STV);
-		if (e & 1)
-			return;
-		if (rt & 7)
-			return;
 		unsigned addr = (rsp->sr[base] + offset * 16) & 0xfff;
-		if (addr & 0xf)
-			return;
-
-		for (unsigned i = 0; i < 8; i++)
+		unsigned window = addr & ~7u;
+		unsigned group = rt & ~7u;
+		for (unsigned i = 0; i < 16; i++)
 		{
-			WRITE_MEM_U16(rsp->dmem, addr + 2 * i, rsp->cp2.regs[rt + ((e / 2 + i) & 7)].e[i]);
+			unsigned reg = group + (((i >> 1) - (window >> 1) + (e >> 1)) & 7);
+			const auto *bytes = reinterpret_cast<const uint8_t *>(rsp->cp2.regs[reg].e);
+			WRITE_MEM_U8(rsp->dmem, (window + ((addr + i) & 15)) & 0xfff,
+			    bytes[MES((i + window) & 15)]);
 		}
 	}
 

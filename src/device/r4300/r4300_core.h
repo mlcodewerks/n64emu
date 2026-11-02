@@ -93,6 +93,9 @@ struct r4300_core
 
     /* Current instruction cursor and native block-cache runtime. */
     struct precomp_instr instruction_pc;
+    /* Noncanonical PC: high word plus a low-bit presence flag. Zero keeps
+     * the compatibility JIT cursor sign extended without extra hot stores. */
+    uint64_t pc_extension;
     void (*execute_one)(struct r4300_core* r4300);
     struct r4300_jit_state* jit;
     uint64_t* cached_code_pages;
@@ -149,7 +152,8 @@ struct r4300_core
     uint64_t retired_ops,random_epoch,random_wired_deadline[2];
     uint32_t random_value,random_bound,random_wired_value[2],random_wired_count;
     /* Transient branch pipeline context, unwound before an issue boundary. */
-    uint32_t branch_target,branch_sequence;
+    uint64_t branch_target;
+    uint32_t branch_sequence;
     uint64_t irq_writeback_deadline;
     uint32_t irq_writeback_pending;
     uint64_t icache_fill_end;
@@ -217,6 +221,12 @@ void invalidate_r4300_cached_code(struct r4300_core* r4300, uint32_t address, si
 /* Jump to the given address. This works for all r4300 emulator, but is slower.
  * Use this for common code which can be executed from any r4300 emulator. */
 void generic_jump_to(struct r4300_core* r4300, unsigned int address);
+void generic_jump_to64(struct r4300_core* r4300, uint64_t address);
+static osal_force_inline uint64_t r4300_pc64(const struct r4300_core* r)
+{
+    return r->pc_extension ? (r->pc_extension & UINT64_C(0xffffffff00000000)) | r->instruction_pc.addr
+                           : (uint64_t)(int64_t)(int32_t)r->instruction_pc.addr;
+}
 
 void savestates_load_set_pc(struct r4300_core* r4300, uint32_t pc);
 

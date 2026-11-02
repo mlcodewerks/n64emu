@@ -128,6 +128,7 @@ class GL2 final : public Device {
     std::array<GLuint, 13> raster_programs_{};
     std::map<std::pair<RasterShader, RasterKey>, GLuint> raster_specialized_;
     std::unordered_map<GLuint, std::array<GLint, 13>> raster_locations_;
+    std::unordered_map<GLuint, std::array<Float4, 112>> raster_constants_;
     std::unique_ptr<Guard> raster_guard_;
     GLuint raster_program(RasterShader pass, const RasterDraw *specialize = nullptr) {
         auto &id = specialize ? raster_specialized_[{pass, raster_key(*specialize)}]
@@ -205,11 +206,22 @@ class GL2 final : public Device {
         }
         const auto &locations = it->second;
         UseProgram(p);
-        Uniform4fv(locations[0], 112, constants[0].data());
+        if (inserted)
+            for (unsigned i = 0; i < 12; i++)
+                if (locations[i + 1] >= 0) Uniform1i(locations[i + 1], i);
+        auto &previous = raster_constants_[p];
+        unsigned first = 0, last = unsigned(constants.size());
+        if (!inserted) {
+            while (first < last && !std::memcmp(previous[first].data(), constants[first].data(), sizeof(Float4))) ++first;
+            while (last > first && !std::memcmp(previous[last - 1].data(), constants[last - 1].data(), sizeof(Float4))) --last;
+        }
+        if (first < last && locations[0] >= 0)
+            Uniform4fv(locations[0] + first, last - first, constants[first].data());
+        previous = constants;
         for (unsigned i = 0; i < 12; i++) {
+            if (locations[i + 1] < 0) continue;
             ActiveTexture(GL_TEXTURE0 + i);
             glBindTexture(GL_TEXTURE_2D, textures[i]);
-            Uniform1i(locations[i + 1], i);
         }
     }
     GLuint shader(GLenum type, const std::string &source) {
@@ -618,6 +630,7 @@ class GL2 final : public Device {
                 DeleteProgram(p);
         raster_specialized_.clear();
         raster_locations_.clear();
+        raster_constants_.clear();
         while (!raster_targets_.empty())
             release(raster_targets_.begin()->first, 0);
         combined_ = alpha0_ = texel0_ = texel1_ = lod_ = 0;

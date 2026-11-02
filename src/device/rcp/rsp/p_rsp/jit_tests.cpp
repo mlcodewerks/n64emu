@@ -108,7 +108,7 @@ static void scalar_registers()
             case 17: instr = i_op(14,d,a,imm); value = x ^ uint16_t(imm); break;
             case 18: instr = i_op(15,d,0,imm); value = uint32_t(uint16_t(imm)) << 16; break;
             case 19: instr = i_op(13,d,a,imm); value = x | uint16_t(imm); break;
-            case 20: instr = i_op(11,d,a,imm); value = x < uint16_t(imm); break;
+            case 20: instr = i_op(11,d,a,imm); value = x < uint32_t(int32_t(imm)); break;
             case 21: instr = i_op(9,d,0,imm); value = uint32_t(int32_t(imm)); break;
             case 22: instr = r_op(0x26,d,a,a); value = 0; break;
             }

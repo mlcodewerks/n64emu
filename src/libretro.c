@@ -692,12 +692,18 @@ void retro_run(void)
     struct performance_affinity emulation_affinity;
     performance_emulation_enter(&emulation_affinity);
     sync_begin();
+#ifdef HAVE_LEGACY_GPU
+    if (renderer_legacy_gpu(renderer_settings.renderer)) legacygpu_begin_frame();
+#endif
 #ifdef HAVE_GLRDP
     if (renderer_native_gpu(renderer_settings.renderer)) glrdp_begin_frame();
 #endif
     const bool first_frame = initializing;
     const int64_t audio_start_clock = g_dev.r4300.cp0.count_clock;
     run_emulation_frame();
+#ifdef HAVE_LEGACY_GPU
+    if (renderer_legacy_gpu(renderer_settings.renderer)) legacygpu_end_frame();
+#endif
 #ifdef HAVE_GLRDP
     if (renderer_native_gpu(renderer_settings.renderer)) glrdp_end_frame();
 #endif
