@@ -7,12 +7,13 @@
  * and refresh latency distributions are not completely modeled.
  */
 enum {
-    /* Retained shared estimate from the DK64 80/96-clock sweep: 96 completes
-     * the tested crossing in both cache modes with HLE or native RSP. The
-     * selected Nemu groups pass at either value and do not independently
-     * measure instruction-fill latency. See benchmarks/dk64-timing/
-     * MEMORY_INTERLOCKS.md and benchmarks/cpu-optimizer/ACCURATE_FB.md. */
-    R4300_ICACHE_FILL_CYCLES = 96,
+    /* Shared service estimate, checked against the DK64 opening and other
+     * fixed video intervals. The 80-clock probe misses the vine; 88 retains
+     * the crossing and reduces sequence drift. Cache differentials and Nemu
+     * check implementation consistency,
+     * but do not independently measure instruction-fill latency. See
+     * rdp_timing/reports/DK64_TIMING_ANALYSIS.md. */
+    R4300_ICACHE_FILL_CYCLES = 88,
     R4300_DCACHE_FILL_CYCLES = 41,
     R4300_COMPAT_DCACHE_FILL_CYCLES = 40,
     R4300_DCACHE_WRITEBACK_CYCLES = 40,

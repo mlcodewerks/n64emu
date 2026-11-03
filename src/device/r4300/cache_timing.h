@@ -24,7 +24,7 @@ static osal_force_inline unsigned r4300_dcache_hit_cycles(unsigned compatibility
 
 /* Ares CPU cache model: 16 KiB I-cache / 32-byte lines, 8 KiB D-cache /
  * 16-byte lines, direct mapped with virtual indices and physical tags.
- * I-cache fills cost 96 CPU cycles; native D-cache fills cost 41 before VI
+ * I-cache fills cost 88 CPU cycles; native D-cache fills cost 41 before VI
  * arbitration. Compatibility fills and writebacks cost 40 CPU cycles.
  * The cache keeps write-back contents. VI arbitration is a coarse surcharge;
  * shared CPU/RSP/RDP bus arbitration remains unmodeled. */

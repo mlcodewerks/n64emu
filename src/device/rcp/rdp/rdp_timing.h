@@ -4,9 +4,18 @@
 #include <stdint.h>
 #include <string.h>
 
+/* Standalone C99/C++ header: no emulator structs or renderer calls required.
+ * Inputs are numeric N64 command words and monotonic CPU COUNT timestamps.
+ * See rdp_timing/portable/rdp_timing_adapter.h and RDP_TIMING_RESEARCH.txt for
+ * host integration, big-endian byte input, fences and restore requirements. */
+
 #ifndef RDP_TIMING_OBSERVE_SPAN
-#define RDP_TIMING_OBSERVE_SPAN(t, pixels, rows) ((void)0)
+#define RDP_TIMING_OBSERVE_SPAN(t, pixels, rows) ((void)(t), (void)(pixels), (void)(rows))
+#endif
+#ifndef RDP_TIMING_OBSERVE_COMMAND
 #define RDP_TIMING_OBSERVE_COMMAND(t, op, work) ((void)0)
+#endif
+#ifndef RDP_TIMING_OBSERVE_FINISH
 #define RDP_TIMING_OBSERVE_FINISH(t, submitted) ((void)0)
 #endif
 
@@ -47,7 +56,7 @@ struct rdp_timing {
 /* Command-derived uniform regions are proofs, not samples from GPU-stale
  * RDRAM. CPU/DMA and overlapping raster writes invalidate them. Unknown or
  * partially overwritten regions retain conservative work. */
-static void rdp_timing_invalidate_range(struct rdp_timing *t, uint32_t address, uint64_t bytes)
+static inline void rdp_timing_invalidate_range(struct rdp_timing *t, uint32_t address, uint64_t bytes)
 {
     address &= 0xffffffu;
     uint64_t end_write = (uint64_t)address + bytes;
@@ -59,26 +68,26 @@ static void rdp_timing_invalidate_range(struct rdp_timing *t, uint32_t address, 
             (end_write > 0x1000000 && u->address < end_write - 0x1000000))) u->valid = 0;
     }
 }
-static uint32_t rdp_timing_decompress_z(uint32_t packed)
+static inline uint32_t rdp_timing_decompress_z(uint32_t packed)
 {
     static const unsigned shift[8] = {6,5,4,3,2,1,0,0};
     static const uint32_t add[8] = {0,0x20000,0x30000,0x38000,0x3c000,0x3e000,0x3f000,0x3f800};
     unsigned exponent = (packed >> 13) & 7;
     return add[exponent] + (((packed >> 2) & 0x7ff) << shift[exponent]);
 }
-static uint32_t rdp_timing_quantize_z(uint32_t z)
+static inline uint32_t rdp_timing_quantize_z(uint32_t z)
 {
     unsigned shift = z < 0x20000 ? 6 : z < 0x30000 ? 5 : z < 0x38000 ? 4 :
         z < 0x3c000 ? 3 : z < 0x3e000 ? 2 : z < 0x3f000 ? 1 : 0;
     return (z >> shift) << shift;
 }
-static struct rdp_uniform_depth *rdp_timing_uniform(struct rdp_timing *t, uint32_t address)
+static inline struct rdp_uniform_depth *rdp_timing_uniform(struct rdp_timing *t, uint32_t address)
 {
     for (unsigned i = 0; i < 8; ++i)
         if (t->uniform[i].valid && t->uniform[i].address == address) return &t->uniform[i];
     return NULL;
 }
-static void rdp_timing_record_uniform(struct rdp_timing *t, uint32_t address,
+static inline void rdp_timing_record_uniform(struct rdp_timing *t, uint32_t address,
     uint32_t width, uint32_t height, uint32_t z)
 {
     if ((address & 7) || !t->rdram_bytes || (uint64_t)address + (uint64_t)width * height * 2 > t->rdram_bytes) return;
@@ -91,7 +100,7 @@ static void rdp_timing_record_uniform(struct rdp_timing *t, uint32_t address,
 }
 /* -1 unknown, 0 passes, 1 rejected. The cancelled alpha mux leaves only D.
  * Coverage-dependent alpha and noise thresholds need per-pixel information. */
-static int rdp_timing_alpha_result(const struct rdp_timing *t)
+static inline int rdp_timing_alpha_result(const struct rdp_timing *t)
 {
     if (!(t->modes & 1)) return 0;
     if (t->modes & (2u | 0x3000u)) return -1;
@@ -106,7 +115,7 @@ static int rdp_timing_alpha_result(const struct rdp_timing *t)
     else return -1;
     return alpha < (t->blend_color & 255);
 }
-static int rdp_timing_depth_result(struct rdp_timing *t, unsigned x1, unsigned y1)
+static inline int rdp_timing_depth_result(struct rdp_timing *t, unsigned x1, unsigned y1)
 {
     if (!(t->modes & 0x10)) return 0;
     if (!(t->modes & 4) || (t->modes & (0xc00u | 0x3000u | 8u))) return -1;
@@ -121,7 +130,7 @@ static int rdp_timing_depth_result(struct rdp_timing *t, unsigned x1, unsigned y
     return -1;
 }
 
-static int32_t rdp_timing_signed(uint32_t value, unsigned bits)
+static inline int32_t rdp_timing_signed(uint32_t value, unsigned bits)
 {
     return (int32_t)(value << (32 - bits)) >> (32 - bits);
 }
@@ -129,23 +138,23 @@ static int32_t rdp_timing_signed(uint32_t value, unsigned bits)
 /* Count 64-bit words touched by a contiguous bit range. Partial words
  * cannot be shared between scanlines. Address alignment is a bus-work
  * approximation, not an RDRAM latency or arbitration model. */
-static uint64_t rdp_timing_bus_words(uint64_t first_bit, uint64_t bits)
+static inline uint64_t rdp_timing_bus_words(uint64_t first_bit, uint64_t bits)
 {
     return bits ? ((first_bit & 63) + bits + 63) / 64 : 0;
 }
 
-static int rdp_timing_keeps_row(const struct rdp_timing* t, int y)
+static inline int rdp_timing_keeps_row(const struct rdp_timing* t, int y)
 {
     return !(t->scissor_field & 2) || ((y & 1) == (int)(t->scissor_field & 1));
 }
 
-static int rdp_timing_row_conflict(uint64_t a, uint64_t b)
+static inline int rdp_timing_row_conflict(uint64_t a, uint64_t b)
 {
     return (a >> 23) == (b >> 23) && (a >> 14) != (b >> 14);
 }
 
 /* A live register binding alone does not imply scanout memory traffic. */
-static int rdp_timing_vi_enabled(const struct rdp_timing *t)
+static inline int rdp_timing_vi_enabled(const struct rdp_timing *t)
 {
     const uint32_t *v = t->vi_regs;
     if (!v || (v[0] & 3) < 2 || !t->vi_field_ticks) return 0;
@@ -164,7 +173,7 @@ static int rdp_timing_vi_enabled(const struct rdp_timing *t)
  * Arbitration stretches memory service, leaving pixel work free to overlap.
  * Coverage-dependent extra-line fetches and horizontal burst phase are not
  * simulated. Vertical phase and source-row banking follow programmed VI. */
-static uint64_t rdp_timing_vi_service(const struct rdp_timing *t, uint64_t bus, uint64_t overlap,
+static inline uint64_t rdp_timing_vi_service(const struct rdp_timing *t, uint64_t bus, uint64_t overlap,
     uint64_t color, uint64_t depth, unsigned color_stream, unsigned depth_stream,
     unsigned depth_write)
 {
@@ -232,25 +241,41 @@ static uint64_t rdp_timing_vi_service(const struct rdp_timing *t, uint64_t bus, 
     return elapsed;
 }
 
-static uint64_t rdp_timing_vi_bus(const struct rdp_timing *t, uint64_t bus,
+static inline uint64_t rdp_timing_vi_bus(const struct rdp_timing *t, uint64_t bus,
     uint64_t color, uint64_t depth, unsigned color_stream, unsigned depth_stream,
     unsigned depth_write)
 {
     return rdp_timing_vi_service(t, bus, 0, color, depth, color_stream, depth_stream, depth_write);
 }
 
+/* Estimate a 16-byte color buffer: eight RGBA16 or four RGBA32 pixels.
+ * Only RGBA16 is hardware-calibrated. RGBA32 conservatively services Z at
+ * each color-buffer boundary too, even though Z remains 16 bits per pixel.
+ * Retain the historical eight-pixel fallback for other framebuffer sizes. */
+static inline unsigned rdp_timing_buffer_pixels(unsigned bpp)
+{
+    return bpp == 32 ? 4u : 8u;
+}
+
+static inline unsigned rdp_timing_buffers(unsigned bpp, unsigned left, unsigned right)
+{
+    unsigned pixels = rdp_timing_buffer_pixels(bpp);
+    return right > left ? (right + pixels - 1) / pixels - left / pixels : 0;
+}
+
 /* Preserve the calibrated buffered row-switch estimate, but classify each
- * eight-pixel buffer at its own address. A span can cross a 2 KiB row or a
+ * color buffer at its own address. A span can cross a 2 KiB row or a
  * 1 MiB bank, so its first pixel cannot classify every buffer. The common
  * case stays constant-time; only boundary-crossing spans need a buffer walk.
  * This still estimates transactions from buffer entry addresses, rather
  * than modeling individual RDRAM requests or keeping rows open across spans. */
-static uint64_t rdp_timing_row_clocks(uint64_t color, uint64_t depth,
+static inline uint64_t rdp_timing_row_clocks(uint64_t color, uint64_t depth,
     unsigned bpp, unsigned left, unsigned right, unsigned color_read,
     unsigned depth_read, unsigned color_write, unsigned depth_write)
 {
     if (right <= left || !(depth_read || depth_write)) return 0;
-    unsigned segments = (right + 7) / 8 - left / 8;
+    unsigned segments = rdp_timing_buffers(bpp, left, right);
+    unsigned mask = rdp_timing_buffer_pixels(bpp) - 1;
     unsigned switches = (color_read && depth_read) + depth_write;
     /* These paths leave a row switch between buffers that is not covered
      * by the existing read/write turnaround estimate: read-only color/Z,
@@ -276,24 +301,25 @@ static uint64_t rdp_timing_row_clocks(uint64_t color, uint64_t depth,
         }
         previous_color = c;
         previous_depth = d;
-        x = (x | 7u) + 1;
+        x = (x | mask) + 1;
     }
     return clocks;
 }
 
 /* Count buffers whose complete color/Z ranges occupy separate banks.
  * Partial buffers crossing a bank retain the conservative turnaround cost. */
-static uint64_t rdp_timing_separate_buffers(uint64_t color, uint64_t depth,
+static inline uint64_t rdp_timing_separate_buffers(uint64_t color, uint64_t depth,
     unsigned bpp, unsigned left, unsigned right)
 {
     if (right <= left) return 0;
     uint64_t c_last = color + (uint64_t)(right - left - 1) * bpp;
     uint64_t d_last = depth + (uint64_t)(right - left - 1) * 16;
     if ((color >> 23) == (c_last >> 23) && (depth >> 23) == (d_last >> 23))
-        return (color >> 23) != (depth >> 23) ? (right + 7) / 8 - left / 8 : 0;
+        return (color >> 23) != (depth >> 23) ? rdp_timing_buffers(bpp, left, right) : 0;
     uint64_t separate = 0;
+    unsigned mask = rdp_timing_buffer_pixels(bpp) - 1;
     for (unsigned x = left; x < right;) {
-        unsigned end = (x | 7u) + 1;
+        unsigned end = (x | mask) + 1;
         if (end > right) end = right;
         uint64_t c = color + (uint64_t)(x - left) * bpp;
         uint64_t d = depth + (uint64_t)(x - left) * 16;
@@ -305,7 +331,9 @@ static uint64_t rdp_timing_separate_buffers(uint64_t color, uint64_t depth,
     return separate;
 }
 
-/* RDRAM transfers are buffered in eight-pixel (RGBA16) span segments. Charge bus
+/* RDRAM transfers use estimated 16-byte color-buffer segments (eight RGBA16
+ * or four RGBA32 pixels). RGBA32 segmentation is a capacity extrapolation,
+ * not a measured hardware buffer size. Charge bus
  * traffic independently of pixel throughput, allowing the two to overlap.
  * The 15-clock span startup, 5-clock transaction and 3-clock turnaround
  * overheads are estimates checked against Thar0/RDP-Timing-Tests, not
@@ -313,7 +341,7 @@ static uint64_t rdp_timing_separate_buffers(uint64_t color, uint64_t depth,
  * VI reserves memory service through the coarse model above; other RCP
  * clients and individual memory requests remain unmodeled. Uniform
  * command-derived rejection suppresses stores while retaining earlier reads. */
-static uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, int right)
+static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, int right)
 {
     if (right <= left || !rdp_timing_keeps_row(t, y)) return 0;
     uint64_t pixels = (unsigned)(right - left);
@@ -333,7 +361,8 @@ static uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, int right
     unsigned depth_read = z && (t->modes & 0x10);
     unsigned depth_write = z && (t->modes & 0x20) && !t->reject;
     unsigned color_write = !t->reject;
-    uint64_t segments = ((unsigned)right + 7) / 8 - (unsigned)left / 8;
+    uint64_t segments = rdp_timing_buffers((unsigned)bits_per_pixel,
+        (unsigned)left, (unsigned)right);
     uint64_t bus = color * (color_write + color_read);
     uint64_t depth = (uint64_t)t->z_address * 8 +
         ((uint64_t)y * t->fb_width + (unsigned)left) * 16;
@@ -386,7 +415,9 @@ static uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, int right
      * requests overlap one issue clock. Two-cycle Z consumption exposes
      * about two more clocks per buffer after pixel/read work overlaps.
      * These are rounded aggregate costs, not measured per-request latencies.
-     * Smaller spans and other formats remain extrapolations of this model. */
+     * RGBA32 uses four-pixel segments with the same per-segment overhead;
+     * Z transfer words still use 16 bits per pixel. Smaller spans and other
+     * formats remain extrapolations of this model. */
     unsigned reads = color_read + depth_read;
     uint64_t response = 0;
     if (reads) {
@@ -435,7 +466,7 @@ static uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, int right
 
 /* Fill spans repeat their bus alignment within 16 rows even for 4-bit
  * images. Other render modes also depend on color/depth bank addresses. */
-static uint64_t rdp_timing_rectangle(struct rdp_timing* t,
+static inline uint64_t rdp_timing_rectangle(struct rdp_timing* t,
     unsigned x0, unsigned y0, unsigned x1, unsigned y1)
 {
     if (x1 <= x0 || y1 <= y0) return 0;
@@ -468,7 +499,7 @@ static uint64_t rdp_timing_rectangle(struct rdp_timing* t,
 /* A linear pair of edges has its extrema at the endpoints. If its order
  * crosses within these (at most four) quarter rows, retain the discrete
  * walk so rejecting crossed samples has exactly the original behavior. */
-static void rdp_timing_edge_bounds(int64_t a, int64_t b, int64_t da, int64_t db,
+static inline void rdp_timing_edge_bounds(int64_t a, int64_t b, int64_t da, int64_t db,
     int samples, int flip, int64_t* left, int64_t* right)
 {
     int64_t l = flip ? a : b, r = flip ? b : a;
@@ -493,7 +524,7 @@ static void rdp_timing_edge_bounds(int64_t a, int64_t b, int64_t da, int64_t db,
  * follow the documented 1/2-cycle pixel and 64-bit fill/copy throughputs.
  * Edge/coverage and RDRAM arbitration remain estimates, not a cycle-accurate
  * rasterizer. A packet can arrive over several DPC END writes. */
-static uint64_t rdp_timing_clocks(struct rdp_timing* t)
+static inline uint64_t rdp_timing_clocks(struct rdp_timing* t)
 {
     const uint32_t* w = t->words;
     unsigned op = (w[0] >> 24) & 63;
@@ -672,7 +703,7 @@ static uint64_t rdp_timing_clocks(struct rdp_timing* t)
 }
 
 /* Standalone command cost; queued work carries its rounding in finish(). */
-static uint32_t rdp_timing_command(struct rdp_timing* t)
+static inline uint32_t rdp_timing_command(struct rdp_timing* t)
 {
     uint64_t ticks = (rdp_timing_clocks(t) * 3 + 3) / 4;
     return ticks > UINT32_MAX ? UINT32_MAX : (uint32_t)ticks;
@@ -684,7 +715,7 @@ struct rdp_timing_sync {
     int64_t deadline;
 };
 
-static void rdp_timing_finish(struct rdp_timing* t, int64_t submitted,
+static inline void rdp_timing_finish(struct rdp_timing* t, int64_t submitted,
     struct rdp_timing_sync* sync)
 {
     /* Once submission reaches the rounded deadline, the preceding work
@@ -726,13 +757,18 @@ static void rdp_timing_finish(struct rdp_timing* t, int64_t submitted,
     t->pos = 0;
 }
 
-static void rdp_timing_word(struct rdp_timing* t, uint32_t word, int64_t submitted)
+static inline uint32_t rdp_timing_packet_words(uint32_t first_word)
 {
     static const unsigned triangle_words[8] = {8,12,24,28,24,28,40,44};
+    unsigned op = (first_word >> 24) & 63;
+    return op >= 8 && op <= 15 ? triangle_words[op - 8] :
+           (op == 0x24 || op == 0x25 ? 4 : 2);
+}
+
+static inline void rdp_timing_word(struct rdp_timing* t, uint32_t word, int64_t submitted)
+{
     if (!t->pos) {
-        unsigned op = (word >> 24) & 63;
-        t->length = op >= 8 && op <= 15 ? triangle_words[op - 8] :
-                    (op == 0x24 || op == 0x25 ? 4 : 2);
+        t->length = rdp_timing_packet_words(word);
     }
     if (t->pos < 8) t->words[t->pos] = word;
     if (++t->pos == t->length) {
@@ -743,7 +779,7 @@ static void rdp_timing_word(struct rdp_timing* t, uint32_t word, int64_t submitt
 /* The estimator needs the first eight triangle words, not the shade/texture/Z
  * payload. Consume contiguous command windows by packet, retaining the same
  * framing and partial-packet state as the scalar feeder. */
-static void rdp_timing_words_sync(struct rdp_timing* t, const uint32_t* words,
+static inline void rdp_timing_words_sync(struct rdp_timing* t, const uint32_t* words,
     uint32_t count, int64_t submitted, struct rdp_timing_sync* sync)
 {
     while (count) {
@@ -765,7 +801,7 @@ static void rdp_timing_words_sync(struct rdp_timing* t, const uint32_t* words,
     }
 }
 
-static void rdp_timing_words(struct rdp_timing* t, const uint32_t* words,
+static inline void rdp_timing_words(struct rdp_timing* t, const uint32_t* words,
     uint32_t count, int64_t submitted)
 {
     rdp_timing_words_sync(t, words, count, submitted, NULL);
