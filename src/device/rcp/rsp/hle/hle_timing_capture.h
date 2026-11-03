@@ -15,7 +15,32 @@ static uint32_t timing_capture_f5[7];
 static uint32_t timing_capture_rsp[PARALLEL_RSP_STATE_WORDS];
 static uint32_t timing_capture_cp0[16];
 static unsigned int timing_capture_skip, timing_capture_stride;
+static unsigned int timing_capture_limit, timing_capture_per_ucode;
+struct timing_capture_ucode {
+    uint32_t checksum, abi, type, kind, seen, captured;
+    uint64_t text_hash;
+};
+static struct timing_capture_ucode timing_capture_ucodes[128];
+static unsigned int timing_capture_nucodes;
 #include "hle_capture_context.h"
+
+static void timing_capture_usage(void)
+{
+    char path[1024];
+    unsigned int i;
+    core_file *file;
+    if (!timing_capture_prefix) return;
+    snprintf(path, sizeof(path), "%s-ucodes.csv", timing_capture_prefix);
+    file = core_file_open(path, "w");
+    if (!file) return;
+    core_file_printf(file, "checksum,abi,type,kind,text_hash,task_starts,captures\n");
+    for (i=0;i<timing_capture_nucodes;++i) {
+        const struct timing_capture_ucode *u=&timing_capture_ucodes[i];
+        core_file_printf(file,"%08x,%08x,%u,%u,%016llx,%u,%u\n",u->checksum,u->abi,u->type,u->kind,
+            (unsigned long long)u->text_hash,u->seen,u->captured);
+    }
+    core_file_close(file);
+}
 
 void optional_rsp_timing_dma_write(uint32_t address, uint32_t bytes)
 {
@@ -41,31 +66,61 @@ static void timing_capture_begin(const uint32_t *task)
 {
     uint32_t header[4] = { 0x484c5431u, 0, 0, 0 };
     char path[1024];
-    unsigned int i;
+    unsigned int i, text_size = 0;
     int boot;
+    struct timing_capture_ucode *used = NULL;
+    enum hle_task_kind kind;
     if (!timing_capture_prefix || (*info.SP_PC_REG & 0xfff) != 0 ||
-        timing_capture_file || timing_capture_count >= 24) return;
+        timing_capture_file || g_dev.sp.rsp_task_locked) return;
     boot = task[3] > 0x1000;
     if (boot) {
-        if (hle_get_task_kind(&hle) != HLE_TASK_BOOT) return;
+        kind = hle_get_task_kind(&hle);
+        if (kind != HLE_TASK_BOOT) return;
         for (i = 0; i < 44; i++) header[2] += info.IMEM[i];
     } else {
         if ((task[1] & 1u) || task[4] > 0x7ff000 || task[6] > 0x7ff000 ||
             task[12] >= 0x800000 || task[13] > 0x800000-task[12]) return;
-        for (i = 0; i < (task[5] < 0xf80 ? task[5] : 0xf80) / 2; i++)
+        kind = hle_get_task_kind(&hle);
+        text_size = task[5] ? task[5] : 0xf80u;
+        if (text_size > 0xf80u) text_size = 0xf80u;
+        for (i = 0; i < text_size / 2; i++)
             header[2] += info.RDRAM[task[4] + i];
-        if (++timing_capture_started < timing_capture_skip || timing_capture_started % timing_capture_stride)
-            if (header[2] != 0x278u) return;
+    }
+    if (!boot) header[3] = *(const uint32_t *)(info.RDRAM + task[6] + 0x10);
+    for(i=0;i<timing_capture_nucodes;++i) {
+        struct timing_capture_ucode *u=&timing_capture_ucodes[i];
+        /* Audio text may be patched per task; its ABI is the stable identity
+         * used by the HLE dispatcher. Graphics models use their text sum. */
+        if(u->kind==(uint32_t)kind && (kind==HLE_TASK_AUDIO ? u->abi==header[3] :
+           u->checksum==header[2])) { used=u; break; }
+    }
+    if(!used && timing_capture_nucodes<128) {
+        uint64_t hash=UINT64_C(14695981039346656037);
+        unsigned n=boot?176u:text_size;
+        const unsigned char *text=boot?info.IMEM:info.RDRAM+task[4];
+        used=&timing_capture_ucodes[timing_capture_nucodes++];
+        memset(used,0,sizeof(*used));
+        used->checksum=header[2];used->abi=header[3];used->type=boot?0u:task[0];used->kind=kind;
+        for(i=0;i<n;++i)hash=(hash^text[i])*UINT64_C(1099511628211);
+        used->text_hash=hash;
+    }
+    if(used)++used->seen;
+    if (timing_capture_count >= timing_capture_limit) return;
+    if (timing_capture_per_ucode) {
+        if(!used || used->captured>=timing_capture_per_ucode || used->seen<timing_capture_skip ||
+           (used->seen-timing_capture_skip)%timing_capture_stride) return;
+    } else if (++timing_capture_started < timing_capture_skip || timing_capture_started % timing_capture_stride) {
+        if(header[2]!=0x278u)return;
     }
     /* A streaming server's task lifetime includes arbitrary CPU waits;
      * use the ROM instruction corpus for its active-work model instead. */
     if (header[2] == 0x28b9e || header[2] == 0x2095b || header[2] == 0x1f7bb ||
         header[2] == 0x25c16 || header[2] == 0x25c53) return;
-    if (hle_get_task_kind(&hle) == HLE_TASK_UNKNOWN) return;
-    if (!boot) header[3] = *(const uint32_t *)(info.RDRAM + task[6] + 0x10);
+    if (kind == HLE_TASK_UNKNOWN) return;
     snprintf(path, sizeof(path), "%s-%04u.rsp", timing_capture_prefix, timing_capture_count++);
     timing_capture_file = core_file_open(path, "wb+");
     if (!timing_capture_file) return;
+    if(used)++used->captured;
     if (core_file_write_items(header, sizeof(header), 1, timing_capture_file) != 1 ||
         core_file_write_items(info.RDRAM, 0x800000, 1, timing_capture_file) != 1 ||
         core_file_write_items(info.DMEM, 0x1000, 1, timing_capture_file) != 1 ||

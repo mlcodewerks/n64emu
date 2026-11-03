@@ -1219,6 +1219,7 @@ static int tri_core(F3dVu *u, uint32_t at, uint32_t v0, uint32_t v1,
 
     /* Match the existing writer's work accounting, including culled writes. */
     hle_timing_add(HLE_WORK_TRIANGLE, 1);
+    hle_timing_path(HLE_PATH_TRI_CORE, 1);
     s7 = D_OUT;
     t0 = D_SCR;
 
@@ -1241,6 +1242,7 @@ static int tri_core(F3dVu *u, uint32_t at, uint32_t v0, uint32_t v1,
     t1 = (uint32_t)dm_lh(u, at + 0x1a);
     if (rev_a)
     {
+        hle_timing_path(HLE_PATH_SORT_TABLE, 1);
         /* revision A: both cross terms accumulate before readout; the
          * Y order comes from a table indexed by three compares, the
          * cull and degenerate tests read the clamped cross */
@@ -1261,6 +1263,7 @@ static int tri_core(F3dVu *u, uint32_t at, uint32_t v0, uint32_t v1,
         dm_w16(u, t0 + 4, v1);
         if ((int32_t)t7 < 0)
         {
+            hle_timing_path(HLE_PATH_CULL_FIRST, 1);
             s_face_culled = 1;
             return 0;
         }
@@ -1278,12 +1281,15 @@ static int tri_core(F3dVu *u, uint32_t at, uint32_t v0, uint32_t v1,
         llv(13, 0, at + 0x18);
         if ((int32_t)t4 > 0)
         {
+            hle_timing_path(HLE_PATH_SORT_NEGATE, 1);
             vsubc(28, 31, 28, 0);
             vsub(29, 31, 29, 0);
         }
         vsub(4, 15, 14, 0);
-        if (s1 == 0)
+        if (s1 == 0) {
+            hle_timing_path(HLE_PATH_TRI_DEGENERATE, 1);
             return 0;
+        }
         t6 = t5 << 19;
         vsub(10, 14, 13, 0);
         t6 = ~t6;
@@ -1293,6 +1299,7 @@ static int tri_core(F3dVu *u, uint32_t at, uint32_t v0, uint32_t v1,
         vmov(u, 28, 3, 28, E0);
         if ((int32_t)t6 >= 0)
         {
+            hle_timing_path(HLE_PATH_CULL_SECOND, 1);
             s_face_culled = 1;
             return 0;
         }
@@ -1323,8 +1330,10 @@ static int tri_core(F3dVu *u, uint32_t at, uint32_t v0, uint32_t v1,
     t4 = 0;
     for (;;)
     {
+        hle_timing_path(HLE_PATH_SORT_PASS, 1);
         if ((int32_t)t2 < (int32_t)t1)
         {
+            hle_timing_path(HLE_PATH_SORT_SWAP_01, 1);
             tmp = t2; t2 = t1; t1 = tmp;
             tmp = v0; v0 = at; at = tmp;
             t4 ^= 1;
@@ -1333,6 +1342,7 @@ static int tri_core(F3dVu *u, uint32_t at, uint32_t v0, uint32_t v1,
         vadd(29, 17, 19, 0);
         if ((int32_t)t3 < (int32_t)t2)
         {
+            hle_timing_path(HLE_PATH_SORT_SWAP_12, 1);
             tmp = t3; t3 = t2; t2 = tmp;
             tmp = v1; v1 = v0; v0 = tmp;
             t4 ^= 1;
@@ -1348,6 +1358,7 @@ static int tri_core(F3dVu *u, uint32_t at, uint32_t v0, uint32_t v1,
     vsub(4, 15, 14, 0);
     if ((int32_t)t4 > 0)
     {
+        hle_timing_path(HLE_PATH_SORT_NEGATE, 1);
         vmudn(28, 28, 31, E3);
         vmadh(29, 29, 31, E3);
         vmadn(28, 31, 31, E0);
@@ -1361,8 +1372,10 @@ static int tri_core(F3dVu *u, uint32_t at, uint32_t v0, uint32_t v1,
     t7 &= s1;
     vmov(u, 28, 3, 28, E0);
     vmov(u, 4, 2, 10, E0);
-    if (s0 == 0)
+    if (s0 == 0) {
+        hle_timing_path(HLE_PATH_TRI_DEGENERATE, 1);
         return 0;
+    }
     s1 ^= 0xffff;
     vlt(27, 29, 31, E0);
     t6 &= s1;
@@ -1372,6 +1385,7 @@ static int tri_core(F3dVu *u, uint32_t at, uint32_t v0, uint32_t v1,
     vmov(u, 4, 5, 9, E1);
     if ((int32_t)s0 > 0)
     {
+        hle_timing_path(HLE_PATH_CULL_SECOND, 1);
         s_face_culled = 1;
         return 0;
     }
@@ -1468,6 +1482,7 @@ edges:
     /* ---- texture weights: S, T, W per vertex over the smallest W ---- */
     if ((int32_t)a3 > 0)
     {
+        hle_timing_path(HLE_PATH_TRI_TEXTURE, 1);
         t6 = dm_lw(u, t7 + 0);
         vmadm(19, 19, 30, E5);
         s1 = dm_lw(u, t7 - 4);
@@ -1536,6 +1551,7 @@ edges:
             luv(u, 23, v0 + 0x10);
             if ((int32_t)a3 <= 0)
             {
+                hle_timing_path(HLE_PATH_TRI_FLAT, 1);
                 luv(u, 25, a0 + 0x10);
                 luv(u, 15, a0 + 0x10);
                 luv(u, 23, a0 + 0x10);
@@ -1608,6 +1624,7 @@ edges:
         vsub(17, 15, 6, 0);
         if (a1 & 4)
         {
+            hle_timing_path(HLE_PATH_TRI_SHADE, 1);
             s7 += 0x40;
             sdv(17, 0, s7 - 0x40);
             sdv(18, 0, s7 - 0x30);
@@ -1687,6 +1704,7 @@ edges:
         }
         if (a1 & 1)
         {
+            hle_timing_path(HLE_PATH_TRI_DEPTH, 1);
             vmudn(14, 14, 30, E4);
             vmadh(13, 13, 30, E4);
             vmadn(14, 31, 31, E0);
@@ -1707,6 +1725,7 @@ edges:
                 mtc2(u, 6, 0, (int32_t)a3);
                 if (a3 != 0)
                 {
+                    hle_timing_path(HLE_PATH_TRI_DEPTH_CLAMP, 1);
                     vch(u, 11, 11, 6, E0);
                     vcl(u, 12, 12, 31, E0);
                 }
@@ -1932,6 +1951,7 @@ static void vtx_finish(F3dVu *u, uint32_t a3, uint32_t t7)
     vlt(6, 6, 29, Q0);
     if (fog)
     {
+        hle_timing_path(HLE_PATH_VTX_FOG, 1);
         lqv(3, D_FOG);
         vmudn(5, 5, 3, E0);
         vmadh(4, 4, 3, E0);
@@ -1982,6 +2002,7 @@ static void clip_intersect(F3dVu *u, uint32_t t2, uint32_t s4, uint32_t a2,
     vmadh(7, 7, 31, E2);
     if (t0 < 0)
     {
+        hle_timing_path(HLE_PATH_CLIP_NEG_DENOM, 1);
         vmudn(3, 3, 31, E3);
         vmadh(7, 7, 31, E3);
     }
@@ -2063,10 +2084,14 @@ int rsp_tri_f3d(int32_t *ew, int max_words, const RspTriVtx *v1c,
     f1 = (uint32_t)v1c->f3d_flags;
     f2 = (uint32_t)v2c->f3d_flags;
     f3 = (uint32_t)v3c->f3d_flags;
-    if ((f1 & f2 & f3 & (st->rev == F3D_TRI_REV_B ? 0x7030u : 0x7070u)) != 0)
+    hle_timing_path(HLE_PATH_TRI_INPUT, 1);
+    if ((f1 & f2 & f3 & (st->rev == F3D_TRI_REV_B ? 0x7030u : 0x7070u)) != 0) {
+        hle_timing_path(HLE_PATH_TRI_REJECT, 1);
         return 0;
+    }
     if (((f1 | f2 | f3) & 0x4343u) == 0)
     {
+        hle_timing_path(HLE_PATH_TRI_DIRECT, 1);
         if (max_words < 44)
             return 0;
         s_face_culled = 0;
@@ -2076,6 +2101,7 @@ int rsp_tri_f3d(int32_t *ew, int max_words, const RspTriVtx *v1c,
     }
 
     /* clip: the polygon list starts in reverse command order */
+    hle_timing_path(HLE_PATH_TRI_CLIP, 1);
     dm_w16(u, D_LIST + 0, v1);
     dm_w16(u, D_LIST + 2, v0);
     dm_w16(u, D_LIST + 4, at);
@@ -2088,46 +2114,62 @@ int rsp_tri_f3d(int32_t *ew, int max_words, const RspTriVtx *v1c,
     u->v[13][0] = 0;
 
 next_plane_swap:
+    hle_timing_path(HLE_PATH_CLIP_LIST_SWAP, 1);
     a1 = fp;
     fp ^= 0x14;
 next_plane:
-    if (a2 == 0)
+    if (a2 == 0) {
+        hle_timing_path(HLE_PATH_CLIP_DONE, 1);
         goto draw;
+    }
+    hle_timing_path(HLE_PATH_CLIP_PLANE, 1);
     t3 = plane_mask[a2 >> 1];
     a2 -= 2;
     s1 = 0;
     s2 = 0;
     {
         uint32_t v0c = a1;
+        hle_timing_path(HLE_PATH_CLIP_INDEX_RESET, 1);
         t6 = fp + 2;
         for (;;)
         {
             /* 80c: the previous vertex is copied out */
+            hle_timing_path(HLE_PATH_CLIP_COPY, 1);
             s4 = t2;
             dm_w16(u, t6, t2);
             t6 += 2;
         fetch:
+            hle_timing_path(HLE_PATH_CLIP_FETCH, 1);
             t2 = (uint32_t)(dm_lh(u, v0c) & 0xffff);
             if (t2 == 0)
             {
+                hle_timing_path(HLE_PATH_CLIP_SENTINEL, 1);
                 if (s1 > 2)
                 {
+                    hle_timing_path(HLE_PATH_CLIP_WRAP, 1);
                     v0c = a1;           /* second pass from the start */
                     goto fetch;
                 }
-                if (s1 == 2)
+                if (s1 == 2) {
+                    hle_timing_path(HLE_PATH_CLIP_KEEP, 1);
                     goto next_plane;    /* entirely inside: list kept */
+                }
+                hle_timing_path(HLE_PATH_CLIP_OUTSIDE, 1);
                 return words;           /* entirely outside */
             }
+            hle_timing_path(HLE_PATH_CLIP_VERTEX, 1);
             t0 = (uint32_t)dm_lh(u, t2 + 0x24) & t3;
             v0c += 2;
             if (t0 != s2)
                 continue;
             /* a transition */
+            hle_timing_path(HLE_PATH_CLIP_TRANSITION, 1);
             s2 ^= t3;
             s1 += 2;
             if (s1 == 2)
             {
+                hle_timing_path(HLE_PATH_CLIP_START, 1);
+                hle_timing_path(HLE_PATH_CLIP_INDEX_RESET, 1);
                 /* first inside vertex: restart the walk */
                 v0c = a1;
                 t6 = fp + 2;
@@ -2135,12 +2177,14 @@ next_plane:
             }
             if (s1 == 4)
             {
+                hle_timing_path(HLE_PATH_CLIP_RESTART, 1);
                 /* first outside vertex after it: restart the output */
                 t6 = fp + 2;
                 continue;
             }
             if (s1 == 6)
             {
+                hle_timing_path(HLE_PATH_CLIP_ENTER, 1);
                 /* entering: the intersection goes first in the list */
                 uint32_t cur = t2;
                 u->v[13][0] = (int16_t)cur;
@@ -2149,10 +2193,14 @@ next_plane:
                 t6 = fp;
                 ret = 1;
             }
-            else if (s1 == 8)
+            else if (s1 == 8) {
+                hle_timing_path(HLE_PATH_CLIP_EXIT, 1);
                 ret = 0;
-            else
+            }
+            else {
+                hle_timing_path(HLE_PATH_CLIP_UNMAPPED, 1);
                 return words;
+            }
             a3 += 0x28;
             dm_w16(u, t6, a3);
             dm_w16(u, t6 + 2, 0);
@@ -2176,6 +2224,7 @@ draw:
             cur += 2;
             if (c == 0 || words + 44 > max_words)
                 break;
+            hle_timing_path(HLE_PATH_CLIP_FAN, 1);
             n = tri_core(u, c, b, pivot, a0, st, ew + words);
             if (n > 0)
                 words += n;

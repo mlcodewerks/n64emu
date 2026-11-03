@@ -371,7 +371,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         // GPU-owned or its handler has changed. KSEG0 needs no TLB/probe. Keep
         // the full address, alignment, CU1 and MI guards above this shortcut.
         // Tracked-code stores still need the shared invalidator; all misses,
-        // mapped accesses and tags-only mode retain the backing-memory path.
+        // mapped accesses retain the guarded memory path.
         unsigned char *misses[4]; unsigned misses_count = 0;
         if (!constant_address) {
             emit_mov(R11,RAX);emit_imm_op(4,RAX,UINT32_C(0xe0000000),0);
@@ -504,11 +504,9 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         else {emit_mov(R11, RCX); emit_shift_reg(RCX, 5, 4, 0); emit_imm_op(4, RCX, 511, 0);}
         emit_mem(0x8b, 0, RAX, R12, RCX, 2, offsetof(struct r4300_core, dcache_tags));
         emit_imm_op(4, RAX, ~UINT32_C(2), 0);
-        /* Cached accesses no longer need PA after forming the tag key.
-         * Reuse that scratch register in tags-only mode, preserving the RAM
-         * pointer without a stack save/restore on every load and store.
-         * Uncached branches above still retain the original PA. */
-        int key_reg = config->cache_timing == 2 ? RDX : R14;
+        /* Uncached branches retain the original PA; cached accesses replace
+         * the backing-memory pointer with the resident cache line below. */
+        int key_reg = R14;
         if(fixed_direct)emit_movimm((physical&UINT32_C(0x1ffff000))|1,key_reg);
         else {if (key_reg != RDX) emit_mov(RDX, key_reg);emit_imm_op(4, key_reg, UINT32_C(0x1ffff000), 0);emit_imm_op(1, key_reg, 1, 0);}
         emit_reg_op(0x39, key_reg, RAX, 0);
@@ -516,10 +514,8 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         if (write) {
             emit_mem_imm(0x81, 0, 1, R12, RCX, 2, offsetof(struct r4300_core, dcache_tags),2);
         }
-        if (config->cache_timing != 2) {
-            if(constant_address)emit_mem(0x8d,1,R14,R12,-1,0,offsetof(struct r4300_core,dcache_words)+(address&UINT32_C(0x1ffc)));
-            else {emit_mov(R11, R14); emit_imm_op(4, R14, UINT32_C(0x1ffc), 0);emit_mem(0x8d, 1, R14, R12, R14, 0, offsetof(struct r4300_core, dcache_words));}
-        }
+        if(constant_address)emit_mem(0x8d,1,R14,R12,-1,0,offsetof(struct r4300_core,dcache_words)+(address&UINT32_C(0x1ffc)));
+        else {emit_mov(R11, R14); emit_imm_op(4, R14, UINT32_C(0x1ffc), 0);emit_mem(0x8d, 1, R14, R12, R14, 0, offsetof(struct r4300_core, dcache_words));}
         emit_movimm(1, RCX); emit_movimm(r4300_dcache_hit_cycles(config->compat_issue_clock), RDX);
         data_ready = emit_b();
         }
@@ -529,7 +525,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_movimm(0, RCX);
         if(!config->compat_issue_clock) {
             /* Posted writes and dependent external reads share the C FIFO
-             * boundary; cached RAM hits and Fast keep their native path. */
+             * boundary; cached RAM hits keep their native path. */
             if(write) {assert(exit->guard_count<16);exit->guards[exit->guard_count++]=emit_b();}
             else {
                 emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,write_buffer_count),0);memory_guard(exit,5);

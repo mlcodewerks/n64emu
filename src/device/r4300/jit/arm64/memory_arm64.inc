@@ -419,11 +419,9 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         else {emit_mov(ADDRESS, T1); emit_shift_reg(T1, 5, 4, 0); emit_imm_op(4, T1, 511, 0);}
         emit_mem(0x8b, 0, T0, STATE, T1, 2, offsetof(struct r4300_core, dcache_tags));
         emit_imm_op(4, T0, ~UINT32_C(2), 0);
-        /* Cached accesses no longer need PA after forming the tag key.
-         * Reuse that scratch register in tags-only mode, preserving the RAM
-         * pointer without a stack save/restore on every load and store.
-         * Uncached branches above still retain the original PA. */
-        int key_reg = config->cache_timing == 2 ? T2 : TARGET;
+        /* Uncached branches retain the original PA; cached accesses replace
+         * the backing-memory pointer with the resident cache line below. */
+        int key_reg = TARGET;
         if(fixed_direct)emit_movimm((physical&UINT32_C(0x1ffff000))|1,key_reg);
         else {if (key_reg != T2) emit_mov(T2, key_reg);emit_imm_op(4, key_reg, UINT32_C(0x1ffff000), 0);emit_imm_op(1, key_reg, 1, 0);}
         emit_reg_op(0x39, key_reg, T0, 0);
@@ -431,10 +429,8 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         if (write) {
             emit_mem_imm(0x81, 0, 1, STATE, T1, 2, offsetof(struct r4300_core, dcache_tags),2);
         }
-        if (config->cache_timing != 2) {
-            if(constant_address)emit_mem(0x8d,1,TARGET,STATE,-1,0,offsetof(struct r4300_core,dcache_words)+(address&UINT32_C(0x1ffc)));
-            else {emit_mov(ADDRESS, TARGET); emit_imm_op(4, TARGET, UINT32_C(0x1ffc), 0);emit_mem(0x8d, 1, TARGET, STATE, TARGET, 0, offsetof(struct r4300_core, dcache_words));}
-        }
+        if(constant_address)emit_mem(0x8d,1,TARGET,STATE,-1,0,offsetof(struct r4300_core,dcache_words)+(address&UINT32_C(0x1ffc)));
+        else {emit_mov(ADDRESS, TARGET); emit_imm_op(4, TARGET, UINT32_C(0x1ffc), 0);emit_mem(0x8d, 1, TARGET, STATE, TARGET, 0, offsetof(struct r4300_core, dcache_words));}
         emit_movimm(1, T1); emit_movimm(r4300_dcache_hit_cycles(config->compat_issue_clock), T2);
         data_ready = emit_b();
         }

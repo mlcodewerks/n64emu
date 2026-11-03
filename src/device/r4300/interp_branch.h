@@ -55,7 +55,7 @@ static osal_force_inline void interp_branch_finish_step(struct r4300_core* r,
 #endif
     } else {
         /* An annulled likely slot still occupies one pipeline clock; its
-         * instruction and exceptions are suppressed. Fast's reserved issue
+         * instruction and exceptions are suppressed. The compatibility issue
          * clock already supplies this bubble. */
         if (!r->compat_issue_clock) cp0_step_cycles(&r->cp0, 1);
         generic_jump_to64(r, slot_pc+4);

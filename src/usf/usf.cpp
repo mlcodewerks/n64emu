@@ -87,7 +87,7 @@ bool environment(unsigned command, void *data) {
         if (!std::strcmp(v->key, "wtfn64_renderer"))
             v->value = "softrdp";
         else if (!std::strcmp(v->key, "wtfn64_hle"))
-            v->value = active && active->hle ? "RSP HLE" : "Off";
+            v->value = active && active->hle ? "on" : "off";
         else if (!std::strcmp(v->key, "wtfn64_timing")) {
             // USF snapshots require the ripper's legacy instruction clock.
             v->value = "off";

@@ -83,8 +83,7 @@ static osal_force_inline unsigned int r4300_issue_reservation(unsigned int compa
     return 3;
 #else
     /* The native per-cycle model already includes issue in its base cost.
-     * Cache storage does not determine the issue rate: tags-only timing can
-     * use the same interlocks. Only explicit compatibility profiles or
+     * Only explicit compatibility profiles or
      * untimed CPU execution retain the compatibility issue envelope. */
     return compatibility != 0;
 #endif

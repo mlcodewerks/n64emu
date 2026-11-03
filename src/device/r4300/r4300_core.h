@@ -117,7 +117,7 @@ struct r4300_core
     /* Virtual-indexed caches. DMA observes RAM, not dirty D-cache words. */
     uint32_t icache_tags[512];
     uint32_t dcache_tags[512];
-    unsigned int cache_timing; /* 0: off, 1: write-back contents, 2: tags/latency only */
+    unsigned int cache_timing; /* 0: off, 1: write-back contents and timing */
     /* Compatibility issue envelope, enabled on every power-on. */
     unsigned int compat_issue_clock;
     /* Instruction-boundary approximation of the VR4300 pipeline hazards.

@@ -215,3 +215,19 @@ benchmarks/accurate-perf/*
 !benchmarks/accurate-perf/retroarch_bench.py
 !benchmarks/accurate-perf/README.md
 !benchmarks/accurate-perf/validation.json
+
+# Existing HLE instruction-timing audit; keep task images and traces local.
+!benchmarks/hle-calibration/
+benchmarks/hle-calibration/*
+!benchmarks/hle-calibration/*.py
+!benchmarks/hle-calibration/probe.c
+!benchmarks/hle-calibration/sequence.cpp
+!benchmarks/hle-calibration/*.mk
+!benchmarks/hle-calibration/*.md
+!benchmarks/hle-calibration/sequence-validation.json
+!benchmarks/hle-calibration/instruction-path-counterexamples.json
+!benchmarks/hle-calibration/capture-regression.json
+!benchmarks/hle-calibration/identity-validation.json
+!benchmarks/hle-calibration/path-validation.json
+!benchmarks/hle-calibration/path-live-validation.json
+!benchmarks/hle-calibration/timing_path_checks.c

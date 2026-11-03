@@ -3560,11 +3560,13 @@ int rsp_tri_write_with_texrecip(int32_t *ew,
     unsigned int vertex_spill_carry;
 
     hle_timing_add(HLE_WORK_TRIANGLE, 1);
+    hle_timing_path(HLE_PATH_TRI_CORE, 1);
     s_base_spill_packet = 0;
 
     if (s_tri_attr_dkr || s_d64_lut_sort == 3 || s_d64_lut_sort == 4 || s_d64_lut_sort == 6)
     {
         /* Rare's scalar SLT/swap loop is stable for equal Y values. */
+        hle_timing_sort3(S16(v1c->y), S16(v2c->y), S16(v3c->y));
         vh=v1c; vm=v2c; vl=v3c;
         if (S16(vm->y)<S16(vh->y)) { tmpv=vh; vh=vm; vm=tmpv; }
         if (S16(vl->y)<S16(vm->y)) { tmpv=vm; vm=vl; vl=tmpv; }

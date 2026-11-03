@@ -26,8 +26,7 @@ static osal_force_inline unsigned r4300_dcache_hit_cycles(unsigned compatibility
  * 16-byte lines, direct mapped with virtual indices and physical tags.
  * I-cache fills cost 96 CPU cycles; native D-cache fills cost 41 before VI
  * arbitration. Compatibility fills and writebacks cost 40 CPU cycles.
- * Full mode keeps write-back contents; tags-only mode charges these costs
- * while loads/stores access RAM directly. VI arbitration is a coarse surcharge;
+ * The cache keeps write-back contents. VI arbitration is a coarse surcharge;
  * shared CPU/RSP/RDP bus arbitration remains unmodeled. */
 /* Keep the uncommon mapped-address scan out of every load/store handler. */
 static R4300_CACHE_NOINLINE int r4300_mapped_access_cached(struct r4300_core* r, uint32_t va)
@@ -166,11 +165,6 @@ static inline void r4300_dcache_writeback(struct r4300_core* r, uint32_t va)
     unsigned index = (va >> 4) & 511;
     uint32_t pa = (r->dcache_tags[index] & 0x1ffff000) | (va & 0xff0);
     cp0_step_cycles(&r->cp0, R4300_DCACHE_WRITEBACK_CYCLES);
-    if (r->cache_timing == 2) {
-        /* Fast mode already wrote through to RAM; only the bus cost remains. */
-        r->dcache_tags[index] &= ~2u;
-        return;
-    }
     if (r->jit) invalidate_r4300_cached_code(r, pa, 16);
     const struct mem_handler* handler = mem_get_handler(r->mem, pa);
     struct rdram* ram = (struct rdram*)handler->opaque;
@@ -191,15 +185,13 @@ static R4300_CACHE_NOINLINE void r4300_dcache_refill(struct r4300_core* r,
     r4300_write_buffer_drain(r);
     cp0_step_cycles(&r->cp0,r->compat_issue_clock?R4300_COMPAT_DCACHE_FILL_CYCLES:R4300_DCACHE_FILL_CYCLES+r4300_vi_bus_latency(r,pa,1));
     uint32_t line = pa & 0x1ffffff0;
-    if (r->cache_timing != 2) {
-        const struct mem_handler* handler = mem_get_handler(r->mem, line);
-        const struct rdram* ram = (const struct rdram*)handler->opaque;
-        unsigned word = rdram_dram_address(line);
-        if (handler->read32 == read_rdram_dram && ram && (uint64_t)word + 4 <= ram->dram_size / 4)
-            memcpy(r->dcache_words[index], ram->dram + word, 16);
-        else for (unsigned i = 0; i < 4; ++i)
-            mem_read32(handler, line + i * 4, &r->dcache_words[index][i]);
-    }
+    const struct mem_handler* handler = mem_get_handler(r->mem, line);
+    const struct rdram* ram = (const struct rdram*)handler->opaque;
+    unsigned word = rdram_dram_address(line);
+    if (handler->read32 == read_rdram_dram && ram && (uint64_t)word + 4 <= ram->dram_size / 4)
+        memcpy(r->dcache_words[index], ram->dram + word, 16);
+    else for (unsigned i = 0; i < 4; ++i)
+        mem_read32(handler, line + i * 4, &r->dcache_words[index][i]);
     r->dcache_tags[index] = (pa & 0x1ffff000) | 1;
 }
 
@@ -238,7 +230,7 @@ static osal_force_inline int r4300_data_access_cycles_explicit(struct r4300_core
         r4300_dcache_refill(r, va, pa);
     } else if (r->compat_issue_clock) cp0_step_cycles(&r->cp0, R4300_DCACHE_HIT_CYCLES);
     if (write) *tag |= 2;
-    return r->cache_timing != 2;
+    return 1;
 }
 
 static osal_force_inline int r4300_data_access_cycles(struct r4300_core* r, uint32_t va,

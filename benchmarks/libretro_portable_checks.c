@@ -50,7 +50,7 @@ static bool environment(unsigned command, void *data) {
         if (!strcmp(v->key, "wtfn64_renderer"))
             v->value = "softrdp";
         else if (!strcmp(v->key, "wtfn64_hle"))
-            v->value = "Off";
+            v->value = "off";
         else
             return false;
         return true;

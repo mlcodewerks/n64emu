@@ -79,10 +79,8 @@ void poweron_r4300(struct r4300_core* r4300)
     r4300->cache_timing = 1;
     r4300->compat_issue_clock = 1;
 #ifdef __LIBRETRO__
-    r4300->cache_timing = renderer_settings.per_cycle_timing ? 1 :
-        renderer_settings.fast_cpu_timing ? 2 : 0;
-    /* Fast and Accurate share native issue/interlock timing. They differ in
-     * cache storage; only cache timing Off keeps the compatibility envelope. */
+    r4300->cache_timing = renderer_settings.per_cycle_timing ? 1 : 0;
+    /* Only timing Off keeps the compatibility issue envelope. */
     r4300->compat_issue_clock = r4300->cache_timing == 0;
 #endif
 

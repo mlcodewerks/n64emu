@@ -142,7 +142,7 @@ static unsigned int unsupported_hle_task(void);
 static void graphics_diagnostic(const char *family, unsigned int pc,
                                 unsigned int w0, unsigned int w1, int fatal)
 {
-    core_log(2, "Fast RSP %s: unsupported command at %08x: %08x %08x%s",
+    core_log(2, "RSP HLE %s: unsupported command at %08x: %08x %08x%s",
              family, pc, w0, w1, fatal ? " (task rejected)" : " (reserved or unimplemented)");
     if (fatal) unsupported_hle_task();
 }
@@ -156,6 +156,9 @@ void optional_rsp_init(rsp_memory rsp_info)
     timing_capture_stride = getenv("HLE_TIMING_CAPTURE_STRIDE") ? (unsigned int)atoi(getenv("HLE_TIMING_CAPTURE_STRIDE")) : 13u;
     if (!timing_capture_stride) timing_capture_stride = 1u;
     timing_capture_started = timing_capture_count = timing_capture_elapsed = 0;
+    timing_capture_nucodes = 0;
+    timing_capture_limit = getenv("HLE_TIMING_CAPTURE_LIMIT") ? (unsigned int)strtoul(getenv("HLE_TIMING_CAPTURE_LIMIT"),NULL,0) : 24u;
+    timing_capture_per_ucode = getenv("HLE_TIMING_CAPTURE_PER_UCODE") ? (unsigned int)strtoul(getenv("HLE_TIMING_CAPTURE_PER_UCODE"),NULL,0) : 0u;
     info = rsp_info;
     graphics_capture_prefix = getenv("HLE_GRAPHICS_CAPTURE");
     graphics_capture_started = graphics_capture_count = 0;
@@ -304,7 +307,7 @@ static void graphics_capture_begin(const uint32_t *task)
 
 static unsigned int unsupported_hle_task(void)
 {
-    static const char message[] = "Fast RSP: HLE execution failed after dispatch. Select Accurate timing and restart content.";
+    static const char message[] = "RSP HLE execution failed after dispatch. Turn RSP HLE off and restart content.";
     if (!strict_hle_failed) {
         strict_hle_failed = 1;
         core_log(CORE_LOG_ERROR, "%s (task=%u, PC=%03x)", message,
@@ -453,6 +456,7 @@ int HleForwardTask(void *u)
 }
 void optional_rsp_shutdown(void)
 {
+    timing_capture_usage();
     if (timing_capture_file) core_file_close(timing_capture_file);
     timing_capture_file = NULL;
     timing_capture_prefix = graphics_capture_prefix = NULL;
@@ -461,7 +465,7 @@ void optional_rsp_report(void)
 {
     core_log(CORE_LOG_INFO, "RSP tasks: HLE graphics=%llu audio=%llu LLE=%llu other=%llu boot=%llu",
         graphics_tasks, audio_tasks, lle_tasks, other_tasks, boot_tasks);
-    core_log(CORE_LOG_INFO, "Fast RSP native fallback slices: %llu", native_fallback_slices);
+    core_log(CORE_LOG_INFO, "RSP HLE native fallback slices: %llu", native_fallback_slices);
     core_log(CORE_LOG_INFO, "RSP streaming continuations: F3DEX2=%llu Rogue=%llu BOSS=%llu Naboo=%llu",
         graphics_resumes[HLE_RESUME_STREAMING], graphics_resumes[HLE_RESUME_RS],
         graphics_resumes[HLE_RESUME_ZBOSS], graphics_resumes[HLE_RESUME_NABOO]);

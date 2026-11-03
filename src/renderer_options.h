@@ -16,14 +16,13 @@ enum hle_level { HLE_OFF, HLE_RSP };
 enum controller_pak_option { CONTROLLER_PAK_NONE, CONTROLLER_PAK_MEMORY,
     CONTROLLER_PAK_RUMBLE, CONTROLLER_PAK_TRANSFER };
 struct renderer_settings {
-    /* RSP execution is independent of CPU cache timing. */
+    /* RSP execution is independent of cycle-based CPU timing. */
     bool rsp_hle, lle_graphics, lle_audio;
     enum hle_level hle;
-    /* Derived from Off / Fast / Accurate. Component clocks
-     * remain active; CPU timing selects none, tags, or full cache contents. */
+    /* Cycle-based timing selects full CPU cache contents and interlocks.
+     * Component clocks remain active when CPU timing is off. */
     bool per_cycle_timing;
     bool component_timing;
-    bool fast_cpu_timing;
     enum renderer_type renderer;
     struct GLRDPConfig glrdp;
     unsigned threads, upscale, downscale;
@@ -31,8 +30,7 @@ struct renderer_settings {
     bool native_lod, native_tex_rect, ss_readbacks, ss_dither;
 };
 extern struct renderer_settings renderer_settings;
-/* Full timing always includes component clocks. Fast CPU execution can retain
- * work-derived RSP/RDP deadlines without emulating CPU cache contents. */
+/* Simplified CPU timing retains work-derived RSP/RDP deadlines. */
 static inline bool renderer_component_timing(void)
 {
     return renderer_settings.per_cycle_timing || renderer_settings.component_timing;

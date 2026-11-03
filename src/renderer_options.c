@@ -60,8 +60,8 @@ static const struct retro_variable options[] = {
     {"wtfn64_glrdp_vi_gamma", "GPU RDP VI gamma correction; enabled|disabled"},
     {"wtfn64_glrdp_vi_gamma_dither", "GPU RDP VI gamma dithering; enabled|disabled"},
 #endif
-    {"wtfn64_timing", "CPU cache timing (restart required); accurate|fast|off"},
-    {"wtfn64_hle", "HLE level (restart required); Off|RSP HLE"},
+    {"wtfn64_timing", "Cycle-based timing (restart required); on|off"},
+    {"wtfn64_hle", "RSP HLE (restart required); off|on"},
     {"wtfn64_angrylion_threads", "CPU RDP rendering threads (restart required); 6|2|4|8|10|auto"},
     {"wtfn64_performance_cores", "Performance cores only (restart required); enabled|disabled"},
     {"wtfn64_angrylion_upscale", "SoftRDP upscaling (restart required); 1|2|4"},
@@ -132,7 +132,7 @@ void renderer_register_options(retro_environment_t environment)
             else if (strstr(d->key, "parallel") || strstr(d->key, "ss_") || strstr(d->key, "native_tex_rect")) d->category_key = "parallel";
             else if (strstr(d->key, "rsp_") || strstr(d->key, "lle_") || strstr(d->key, "_timing") || strstr(d->key, "wtfn64_cpu_") || !strcmp(d->key, "wtfn64_hle")) d->category_key = "emulation";
             if (!strcmp(d->key, "wtfn64_hle"))
-                d->info = "Off executes all RSP programs natively. RSP HLE accelerates supported graphics, audio and task microcode, with native fallback for unsupported programs. Works with every CPU cache timing setting, including Accurate. Restart content to apply.";
+                d->info = "On accelerates supported graphics, audio and task microcode, with native RSP fallback for unsupported programs. Off executes all RSP programs natively. Independent of cycle-based timing. Restart content to apply.";
             if (!strcmp(d->key, "wtfn64_glrdp_blending"))
                 d->info = "Accurate uses the RDP divider and quantized blend factors. Fast uses arithmetic division with the same colour sources and factors; translucent edges may differ. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_glrdp_combiner"))
@@ -173,9 +173,7 @@ void renderer_register_options(retro_environment_t environment)
             if (!strcmp(d->key, "wtfn64_glrdp_vi_gamma_dither"))
                 d->info = "Allow gamma dithering when requested by the game. Independent of gamma correction. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_timing"))
-                d->info = "Off disables CPU cache timing. Fast models cache tags and hit/miss timing. Accurate models full CPU cache contents. RSP HLE is selected separately. All settings retain component clocks and work-based RDP timing. Restart content to apply.";
-            if (!strcmp(d->key, "wtfn64_rsp_hle"))
-                d->info = "Use supported graphics, audio and task HLE, with native RSP fallback for unsupported microcodes. Disable to execute all RSP programs natively. Works with every CPU cache timing setting, including Accurate. Restart content to apply.";
+                d->info = "On enables detailed CPU cache and pipeline timing. Off uses simplified CPU timing for higher performance. Component clocks and work-based RDP timing remain active. RSP HLE is selected separately. Restart content to apply.";
             if (strstr(d->key, "-pak")) {
                 d->category_key = "input";
                 d->info = "Choose the accessory attached to this controller. A Memory Pak allows games to save progress.";
@@ -190,9 +188,8 @@ void renderer_register_options(retro_environment_t environment)
                     if(!strcmp(p,"gl2"))d->values[j-1].label="OpenGL 2 GPU";
                     if(!strcmp(p,"d3d9"))d->values[j-1].label="Direct3D 9 GPU";
                 }
-                if (!strcmp(d->key, "wtfn64_timing"))
-                    d->values[j - 1].label = !strcmp(p, "off") ? "Off" :
-                        !strcmp(p, "accurate") ? "Accurate" : "Fast";
+                if (!strcmp(d->key, "wtfn64_timing") || !strcmp(d->key, "wtfn64_hle"))
+                    d->values[j - 1].label = !strcmp(p, "on") ? "On" : "Off";
                 if (strstr(d->key, "-pak"))
                     d->values[j - 1].label = !strcmp(p, "memory") ? "Memory Pak" :
                         !strcmp(p, "rumble") ? "Rumble Pak" :
@@ -211,10 +208,6 @@ void renderer_register_options(retro_environment_t environment)
                 d->values[2].label = "Off";
             }
             d->default_value = d->values[0].value;
-            if (!strcmp(d->key, "wtfn64_hle")) {
-                d->values[0].label = "RSP HLE";
-                d->values[1].label = "Off";
-            }
             legacy_definitions[i].key = d->key;
             legacy_definitions[i].desc = d->desc;
             legacy_definitions[i].info = d->info;
@@ -263,13 +256,13 @@ void renderer_read_options(retro_environment_t env)
     struct renderer_settings *s = &renderer_settings;
     const char *v;
     memset(s, 0, sizeof(*s));
-    v = value(env, "wtfn64_timing", "accurate");
-    s->per_cycle_timing = strcmp(v, "accurate") == 0;
-    s->fast_cpu_timing = strcmp(v, "off") != 0 && strcmp(v, "no-cache") != 0;
+    v = value(env, "wtfn64_timing", "on");
+    /* Old Accurate/Fast selections both migrate to full timing. */
+    s->per_cycle_timing = strcmp(v, "off") != 0 && strcmp(v, "no-cache") != 0;
     /* Consult the old boolean only when the frontend has no level saved. */
     v = value(env, "wtfn64_hle", "");
-    s->hle = (!strcmp(v, "Off") || !strcmp(v, "off")) ? HLE_OFF :
-        (!strcmp(v, "RSP HLE") || !strcmp(v, "rsp")) ? HLE_RSP :
+    s->hle = (!strcmp(v, "Off") || !strcmp(v, "off") || !strcmp(v, "disabled")) ? HLE_OFF :
+        (!strcmp(v, "on") || !strcmp(v, "enabled") || !strcmp(v, "RSP HLE") || !strcmp(v, "rsp")) ? HLE_RSP :
         toggle(env, "wtfn64_rsp_hle", false) ? HLE_RSP : HLE_OFF;
     s->rsp_hle = s->hle != HLE_OFF;
     s->lle_graphics = s->lle_audio = !s->rsp_hle;

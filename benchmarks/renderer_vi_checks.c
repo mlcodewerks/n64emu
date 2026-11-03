@@ -44,11 +44,24 @@ static const struct retro_variable gpu_changes[] = {
 static void check_default(const char *key, const char *value)
 {
     if (!strcmp(key, "wtfn64_timing")) {
-        CHECK(!strcmp(value, "accurate")); saw_timing_default = true;
+        CHECK(!strcmp(value, "on")); saw_timing_default = true;
     }
     if (!strcmp(key, "wtfn64_hle")) {
-        CHECK(!strcmp(value, "Off")); saw_hle_default = true;
+        CHECK(!strcmp(value, "off")); saw_hle_default = true;
     }
+}
+
+static void check_switch(const char *key, const char *desc,
+                         const struct retro_core_option_value *values)
+{
+    bool is_timing = !strcmp(key, "wtfn64_timing");
+    if (!is_timing && strcmp(key, "wtfn64_hle")) return;
+    CHECK(!strcmp(desc, is_timing ? "Cycle-based timing (restart required)" : "RSP HLE (restart required)"));
+    CHECK(!strcmp(values[0].value, is_timing ? "on" : "off"));
+    CHECK(!strcmp(values[1].value, is_timing ? "off" : "on"));
+    CHECK(values[2].value == NULL);
+    for (unsigned i = 0; i < 2; ++i)
+        CHECK(!strcmp(values[i].label, !strcmp(values[i].value, "on") ? "On" : "Off"));
 }
 
 static bool environment(unsigned command, void *data)
@@ -59,6 +72,10 @@ static bool environment(unsigned command, void *data)
     if (command == RETRO_ENVIRONMENT_SET_VARIABLES) {
         const struct retro_variable *v = data;
         for (; v->key; ++v) {
+            if (!strcmp(v->key, "wtfn64_timing"))
+                CHECK(!strcmp(v->value, "Cycle-based timing (restart required); on|off"));
+            if (!strcmp(v->key, "wtfn64_hle"))
+                CHECK(!strcmp(v->value, "RSP HLE (restart required); off|on"));
             const char *first = strchr(v->value, ';') + 2;
             char value[64]; size_t n = strcspn(first, "|");
             CHECK(n < sizeof(value)); memcpy(value, first, n); value[n] = 0;
@@ -68,13 +85,19 @@ static bool environment(unsigned command, void *data)
     }
     if (command == RETRO_ENVIRONMENT_SET_CORE_OPTIONS) {
         const struct retro_core_option_definition *d = data;
-        for (; d->key; ++d) check_default(d->key, d->default_value);
+        for (; d->key; ++d) {
+            check_default(d->key, d->default_value);
+            check_switch(d->key, d->desc, d->values);
+        }
         return true;
     }
     if (command == RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2) {
         const struct retro_core_options_v2 *options = data;
         const struct retro_core_option_v2_definition *d = options->definitions;
-        for (; d->key; ++d) check_default(d->key, d->default_value);
+        for (; d->key; ++d) {
+            check_default(d->key, d->default_value);
+            check_switch(d->key, d->desc, d->values);
+        }
         return true;
     }
     if (command == RETRO_ENVIRONMENT_GET_VARIABLE) {
@@ -104,20 +127,39 @@ static void check_options(void)
         CHECK(saw_timing_default && saw_hle_default);
     }
     renderer_read_options(environment);
-    CHECK(renderer_settings.per_cycle_timing && renderer_settings.fast_cpu_timing);
+    CHECK(renderer_settings.per_cycle_timing);
     CHECK(renderer_settings.hle == HLE_OFF && !renderer_settings.rsp_hle);
     CHECK(renderer_settings.lle_graphics && renderer_settings.lle_audio);
     old_hle = "enabled";
     renderer_read_options(environment);
     CHECK(renderer_settings.hle == HLE_RSP);
-    hle = "Off";
+    hle = "off";
     renderer_read_options(environment);
     CHECK(renderer_settings.hle == HLE_OFF);
-    hle = "RSP HLE"; timing = "fast";
+    const char *switches[] = {"on", "off"};
+    for (unsigned t = 0; t < 2; ++t) for (unsigned h = 0; h < 2; ++h) {
+        timing = switches[t]; hle = switches[h];
+        renderer_read_options(environment);
+        CHECK(renderer_settings.per_cycle_timing == (t == 0));
+        CHECK(renderer_settings.rsp_hle == (h == 0));
+        CHECK(renderer_settings.lle_graphics == (h != 0));
+        CHECK(renderer_settings.lle_audio == (h != 0));
+        CHECK(renderer_component_timing());
+    }
+    hle = "RSP HLE"; timing = "accurate";
+    renderer_read_options(environment);
+    CHECK(renderer_settings.rsp_hle && renderer_settings.per_cycle_timing);
+    timing = "fast";
+    renderer_read_options(environment);
+    CHECK(renderer_settings.per_cycle_timing);
+    hle = "Off"; timing = "no-cache";
+    renderer_read_options(environment);
+    CHECK(!renderer_settings.rsp_hle && !renderer_settings.per_cycle_timing);
+    hle = "on"; timing = "off";
     renderer_read_options(environment);
     CHECK(renderer_settings.rsp_hle && !renderer_settings.per_cycle_timing);
     /* Changing restart-only options during a VI update must not change them. */
-    hle = "Off"; timing = "accurate";
+    hle = "off"; timing = "on";
     filter = dedither = divot = "disabled"; overscan = "enabled"; bob = "bob";
     renderer_read_live_options(environment);
     CHECK(renderer_settings.rsp_hle && !renderer_settings.per_cycle_timing);
@@ -223,6 +265,6 @@ int main(void)
             check_scanout(scale, 6, format);
         }
     }
-    puts("Accurate/Off defaults and live VI option checks passed.");
+    puts("Cycle-based timing/RSP HLE switches and live VI option checks passed.");
     return 0;
 }

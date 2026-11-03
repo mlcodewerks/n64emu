@@ -2122,6 +2122,11 @@ static int clip_polygon_guard(GSPState *st, GSPVertex *poly, int n,
             cr[3] = (int16_t)((cr[3] < 0) ? -st->clip_ratio : st->clip_ratio);
         if (st->viewport.dkr_model)
             for (i=0;i<4;i++) cr[i]=st->dkr_clip_rows[cond][i];
+        if (st->viewport.dkr_model) {
+            uint32_t flags[GSP_CLIP_MAX];
+            for (i=0;i<n;i++) flags[i]=(uint32_t)poly[i].clip;
+            hle_timing_clip_walk(flags, (unsigned int)n, mask);
+        }
         if (st->viewport.dkr_model || st->clip_fan_first==4)
         {
             /* Rare's overlay seeks the first outside run, then starts its
@@ -2596,8 +2601,16 @@ int gsp_triangle_with_texrecip(GSPState *s, int32_t *cmd, int i0, int i1, int i2
     /* Z bit comes from the G_ZBUFFER geometry-mode bit, not the othermode. */
     z_buffered = (s->geometry_mode & GEOM_ZBUFFER) ? 1 : 0;
 
-    if (s->viewport.f3d_tri_rev != F3D_TRI_NONE)
+    if (s->viewport.f3d_tri_rev != F3D_TRI_NONE) {
+        /* DKR's scalar sort signature currently also selects this writer,
+         * but its vertex records do not populate f3d_flags. The native
+         * clip overlay is not represented on this route. Keep that gap
+         * visible; these counters must not certify native DKR timing. */
+        if (s->viewport.dkr_model) hle_timing_path(HLE_PATH_CLIP_UNMAPPED, 1);
         return gsp_triangle_f3d(s, cmd, a, b, c, textured, z_buffered);
+    }
+
+    hle_timing_path(HLE_PATH_TRI_INPUT, 1);
 
     /* Trivial reject: the RSP tests the AND of the three vertices' stored
      * VCH clip outcodes against CLIP_ALL_SCRN -- if every vertex lies
@@ -2611,8 +2624,10 @@ int gsp_triangle_with_texrecip(GSPState *s, int32_t *cmd, int i0, int i1, int i2
         : (a->clip & b->clip & c->clip
         & (unsigned int)(s->clip_near_z>0
                          ? ((GSP_CLIP_REJECT & ~GSP_CLIP_NW) | GSP_CLIP_NZ)
-                         : GSP_CLIP_REJECT))))
+                         : GSP_CLIP_REJECT)))) {
+        hle_timing_path(HLE_PATH_TRI_REJECT, 1);
         return 0;
+    }
 
     /* The RSP enters the clipper when any vertex's stored outcode has any
      * bit of the scaled x/y conditions or the screen near/far conditions
@@ -2630,8 +2645,10 @@ int gsp_triangle_with_texrecip(GSPState *s, int32_t *cmd, int i0, int i1, int i2
          * (VCH/VCL, VCC & 0x0707/0x7070), then replaces screen Y with
          * 0x7fff on failure. The triangle dispatcher tests that marker;
          * it does not apply the full clipper's unscaled Z/W rejection. */
-        if ((oa | ob | oc) & (s->clip_reject==2?0x30304000u:0x70700000u))
+        if ((oa | ob | oc) & (s->clip_reject==2?0x30304000u:0x70700000u)) {
+            hle_timing_path(HLE_PATH_TRI_REJECT, 1);
             return 0;
+        }
     }
     else if (s->rs_clip_model
              ? (((unsigned int)a->rs_outcode | (unsigned int)b->rs_outcode
@@ -2640,6 +2657,8 @@ int gsp_triangle_with_texrecip(GSPState *s, int32_t *cmd, int i0, int i1, int i2
                           ? ((GSP_CLIP_TRIGGER & ~(1u << 7)) | (1u << 6))
                           : GSP_CLIP_TRIGGER)))
     {
+        hle_timing_path(HLE_PATH_TRI_CLIP, 1);
+        if (s->viewport.dkr_model) hle_timing_path(HLE_PATH_CLIP_LIST_SWAP, 1);
         /* Polygon clip against the guard band the way the RSP microcode
          * does: triangles that straddle w <= 0 cannot be passed through to
          * the rasterizer (the 1/w attribute planes of such a triangle are
@@ -2679,7 +2698,9 @@ int gsp_triangle_with_texrecip(GSPState *s, int32_t *cmd, int i0, int i1, int i2
         }
         if (np < 3)
             return 0;
+        if (s->viewport.dkr_model) hle_timing_path(HLE_PATH_CLIP_DONE, 1);
     }
+    if (!clipped) hle_timing_path(HLE_PATH_TRI_DIRECT, 1);
 
     /* Fan-triangulate the (possibly clipped) polygon and emit. */
     {
@@ -2690,6 +2711,7 @@ int gsp_triangle_with_texrecip(GSPState *s, int32_t *cmd, int i0, int i1, int i2
             BridgeVertex bv[3];
             const GSPVertex *tv[3];
             int nc, k;
+            if (clipped) hle_timing_path(HLE_PATH_CLIP_FAN, 1);
             /* Two fan styles, selected per microcode (see the fan probe
              * in rdp_emit_hle.c): F3DEX2 2.05+/F3DZEX2 draws (0,1,n-1),
              * (1,2,n-1), (2,3,n-1) -- consecutive ascending pairs fanned
