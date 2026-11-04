@@ -216,6 +216,15 @@ benchmarks/accurate-perf/*
 !benchmarks/accurate-perf/README.md
 !benchmarks/accurate-perf/validation.json
 
+# Cycle timing optimization sources; generated measurements stay local.
+!benchmarks/cycle_perf.c
+!benchmarks/cycle_perf.py
+!benchmarks/cycle_pipeline_checks.c
+!benchmarks/affinity_scope_checks.c
+!benchmarks/worker_pool_checks.c
+!benchmarks/CYCLE_PERFORMANCE.md
+!benchmarks/cycle-performance-validation.json
+
 # Existing HLE instruction-timing audit; keep task images and traces local.
 !benchmarks/hle-calibration/
 benchmarks/hle-calibration/*

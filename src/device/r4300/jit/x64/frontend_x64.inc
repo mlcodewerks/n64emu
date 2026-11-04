@@ -503,10 +503,11 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                     if (!native_opcode(next) && end != branch_index && !(config && native_ram_opcode(next))) break;
                     memory_region |= native_ram_opcode(next); ++end;
                 }
-                unsigned base = 0, memory_count = 0;
+                unsigned base = 0, memory_count = 0, memory_flags = 0;
                 for (unsigned j = i; j < end; ++j) {
                     base += r4300_base_cycles(ops[j], 0);
                     memory_count += native_ram_opcode(r4300_get_idec(ops[j])->opcode) != 0;
+                    memory_flags |= native_memory_flags(ops[j]);
                 }
                 int branch_region = branch_index >= i && branch_index < end;
                 unsigned branch_major = branch_region ? ops[branch_index] >> 26 : 0;
@@ -516,7 +517,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 unsigned char* branch_prefetch_miss = NULL;
                 struct regcache_state annul_registers;
                 struct memory_exit prepare = {0};
-                emit_region_guard(config, i, end - i, base, memory_count, &prepare);
+                emit_region_guard(config, i, end - i, base, memory_count, &prepare, memory_flags);
 
                 if(ram_delay&&i==branch_index&&config->cache_timing&&!config->compat_issue_clock) {
                     uint32_t pc=config->virtual_pc+i*4,key=(config->physical_page<<12)|1;
@@ -572,13 +573,14 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                         unsigned reservation = r4300_issue_reservation(config->compat_issue_clock);
                         if (config->cache_timing && !reservation && pipeline_live) {
                             emit_ldi_native(ops[j], 0, j == i ? 0 : ops[j - 1], j != i);
-                            emit_pipeline_clear();
+                            if (!deferred_pipeline(config)) emit_pipeline_clear();
                             pipeline_live = 0;
                         }
                         if (j == branch_index) {
                             if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                             annul = emit_branch_native(ops[j], config->virtual_pc + j * 4);
-                            emit_branch_prefetch(config,ram_delay?&branch_prefetch_miss:nullptr);
+                            emit_branch_prefetch(config,ram_delay?&branch_prefetch_miss:nullptr,
+                                ops[j],config->virtual_pc+j*4);
                             annul_registers = regcache;
                             if(ram_delay)emit_mem(0x89,0,R14,RSP,-1,0,16);
                         }
@@ -590,6 +592,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 emit_pending_clocks(config,pending_cycles,pending_fetches);
                 if(ram_delay && branch_region)emit_mem(0x8b,0,R14,RSP,-1,0,16);
                 regcache_flush();
+                if (deferred_pipeline(config)) emit_pipeline_history(ops[end - 1]);
                 emit_region_commit_native(config, i, end - i, branch_region);
                 if (annul) {
                     unsigned char* taken = emit_b();
@@ -638,19 +641,22 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
             }
             regcache = exit->registers;
             regcache_flush();
+            if (deferred_pipeline(config) && exit->index > exit->start)
+                emit_pipeline_history(ops[exit->index - 1]);
             emit_region_commit_native(config, exit->start, exit->index - exit->start, 0);
             exits[exit_count++] = emit_step(block, exit->index, 2, step);
             if (exit->index == branch_index) {
                 exits[exit_count++] = emit_b();
                 continue;
             }
-            unsigned base = 0, memory_count = 0;
+            unsigned base = 0, memory_count = 0, memory_flags = 0;
             for (unsigned j = exit->index + 1; j < exit->end; ++j) {
                 base += r4300_base_cycles(ops[j], 0);
                 memory_count += native_ram_opcode(r4300_get_idec(ops[j])->opcode) != 0;
+                memory_flags |= native_memory_flags(ops[j]);
             }
             struct memory_exit prepare = {0};
-            emit_region_guard(config, exit->index + 1, exit->end - exit->index - 1, base, memory_count, &prepare);
+            emit_region_guard(config, exit->index + 1, exit->end - exit->index - 1, base, memory_count, &prepare, memory_flags);
             for (unsigned g = 0; g < prepare.guard_count; ++g) exits[exit_count++] = prepare.guards[g];
             emit_mem_imm(0xc7, 0, 0, RSP, -1, 0, 8,exit->index + 1 - exit->start);
             emit_movimm(0, R13);

@@ -1,0 +1,1260 @@
+RDP_TIMING.H: MODEL, FINDINGS, AND RESEARCH METHODOLOGY
+====================================================
+
+This document describes the current source, the evidence behind its timing
+terms, the research methods used, and the limits of the available evidence.
+Writing this document did not change the emulator's timing model.
+The accompanying portability work adds a standalone adapter, independently
+optional observation hooks and a shared packet-length helper. Its timing
+calculations match the original snapshot in the differential checks below.
+
+
+1. PURPOSE AND SCOPE
+--------------------
+
+rdp_timing.h estimates guest RDP work from the native command stream. It tracks
+when queued work should finish, contributes busy-counter intervals, and allows
+DP completion to be scheduled on the emulator's shared timeline. Host renderer
+execution time, GPU speed, software-renderer worker count, and upscaling do not
+determine the command's modeled cost.
+
+The implementation is an aggregate timing model. It does not execute a
+cycle-by-cycle RDP pipeline or a complete RDRAM request scheduler. It combines
+command delivery, span geometry, pixel throughput, estimated memory traffic,
+buffered-read costs, and a coarse VI priority model.
+
+The current user options are independent: cycle-based CPU timing On/Off and
+RSP HLE On/Off. The root README states that component clocks and work-based RDP
+timing remain active in both CPU timing settings. Historical benchmark reports
+use the older Fast/Accurate names; those names should not be treated as the
+current configuration interface.
+
+Relevant layers are:
+
+  rdp_timing.h       Command state, cost calculation, partial packets, deadline.
+  rdp_core.c        Native/HLE submission, DPC registers, FullSync interrupt.
+  rdp_counters.h    Busy intervals, counter clears, counter save/load.
+  fb.c              Invalidation when CPU/DMA memory writes affect proofs.
+  savestates.c      Explicit persistence of timing and raster-derived state.
+  hle_timing.c      Separate producer-side RSP HLE estimates and path counters.
+
+The main entry points inside the header are:
+
+  rdp_timing_word/words/words_sync  Incremental scalar or packet-wise feeding.
+  rdp_timing_finish                Queue time, rounding carry, counters, fence.
+  rdp_timing_clocks                Decode state and calculate packet work.
+  rdp_timing_span/rectangle        Per-row work and repeated-row fast paths.
+  rdp_timing_edge_bounds           Quarter-row triangle span bounds.
+  rdp_timing_row_clocks            Same-bank row-switch estimates.
+  rdp_timing_separate_buffers      Buffers eligible for bank overlap.
+  rdp_timing_vi_service/vi_bus      Phase-dependent memory service reservation.
+  rdp_timing_alpha_result          Restricted constant-alpha proof.
+  rdp_timing_depth_result          Restricted uniform-depth proof.
+  rdp_timing_invalidate_range      Discard overlapping uniform-region proofs.
+
+Pixel correctness, RSP task correctness, guest timing correctness, and host
+performance are different measurements. Passing one does not establish the
+others.
+
+
+2. CLOCK DOMAINS AND QUEUE ACCOUNTING
+------------------------------------
+
+rdp_timing_clocks() returns RCP/RDP clocks. The upstream hardware analysis uses
+62,500 clocks per millisecond. Scheduling deadlines use CPU COUNT ticks; the
+conversion in this implementation is:
+
+  COUNT ticks = RCP clocks * 3 / 4
+  RCP clocks  = COUNT ticks * 4 / 3
+
+The queue preserves fractional conversion using clock_overhang. A deadline is
+rounded up to a COUNT tick, while the overhang records the excess in quarter
+COUNT ticks. One RCP clock is three quarter COUNT ticks.
+
+For an already queued command with C RCP clocks:
+
+  quarters = 3*C - previous_overhang
+  added_COUNT_ticks = ceil(quarters / 4)
+  new_overhang = 4*added_COUNT_ticks - quarters
+
+If submitted time has reached the preceding rounded deadline, that work has
+drained: the queue restarts at submitted time and clears its overhang. Deadline
+addition saturates at INT64_MAX instead of wrapping.
+
+Finding: rounding each command independently overcharges long streams of short
+commands. Four contiguous one-clock commands cost three COUNT ticks when their
+remainders are carried; independently rounding them would charge four ticks.
+The carry must survive fragmented DPC END windows and partial packet delivery.
+rdp_timing_command() is a standalone rounded-cost helper, whereas finish() owns
+the queued remainder.
+
+
+3. COMMAND DECODING AND PACKET DELIVERY
+--------------------------------------
+
+The opcode is the low six bits of the first word's top byte. The feeder counts
+32-bit words and charges one RCP delivery clock per 64-bit command word:
+
+  delivery clocks = packet_length_in_32_bit_words / 2
+
+Triangle opcodes 0x08..0x0f have lengths 8, 12, 24, 28, 24, 28, 40, and 44
+32-bit words. Texture rectangles 0x24/0x25 have four words. Other commands
+consume two words. The estimator retains only the first eight triangle words,
+which contain the edge geometry, while consuming the full attribute payload
+to preserve framing.
+
+State commands update framebuffer and texture-image dimensions/addresses,
+scissor and field mode, cycle type, other modes, primitive depth, combiner,
+colors, and the atomic-primitive flag.
+
+Additional synchronization costs in the current source are:
+
+  SyncLoad  0x26: 25 RCP clocks plus delivery.
+  SyncPipe  0x27: 50 RCP clocks plus delivery.
+  SyncTile  0x28: 33 RCP clocks plus delivery.
+  FullSync  0x29: delivery plus its fence/interrupt semantics; this function
+                 does not add another fixed 25/33/50-clock penalty.
+
+Opcode 0x31 is reserved, not SyncLoad. Atomic primitives add 35 RCP clocks when
+they have work, with the source citing an SDK range of 30-40 idle clocks. This
+is a selected midpoint, not a direct measurement of every primitive.
+
+Texture loads use texture-image size and stride, not framebuffer format or
+render cycle type. LoadBlock coordinates are integer texels; LoadTile and
+LoadTLUT coordinates are 10.2. Palette loads expand 16-bit entries into 64-bit
+TMEM words. Native 4-bit image loads are excluded by this path; supported
+4-bit textures are loaded through wider image views. These transfer estimates
+count aligned words rather than modeling each TMEM/RDRAM pipeline stage.
+
+
+4. RASTER WORK AND GEOMETRY
+---------------------------
+
+The cycle-type encoding is 0=one-cycle, 1=two-cycle, 2=copy, 3=fill.
+
+  One-/two-cycle: pixel floor = pixels * (cycle_type + 1).
+  Copy:          ceil(pixels / 4) before VI service.
+  Fill:          number of touched 64-bit framebuffer words before VI service.
+
+For fill, framebuffer size and alignment matter. A partial 64-bit word at the
+end of one scanline cannot be shared with the next scanline. Copy/fill rectangle
+end coordinates receive the mode-specific inclusive adjustment before clipping.
+
+Triangles are clipped to the programmed scissor. Y values are signed 14-bit
+quarter pixels; X starts are signed 28-bit values, and edge increments are
+signed 30-bit values. Treating the top slope bits as unsigned can turn a negative
+edge increment into a large positive workload.
+
+The scan walk takes the union of the quarter-row edge positions, splitting at
+the middle Y edge when necessary. It includes the last visited pixel even if
+coverage at that pixel is zero. A midpoint-only scanline sample misses work on
+thin or steep triangles. Linear endpoint bounds replace the short discrete
+walk only when edge ordering remains valid; crossed edges retain discrete
+sampling. Field scissoring skips rows of the wrong parity.
+
+Rectangle fast paths exploit repeating bus alignment for fill and a simple
+copy cost when scanout is absent. Other modes and active scanout retain the
+per-row calculation. These optimizations preserve the model's arithmetic;
+they do not make it a full coverage rasterizer.
+
+
+5. MEMORY TRAFFIC, BANKING, AND OVERLAP
+-------------------------------------
+
+rdp_timing_bus_words(first_bit, bits) counts touched 64-bit words, including
+the first-word alignment. Color traffic uses framebuffer size; Z traffic uses
+16 bits per pixel. In ordinary rendering, enabled streams are color read,
+depth read, color write, and depth write. Known rejection suppresses stores
+while retaining enabled earlier reads.
+
+Let S be the number of eight-pixel buffers touched by the span. The initial
+bus estimate contains:
+
+  color_words * (color_read + color_write)
+  + depth_words * (depth_read + depth_write)
+  + S * 5 * number_of_enabled_streams
+
+It then adds row-switch and read/write turnaround estimates. The working
+transfer order is color read, depth read, color write, depth write, consistent
+with the upstream hardware discussion. A read followed by color writes adds
+three clocks per buffer. Certain row/handoff boundaries overlap and must be
+counted once rather than twice.
+
+Address classification uses 1 MiB banks and 2 KiB rows. Internally addresses
+are in bits, so shifts by 23 and 14 select those units. Separate color and Z
+banks permit overlap; different rows within the same bank add estimated row
+switch costs. The source handles return transitions between adjacent buffers
+for read-only, write-only, and compare-only paths.
+
+Finding: classifying a whole span by its first address is insufficient. A span
+can cross a row or bank boundary. The current helpers use a constant-time
+classification for spans that stay within their initial regions and walk the
+eight-pixel buffers only when boundaries are crossed. A partially bank-crossing
+buffer retains conservative cost.
+
+Some RGBA16 two-cycle and independent-bank paths can hide one or two clocks of
+handoff per buffer. The source caps that credit. VI conflicts can remove it,
+and spans crossing banks with VI active conservatively lose the aggregate
+credit rather than assigning it to the wrong bank.
+
+The 15-clock ordinary span startup, five-clock transaction term, and three-clock
+turnaround/row-switch terms are aggregate estimates checked against the
+Thar0 rectangle data. They are not individually measured RDRAM command
+latencies. Rows are not kept open in a persistent request-level bank model.
+
+
+6. READ RESPONSE AND SHORT-SPAN STARTUP
+---------------------------------------
+
+Memory work and pixel work overlap. The model takes their maximum rather
+than adding every bus clock to every pixel clock:
+
+  occupied = max(VI-adjusted bus work, pixel floor)
+
+Read streams also establish a buffered response floor. For R enabled read
+streams, the initial response estimate is:
+
+  enabled color/depth transfer words + S * (4*R + 5)
+
+It is raised to at least the pixel floor. Two-cycle depth consumption adds
+two clocks per buffer. Interleaved color/Z reads expose a further VI queue
+delay for one stream, with the maximum against bus work preventing a duplicate
+contention charge.
+
+The source describes approximately 11 clocks per eight-pixel buffer for one
+read stream and 17 for two independent-bank streams in the one-cycle RGBA16
+VI-off rejection tests. Those are rounded steady-state aggregate floors.
+Applying them to small spans or other formats is an extrapolation.
+
+Short spans can expose pipeline fill before steady throughput is reached.
+The current additional floor is 49 clocks per enabled read stream. Crucially,
+the source says this number was calibrated against fixed game-video intervals;
+the 320-pixel hardware rectangles hide that transient under raster work and
+do not independently measure it.
+
+The calculation is:
+
+  uncovered_steady = max(response - occupied, 0)
+  uncovered_fill   = max(49*R - occupied, 0)
+  uncovered       = max(uncovered_steady, uncovered_fill)
+  span work       = startup + occupied + uncovered
+
+Finding: subtracting only pixel work from the transient floor charges bus work
+twice. It can also produce an implausible reduction when an already memory-bound
+span changes to two-cycle mode. The current code subtracts occupied work and
+takes the larger uncovered floor instead of adding both floors together.
+
+
+7. ALPHA/DEPTH REJECTION AND UNIFORM-DEPTH PROOFS
+------------------------------------------------
+
+Alpha rejection is proved only for a restricted constant combiner result.
+The evaluator can resolve primitive alpha, environment alpha, one, or zero
+when the alpha mux cancels to its D term. Noise and coverage-dependent modes
+remain unknown. Unknown results retain conservative work.
+
+Depth rejection is restricted to supported primitive-depth comparisons against
+a known uniform region. It checks width and bounds, compressed-Z precision,
+mode restrictions, and tolerance. The current conservative rejection test
+requires zero primitive DZ and depth more than 128 units behind the known
+value. Close/equal depth remains unknown because coverage can select a strict
+or tolerance comparison. Triangles use the alpha proof; the rectangle path
+also applies the uniform-depth proof.
+
+The eight-entry uniform cache records command-derived proofs. Examples are a
+complete, aligned 16-bit clear with matching halfwords and an appropriate
+full-width primitive-depth rectangle. The conditions reject partial regions,
+field-interleaved writes, incompatible coverage/depth modes, and invalid RAM
+bounds. CPU/DMA writes and overlapping raster writes invalidate proofs.
+
+Finding: reading a few samples from host RDRAM is unsafe when a GPU backend
+has newer framebuffer contents. The timing model therefore uses proven
+command history and conservative invalidation, not speculative samples.
+
+Rejected spans have startup 4 clocks in one-cycle mode or 6 in two-cycle mode,
+instead of the ordinary 15. A no-read failure adds 11 primitive drain clocks.
+The pixel floor still applies. The source comment about "4/6 clocks per span"
+must be read as startup overhead, not the total cost of an arbitrarily wide
+rejected span. For example, a rejected 320-pixel one-cycle span still carries
+320 pixel clocks. Both the implementation and the upstream approximately
+1.24432 ms full-screen alpha-failure data show this width-dependent work.
+
+
+8. VI CONTENTION
+-----------------
+
+A bound VI register array does not itself establish scanout traffic. The
+enabled check requires a supported 16-/32-bit display type, nonzero field
+timing, valid active horizontal/vertical ranges, width and X scale, and a
+sensible line service interval. Blank or disabled VI configurations must not
+silently reserve bandwidth.
+
+The model derives the field phase from the submission deadline, its rounding
+overhang, VI field start, and submission-local elapsed RCP work. It estimates
+active source width from horizontal range and X scale, source Y from vertical
+phase/Y scale, and the fetch address from origin, stride, and offsets.
+
+Per active line the reservation is approximately:
+
+  ceil(VI_bytes / 8)
+  + ceil(VI_bytes / 16) * (5 + 3*depth_write + 3*row_conflict)
+
+The 16-byte request size and setup/handoff terms are shared aggregate
+assumptions, not measurements of actual VI burst size. Budget is capped below
+the full line interval to retain service progress.
+
+The service loop retires memory work up to each active/blank boundary, updates
+source banking, and continues across field wraps. Fractional service credit
+prevents reservations from disappearing through repeated integer rounding.
+Pixel work remains free to overlap stalled memory service. Same-bank scanout
+can remove independent-bank overlap during its active service windows.
+
+Findings:
+  - A long transfer cannot inherit only the VI phase at which it started.
+  - Vertical blank must restore bandwidth.
+  - VI source banking can change as scaled source rows advance.
+  - Bandwidth contention must not be added independently to both bus and
+    response paths when the same wait is already covered by their maximum.
+
+Horizontal burst phase, coverage-dependent extra-line fetches, and arbitration
+with other RCP clients are not individually simulated.
+
+
+9. BUSY COUNTERS, SYNCHRONIZATION, AND HLE SUBMISSION
+----------------------------------------------------
+
+rdp_timing_finish() reports quarter-COUNT busy intervals. Its masks distinguish
+command/buffer activity, pipeline activity, and texture-load activity. A
+no-read rejected primitive has a separately shortened pipeline interval.
+rdp_counters.h retains gaps, delayed publications, and counter-clear events;
+one final busy deadline would lose that information. Busy values are converted
+back to RCP clocks and wrap as 24-bit counters.
+
+DPC_CLOCK is handled separately in rdp_core.c by a COUNT-derived running
+clock with a clearable offset. It should not be substituted for the BUF/PIPE
+measurement protocol merely because all three registers contain clock values.
+
+The first FullSync in a submitted command window records its own milestone.
+Work after that fence may extend the total queue deadline but must not delay
+the preceding fence's DP interrupt. When a decoded FullSync is available, the
+event uses that deadline rather than imposing another geometry-based minimum
+frame cost. The fallback remains for cases without a corresponding packet.
+
+Native RSP writes are timestamped at RSP slice start plus elapsed producer
+clocks. Synchronous HLE also provides producer elapsed clocks, because CPU
+COUNT has not advanced while the walker runs. Publishing every HLE command
+at CPU time zero can make DP completion precede production of its FullSync;
+the source identifies Conker's opening scheduler as an affected case.
+
+Frozen HLE streams retain their actual host-generated words so guest FIFO
+wraparound cannot replace unread commands before unfreeze. Unfreeze supplies
+its own submission time. Producer timing, packet phase, raster deadlines,
+counter intervals, and fence timing must be examined together when diagnosing
+an apparent RDP speed problem.
+
+
+10. SAVED STATE AND INVALIDATION
+--------------------------------
+
+Timing state is explicitly serialized rather than writing struct rdp_timing
+as raw bytes. It includes the deadline relative to CPU COUNT, partial packet
+words/position/length, modes, framebuffer/texture/scissor state, conversion
+overhang, and raster proof state. The source reserves extension offsets 4000
+for additional timing fields and 18432 for raster/proof fields. Busy counters
+have their own serialized extension in rdp_counters.h.
+
+Callback pointers, VI register bindings, VI-derived field timing and local
+submission progress are runtime bindings, not serialized pointers. attach_timing()
+reattaches them and validates restored uniform proofs against RAM before use.
+This matters because framebuffer protection is cleared by restoration and
+intervening stores can otherwise leave stale proofs.
+
+
+11. HARDWARE-REFERENCE METHODOLOGY AND FINDINGS
+-----------------------------------------------
+
+The available primary reference is Thar0's RDP timing tests.
+
+Its source defines 100 configurations of 320x240 RGBA16 rectangles, each run
+1,000 times. It varies one-/two-cycle mode, image read, Z read/write, Z pass/fail,
+alpha failure, VI enablement, and framebuffer/Z/VI bank placement.
+
+The protocol is important:
+
+  1. Establish framebuffer, depth, modes and colors in a separate setup list.
+  2. Wait for PI DMA to be idle and allow VI configuration to settle.
+  3. Approximately align submission with VI_CURRENT=0.
+  4. Reset the RDP counters before releasing the timed command list.
+  5. Execute a full-screen rectangle, a primitive-depth update, and FullSync.
+  6. Wait for the DP interrupt and then allow counters to settle.
+  7. Subtract a separately measured FullSync baseline and one further clock,
+     exactly as test_main.c prints its BUF/PIPE arrays.
+  8. Randomize delays between runs to disturb repeated phase relationships.
+
+analyze.py converts clocks to milliseconds by division by 62,500. It trims
+each counter's samples outside the 1st/99th percentiles, then reports minimum,
+mean and maximum. This upstream trimming policy differs from the host-speed
+tests in this workspace, which report repeats without discarding timing
+outliers. A reproduction must state which policy it used.
+
+Selected published PIPE averages from sample_results.txt:
+
+  No Z, VI off, image read off, one-cycle: 1.2880889 ms
+  No Z, VI off, image read off, two-cycle: 2.5183484 ms
+  No Z, VI off, image read on,  one-cycle: 2.6172602 ms
+  No Z, VI off, image read on,  two-cycle: 2.5934009 ms
+  Alpha failure, no color/Z reads, one-cycle: 1.2443200 ms
+  Alpha failure, no color/Z reads, two-cycle: 2.4807844 ms
+
+These support the following findings:
+
+  - Two-cycle pixel work approaches twice one-cycle work without memory stalls.
+  - Enabling reads can dominate the pixel floor. Doubling pixel work need not
+    double total time; some recorded two-cycle cases are slightly faster.
+  - Z/alpha failure avoids stores but does not erase enabled earlier reads.
+  - VI traffic reduces available bandwidth and its bank placement matters.
+  - Separate color/Z banks can avoid repeated same-bank row switches.
+  - Image read occurs even without edge pixels in the tested spans;
+    force_blend is not a reason to omit that enabled stream.
+
+
+12. GAME-VIDEO CALIBRATION AND HISTORICAL FINDINGS
+-------------------------------------------------
+
+Hardware rectangles constrain steady throughput, but do not cover the short
+triangle spans and scheduling behavior of a complete game. The existing
+benchmark README records comparisons against hardware gameplay recordings,
+including Knife Edge, Beetle Adventure Racing, F-Zero X, and Star Wars Ep1: Racer.
+
+The research approach is to align the same guest events or video landmarks,
+measure the intervening emulated duration, and compare it with the recording.
+For an interactive section the input sequence and flight/race path must also
+match. Neutral-input and trigger-only controls distinguish changed workload
+from a general timing shift. Audio alignment and visual landmarks help detect
+a recording timebase discrepancy rather than an emulator clock error.
+
+The 49-clock-per-read-stream transient is explicitly video-calibrated in the
+current header and shared across games. It should not be described as a
+direct hardware burst-latency measurement or a per-ROM timing profile.
+
+Finding: fixing geometry can change apparent game speed without any change
+to timing coefficients, because the submitted RDP workload changes. Likewise,
+a matched frame count does not guarantee matched guest progress. Both the
+command workload and the producer must be checked before attributing a
+cadence difference entirely to RDP timing.
+
+
+13. CURRENT-SOURCE ARITHMETIC CHECKS
+------------------------------------
+
+A small standalone C probe was compiled against the current header while
+preparing this document. It configured a full 320x240 RGBA16 rectangle with
+VI disabled and evaluated rdp_timing_clocks() directly. Color/Z images were
+in different banks; Z was disabled in these examples. These are model
+evaluations, not hardware runs and not normalized hardware BUF/PIPE results.
+
+  Configuration                    Rectangle RCP   Plus FullSync RCP
+  One-cycle, no reads                      80,401              80,402
+  Two-cycle, no reads                     157,201             157,202
+  One-cycle, color read                   166,801             166,802
+  Two-cycle, color read                   166,801             166,802
+  One-cycle, known alpha fail, no reads    77,772              77,773
+  Two-cycle, known alpha fail, no reads   155,052             155,053
+
+For example, the ordinary one-cycle no-read row has 320 pixel clocks and
+280 bus clocks: 80 color words plus 40 buffers times five setup clocks.
+The maximum is 320; adding 15 startup clocks gives 335 per row. Multiplying
+by 240 and adding one rectangle delivery clock gives 80,401.
+
+The alpha-failure case retains 320 pixel clocks, uses four startup clocks
+per row, adds 11 drain clocks and one delivery clock:
+
+  240*(320+4) + 11 + 1 = 77,772 RCP clocks.
+
+The probe also verified four queued one-clock setup commands end at COUNT
+tick 3 with zero overhang. This checks the conversion explanation in section 2.
+
+To reproduce the rectangle calculation in a temporary C file, initialize a
+zeroed struct rdp_timing and set:
+
+  fb_size=2, fb_width=320, fb_address=0x100000, z_address=0x200000,
+  rdram_bytes=0x800000, right=1280, bottom=960, length=2,
+  cycle_type=0 or 1, modes=0 or 0x40,
+  words[0]=0x36000000 | (1280u<<12) | 960u, words[1]=0.
+
+For constant alpha failure use modes=1, combine_lo=7, blend_color=1.
+Include device/rcp/rdp/rdp_timing.h, compile with -Isrc, and call
+rdp_timing_clocks(). A FullSync contributes one delivery clock in this isolated
+calculation. A real comparison must reproduce the upstream counter intervals,
+baseline subtraction, primitive-depth update, VI setup and statistical policy.
+The table deliberately does not claim sub-clock agreement from approximate
+millisecond comparisons.
+
+14. REPRODUCTION WORKFLOW AND INTERPRETATION RULES
+-------------------------------------------------
+
+A defensible timing investigation should retain the following steps:
+
+  1. Record source/core/harness/ROM identities, configuration, input sequence,
+     framebuffer and VI state, and the exact measurement interval.
+  2. Start with native RSP, cycle-based CPU timing On, and SoftRDP at 1x when
+     isolating timing from HLE and host GPU behavior. Test HLE separately.
+  3. Reproduce command-level hardware cases with the original register-clear,
+     setup, fence, baseline subtraction and sampling protocol.
+  4. Log packet opcode/length, span pixels/rows, uncovered response clocks,
+     submission timestamps, queue/fence deadlines, counter reads/clears and
+     DP interrupt delivery. The header exposes OBSERVE_SPAN, COMMAND, RESPONSE
+     and FINISH hooks; rdp_core.c also provides queue/read observation hooks.
+  5. Vary one factor at a time: cycle mode, reads, writes, rejection, bank/row
+     alignment, field parity, VI enablement and VI phase. Include narrow spans,
+     long transfers, boundary crossings and fragmented command packets.
+  6. Keep delivery/producer work, raster work, memory work and waiting separate.
+     Apply overlap with maxima or explicit credits; justify every added term.
+  7. Validate a candidate against both isolated cases and fixed game intervals.
+     Include independent games and neutral/input controls; do not compensate
+     for an unmatched recording by rescaling the global clock.
+  8. Compare RAM/audio and synchronized states for a timing-preserving change.
+     Compare generated RDP packets when modifying an HLE geometry path.
+     Save/load must preserve packet phase, queue remainder and counter events.
+  9. Measure host throughput separately, with fixed guest workload, repeated
+     runs and stated warmup. Host milliseconds do not supply guest RDP clocks.
+ 10. Publish exclusions and incomplete runs. A source inspection, arithmetic
+     fixture or rendering match is not a completed hardware timing-ROM pass.
+
+The existing five-game HLE performance report uses medians, repeat ranges and
+a 480-VI warmup exclusion, with timing around retro_run. Hashing/checkpoint
+overhead and frontend startup are described separately in that report.
+Those measurements quantify host acceleration, not physical RDP timing.
+
+No new physical-console or complete RDP-ROM run was performed for this document.
+The new execution here was limited to the direct-header arithmetic probe.
+
+
+15. REMAINING UNCERTAINTY AND SOURCE INVENTORY
+----------------------------------------------
+
+The model still lacks a complete request-level RDRAM arbiter, persistent open
+rows across spans, full DMA/CPU/other-client contention, actual VI burst phase,
+and full inter-command pipeline overlap. Command delivery and command work are
+serialized in the estimator even though memory/pixel work overlaps inside a
+span. The first-eight-word triangle analysis cannot resolve all per-pixel
+texture, combiner, coverage or depth outcomes. Uniform proofs cover only a
+restricted subset. Other formats and narrow spans extrapolate beyond the
+principal 320x240 RGBA16 hardware sample.
+
+The 49-clock transient has weaker physical provenance than the rectangle
+throughput constraints: it is shared game-video calibration. Fixed sync and
+atomic-primitive terms also need to be interpreted at their documented evidence
+level. A good match to one scene is insufficient to infer exact bus latency.
+
+Primary local implementation sources:
+  src/device/rcp/rdp/rdp_timing.h
+  src/device/rcp/rdp/rdp_core.c
+  src/device/rcp/rdp/rdp_counters.h
+  src/device/rcp/rdp/fb.c
+  src/main/savestates.c
+
+Available hardware-reference source and published data:
+  benchmarks/conformance/upstream/RDP-Timing-Tests/README.md
+  benchmarks/conformance/upstream/RDP-Timing-Tests/src/test_main.c
+  benchmarks/conformance/upstream/RDP-Timing-Tests/sample_results.txt
+  benchmarks/conformance/upstream/RDP-Timing-Tests/analyze.py
+  benchmarks/conformance/upstream/RDP-Timing-Tests/compare.py
+  benchmarks/conformance/validation.json (revision and inspection status)
+  benchmarks/conformance/README.md (scope and conformance limits)
+
+Historical game-calibration account:
+  benchmarks/README.md (original linked report paths remain absent)
+  rdp_timing/README.txt (collected tools and recovered historical reports)
+  rdp_timing/MANIFEST.json (recovery provenance and missing artifacts)
+
+Related current measurements and methods:
+  benchmarks/timing-comparison/accurate-hle-five-games/RESULTS.md
+  benchmarks/timing-comparison/run.py
+  benchmarks/hle-calibration/README.md
+  benchmarks/hle-calibration/RESULTS.md
+  benchmarks/hle-calibration/PATHS.md
+  benchmarks/hle-calibration/sequence.cpp
+  benchmarks/hle-calibration/sequence-validation.json
+  benchmarks/hle-calibration/path-validation.json
+  benchmarks/hle-calibration/path-live-validation.json
+
+These evidence classes should remain distinguishable in future updates:
+published hardware observations, current-source behavior, historical game-video
+calibration, model-internal exact instruction counts, and unvalidated estimates.
+
+
+16. IMPLEMENTATION PSEUDOCODE
+-----------------------------
+
+The following is an unoptimized implementation description of the current
+aggregate model. It expands the important helpers rather than treating a
+renderer or memory controller as an unexplained timing oracle. An implementation
+may use the header's row/packet fast paths after it matches these costs.
+
+Conventions:
+
+  All word inputs are numeric N64 32-bit words, after byte-order conversion.
+  count_time is a nonnegative, monotonic 64-bit CPU COUNT timestamp.
+  Work costs are unsigned 64-bit RCP clocks.
+  Addresses ending in _bits are bit addresses; other addresses are bytes.
+  / and floor_div mean integer floor division unless ceil_div is specified.
+  ceil_div(a,b) = floor((a+b-1)/b) for nonnegative a and positive b.
+  ceil_div_signed(a,b) = -floor_div(-a,b) for positive b.
+  For signed coordinates, floor_div must round toward negative infinity.
+  sN(word) sign-extends the low N bits, ignoring higher packet bits.
+  even_floor(x) = 2 * floor_div(x,2).
+  Unknown proof results retain full/conservative work.
+
+Persistent timing state:
+
+  deadline_COUNT, overhang_quarters
+  first_words[8], position_words, length_words
+  cycle_type, framebuffer_size, other_modes
+  framebuffer_width/address, depth_address
+  texture_size/width/address
+  scissor_left/top/right/bottom in quarter pixels, field_mode
+  primitive/environment/blend/fill colors, combiner words, primitive_depth
+  atomic_primitive, last_reject
+  up to eight uniform-depth regions: address, width, height, Z, valid
+
+Host bindings and temporary state:
+
+  RAM size, busy callback/context
+  numeric VI registers[14], field_start_COUNT, field_ticks_COUNT
+  vi_elapsed_RCP for the current command
+
+17.1 Feed packets and publish completion
+
+  packet_words(first):
+      op = (first >> 24) & 63
+      if 8 <= op <= 15:
+          return [8,12,24,28,24,28,40,44][op-8]
+      return 4 if op is 0x24 or 0x25 else 2
+
+  feed(words, submitted_COUNT):
+      for each input word:
+          if position_words == 0:
+              length_words = packet_words(word)
+          if position_words < 8:
+              first_words[position_words] = word
+          position_words += 1
+          if position_words == length_words:
+              finish_packet(submitted_COUNT)
+
+  finish_packet(submitted):
+      if deadline_COUNT <= submitted:
+          deadline_COUNT = submitted
+          overhang_quarters = 0
+      begin_quarters = 4*deadline_COUNT - overhang_quarters
+      C = command_clocks()              # Decodes and updates command state.
+      q = 3*C - overhang_quarters
+      ticks = ceil_div(q,4)
+      if deadline_COUNT + ticks would exceed INT64_MAX:
+          deadline_COUNT = INT64_MAX
+          overhang_quarters = 0
+      else:
+          deadline_COUNT += ticks
+          overhang_quarters = 4*ticks - q
+      end_quarters = 4*deadline_COUNT - overhang_quarters
+      if these quarter timestamps fit int64:
+          op = opcode(first_words[0])
+          primitive = triangle(op) or op in {0x24,0x25,0x36}
+          load = op in {0x30,0x33,0x34}
+          pipeline = primitive or load or 0x26 <= op <= 0x29
+          mask = 1 | (2 if pipeline else 0) | (4 if load else 0)
+          if primitive and last_reject and (other_modes & 0x50) == 0:
+              report_busy(begin_quarters,end_quarters,1)
+              report_busy(begin_quarters,
+                  end_quarters-3*(cycle_type+1),2)
+          else:
+              report_busy(begin_quarters,end_quarters,mask)
+      position_words = 0
+      if opcode(first_words[0]) == 0x29:
+          publish_fullsync_deadline(deadline_COUNT)
+
+The real header guards quarter-timestamp overflow before doing signed multiply.
+Its legacy words_sync interface returns the first fence in a caller-owned
+submission milestone. The portable adapter processes one completed packet at
+a time so its callback reports every fence, including split and repeated ones.
+The host decides how those events interact with an already-pending DP interrupt.
+
+17.2 Decode state, geometry and transfers
+
+  command_clocks():
+      op = opcode(first_words[0])
+      delivery = length_words / 2
+      vi_elapsed_RCP = delivery
+      last_reject = false
+      work = 0
+
+      update state for:
+          0x3a primitive color; 0x3b environment color; 0x39 blend color
+          0x37 fill color; 0x2e primitive depth; 0x3c combiner
+          0x2f cycle_type=(word0>>20)&3, modes=word1,
+               atomic=(word0>>23)&1
+          0x3e depth_address=word1&0xffffff
+          0x3f framebuffer_size=(word0>>19)&3,
+               width=(word0&1023)+1, address=word1&0xffffff
+          0x3d texture_size/width/address using those same fields
+          0x2d scissor coordinates from 12-bit quarter-pixel fields;
+               field_mode=(word1>>24)&3
+      framebuffer_bpp = 4 << framebuffer_size
+
+      if triangle(op):
+          last_reject = (alpha_result() == REJECT)
+          work = triangle_spans()
+          if not last_reject:
+              invalidate(framebuffer_address,
+                  framebuffer_width*ceil_div(scissor_bottom,4)*framebuffer_bpp/8)
+              if modes & 0x20:
+                  invalidate(depth_address,
+                      framebuffer_width*ceil_div(scissor_bottom,4)*2)
+
+      else if op in {0x24,0x25,0x36}:
+          left,top = quarter coordinates from word1
+          right,bottom = quarter coordinates from word0
+          if cycle_type >= 2:
+              right = 4*floor(right/4)+4
+              bottom = 4*floor(bottom/4)+4
+          intersect the rectangle with the quarter-pixel scissor
+          if right>left and bottom>top:
+              x0=floor(left/4); x1=ceil_div(right,4)
+              y0=floor(top/4); y1=ceil_div(bottom,4)
+              alpha=alpha_result(); depth=depth_result(x1,y1)
+              last_reject = cycle_type<2 and
+                  (alpha==REJECT or depth==REJECT)
+              for y in [y0,y1):
+                  work += span_clocks(y,x0,x1)
+              update/invalidate uniform proofs as in 17.6
+
+      if op is a texture load and texture_size != 0:
+          work = texture_load_words(op)
+          if work != 0:
+              work = vi_service(work,0,texture_address*8,0,true,false,false)
+
+      if work != 0 and last_reject and (modes&0x50)==0:
+          work += 11
+      if work != 0 and atomic and primitive(op): work += 35
+      if op==0x26: work += 25
+      if op==0x27: work += 50
+      if op==0x28: work += 33
+      return delivery + work
+
+Each rectangle row is an independent aligned bus calculation. The actual
+rectangle helper uses equivalent repetition/copy shortcuts only when VI phase
+and address classification do not require the full walk.
+
+17.3 Exact span geometry used by this estimator
+
+  triangle_spans():
+      yl=s14(word0); yh=s14(word1); ym=s14(word1>>16)
+      xh=s28(word4); xm=s28(word6); xl=s28(word2)
+      dh=s30(word5); dm=s30(word7); dl=s30(word3)
+      ah=even_floor(xh); am=even_floor(xm); al=even_floor(xl)
+      sh=even_floor(floor_div(dh,4))
+      sm=even_floor(floor_div(dm,4))
+      sl=even_floor(floor_div(dl,4))
+      aligned_yh=4*floor_div(yh,4)
+      flip=(word0>>23)&1
+      work=0
+      first=max(floor_div(yh,4),floor(scissor_top/4))
+      last=min(ceil_div_signed(yl,4),ceil_div(scissor_bottom,4))
+      for y in [first,last):
+          if not keeps_row(y): continue
+          lo=max(4*y,yh,scissor_top)
+          hi=min(4*y+4,yl,scissor_bottom)
+          left=+infinity; right=-infinity
+          for q in [lo,hi):
+              major=ah+sh*(q-aligned_yh)
+              minor=am+sm*(q-aligned_yh) if q<ym else al+sl*(q-ym)
+              L,R=(major,minor) if flip else (minor,major)
+              if L>R: continue
+              left=min(left,floor_div(L,65536))
+              right=max(right,floor_div(R,65536)+1)
+          left=max(left,floor(scissor_left/4))
+          right=min(right,ceil_div(scissor_right,4))
+          if right>left: work += span_clocks(y,left,right)
+      return work
+
+  keeps_row(y):
+      return (field_mode&2)==0 or (y&1)==(field_mode&1)
+
+ceil_div_signed must work for negative Y as mathematical ceiling. The source's
+arithmetic right shifts provide that behavior on the tested C/C++ targets.
+Never substitute unsigned shifts or truncation-toward-zero for signed edges.
+
+17.4 Bus, row transitions and span cost
+
+  bus_words(first_bit,bits):
+      return 0 if bits==0 else ceil_div((first_bit&63)+bits,64)
+
+  row_conflict(A,B):
+      return floor(A/2^23)==floor(B/2^23) and
+             floor(A/2^14)!=floor(B/2^14)
+
+  buffer_pixels(bpp):
+      return 4 if bpp==32 else 8
+
+  buffers(bpp,left,right):
+      N=buffer_pixels(bpp)
+      x=left
+      while x<right:
+          end=min(right,N*floor(x/N)+N)
+          yield [x,end)
+          x=end
+
+  row_clocks(C,Z,bpp,left,right,cr,zr,cw,zw):
+      if right<=left or not(zr or zw): return 0
+      switches=(cr and zr)+zw
+      return_color=(not cw and not zw and cr and zr) or
+                   (cw and zw and not cr and not zr)
+      return_depth=cw and zr and not cr and not zw
+      total=0; previous_C=0; previous_Z=0; first=true
+      for [x,end) in buffers(bpp,left,right):
+          c=C+(x-left)*bpp; z=Z+(x-left)*16
+          if row_conflict(c,z): total += 3*switches
+          if not first:
+              if return_color and row_conflict(previous_Z,c): total+=3
+              if return_depth and row_conflict(previous_C,z): total+=3
+          previous_C=c; previous_Z=z; first=false
+      return total
+
+  separate_buffers(C,Z,bpp,left,right):
+      count=0
+      for [x,end) in buffers(bpp,left,right):
+          c=C+(x-left)*bpp; z=Z+(x-left)*16
+          c_last=c+(end-x-1)*bpp; z_last=z+(end-x-1)*16
+          if bank(c)!=bank(z) and bank(c)==bank(c_last) and
+                                   bank(z)==bank(z_last): count+=1
+      return count
+
+Here bank(bit_address)=floor(bit_address/2^23). One nuance must be retained for
+source-identical row_clocks results: if the complete color and depth spans each
+stay within a single 2 KiB row, the header's fast path returns
+
+  row_conflict(C,Z) ? 3*(S*switches+(S-1)*(return_color or return_depth)) : 0.
+
+Otherwise it uses the explicit per-buffer walk above. Preserve that fast-path
+rule when reproducing the existing estimator exactly; it is an aggregate
+buffer model, not a claim about every intervening physical memory request.
+
+  span_clocks(y,left,right):
+      if right<=left or not keeps_row(y): return 0
+      P=right-left; bpp=4 << framebuffer_size
+      C=framebuffer_address*8+(y*framebuffer_width+left)*bpp
+      Cwords=bus_words(C,P*bpp)
+      if cycle_type>=2:
+          W=ceil_div(P,4) if cycle_type==2 else Cwords
+          W=vi_service(W,0,C,0,true,false,false)
+          vi_elapsed_RCP+=W
+          return W
+
+      has_Z=(triangle(op) and (op&1)) or (modes&4)
+      cr=(modes>>6)&1
+      zr=has_Z and (modes&0x10)
+      zw=has_Z and (modes&0x20) and not last_reject
+      cw=not last_reject
+      N=buffer_pixels(bpp)
+      S=ceil_div(right,N)-floor(left/N)
+      Z=depth_address*8+(y*framebuffer_width+left)*16
+      Zwords=bus_words(Z,P*16)
+      bus=Cwords*(cw+cr)+Zwords*(zr+zw)+S*5*(cw+cr+zr+zw)
+      rows=row_clocks(C,Z,bpp,left,right,cr,zr,cw,zw)
+      bus+=rows
+      if cw and zr and zw and not cr and framebuffer_size==2:
+          bus+=(rows/3)*(1+cycle_type)
+      if cw and (cr or zr): bus+=3*S
+
+      overlap=0
+      if cw and not zw and cr and zr and cycle_type!=0 and framebuffer_size==2:
+          overlap=2*S
+      if cw and zw and (cr or zr) and framebuffer_size==2:
+          hidden=min(2,cr+zr+cycle_type)
+          overlap=hidden*separate_buffers(C,Z,bpp,left,right)
+      if overlap and vi_enabled() and either span crosses a bank:
+          overlap=0
+      bus=vi_service(bus,overlap,C,Z,cw or cr,zr or zw,zw)
+
+      raster=P*(cycle_type+1)
+      R=cr+zr; response=0
+      if R!=0:
+          response=max(Cwords*cr+Zwords*zr+S*(4*R+5),raster)
+          if cycle_type!=0 and zr: response+=2*S
+          if R>1:
+              stream=Zwords+5*S
+              response+=vi_service(stream,0,C,Z,cw or cr,zr or zw,zw)-stream
+      occupied=max(bus,raster)
+      uncovered=max(0,response-occupied,49*R-occupied)
+      startup=(4+2*cycle_type) if last_reject else 15
+      W=startup+occupied+uncovered
+      vi_elapsed_RCP+=W
+      return W
+
+Treat cr/zr/cw/zw as Boolean 0/1 when adding stream counts. The C expressions
+using logical operators already do this; adding raw mode masks would inflate
+costs. The two calls to vi_service for bus/response inspect the same start phase;
+they do not independently advance vi_elapsed_RCP and consume time twice.
+
+17.5 Phase-aware VI service
+
+  vi_enabled():
+      reject if no register binding, display type<2, or field_ticks==0
+      hs,he=VI_H_START endpoints masked to 10 bits
+      vs,ve=VI_V_START endpoints masked to 10 bits
+      total=(VI_V_SYNC&1023)+1
+      line=floor(field_ticks*8/(total*3))
+      return he>hs and ve>vs and vs<total and total>=2 and
+             (VI_WIDTH&4095)!=0 and (VI_X_SCALE&4095)!=0 and line>=2
+
+  vi_service(bus,overlap,C,Z,color_stream,depth_stream,depth_write):
+      if bus==0 or not vi_enabled(): return bus-overlap
+      ticks=field_ticks; period=4*ticks
+      start=positive_mod(deadline_COUNT,ticks)
+      origin=positive_mod(field_start_COUNT,ticks)
+      phase=positive_mod(4*start+2*period-4*origin-overhang_quarters+
+                         3*(vi_elapsed_RCP mod period),period)
+      bytes_per_pixel=4 if (VI_STATUS&3)==3 else 2
+      width=ceil_div((he-hs)*(VI_X_SCALE&4095),1024)
+      bytes=width*bytes_per_pixel; requests=ceil_div(bytes,16)
+      line=floor(ticks*8/(total*3))
+      remaining=bus-overlap; elapsed=0; credit=0
+      scale=bus if overlap!=0 else 1
+      divisor=line*scale
+      while remaining!=0:
+          halfline=floor(phase*total/period)
+          active=(vs<=halfline<ve)
+          if active: boundary=ceil_div((halfline+1)*period,total)
+          else if halfline<vs: boundary=ceil_div(vs*period,total)
+          else: boundary=period
+          window=ceil_div(boundary-phase,3)
+          budget=0
+          if active:
+              source_y=floor((floor((halfline-vs)/2)*(VI_Y_SCALE&4095)+
+                              ((VI_Y_SCALE>>16)&4095))/1024)
+              address=(VI_ORIGIN+source_y*(VI_WIDTH&4095)*bytes_per_pixel+
+                       floor(((VI_X_SCALE>>16)&4095)/1024)*bytes_per_pixel)
+                       &0xffffff
+              shared=(color_stream and row_conflict(C,address*8)) or
+                     (depth_stream and row_conflict(Z,address*8))
+              budget=ceil_div(bytes,8)+requests*(5+3*depth_write+3*shared)
+              budget=min(budget,line-1)
+              same_bank=(color_stream and bank(C)==floor(address/2^20)) or
+                        (depth_stream and bank(Z)==floor(address/2^20))
+              scale=(bus-overlap) if overlap!=0 and same_bank else
+                    (bus if overlap!=0 else 1)
+          else: scale=bus if overlap!=0 else 1
+          available=(line-budget)*scale
+          stretched=floor((remaining*divisor-credit+floor(available/2))/available)
+          if stretched<=window: return elapsed+stretched
+          service=window*available+credit
+          remaining-=floor(service/divisor)
+          credit=service mod divisor
+          elapsed+=window
+          phase=(phase+3*window) mod period
+      return elapsed
+
+The rounded division in stretched is intentional; replacing it with ceiling
+changes the source's aggregate service estimates. Keep sufficient integer width
+for its products. The inputs from the bounded native RDP packet fields are the
+intended domain, not arbitrary unbounded user-provided bus costs.
+
+17.6 Proofs, invalidation and texture loads
+
+  alpha_result():
+      if alpha compare disabled: return PASS
+      if modes has alpha noise or coverage-dependent alpha: return UNKNOWN
+      A=(combine_lo>>21)&7; B=(combine_lo>>3)&7
+      C=(combine_lo>>18)&7; D=combine_lo&7
+      if A!=B and C!=7: return UNKNOWN
+      resolve D: 3=primitive alpha, 5=environment alpha, 6=255, 7=0
+      otherwise return UNKNOWN
+      return REJECT if resolved_alpha<(blend_color&255) else PASS
+
+  depth_result(x1,y1):
+      if Z compare disabled: return PASS
+      if primitive Z source disabled or modes has unsupported Z/coverage/AA bits:
+          return UNKNOWN
+      find valid region with address==depth_address
+      require region.width==framebuffer_width and bounds cover x1,y1
+      Z=((primitive_depth>>16)&0x7fff)<<3
+      if region.Z==0x3ffff or Z<region.Z: return PASS
+      if primitive_DZ==0 and Z>region.Z+128: return REJECT
+      return UNKNOWN
+
+Unsupported bits for that depth proof are 0xc00 | 0x3000 | 8. Alpha proof
+unsupported bits are 2 | 0x3000. These restrictions are part of the model.
+
+  decompress_Z(packed):
+      exponent=(packed>>13)&7
+      shifts=[6,5,4,3,2,1,0,0]
+      adds=[0,0x20000,0x30000,0x38000,0x3c000,0x3e000,0x3f000,0x3f800]
+      return adds[exponent]+(((packed>>2)&0x7ff)<<shifts[exponent])
+
+  quantize_Z(Z):
+      choose shifts 6,5,4,3,2,1,0 at thresholds
+          0x20000,0x30000,0x38000,0x3c000,0x3e000,0x3f000
+      return floor(Z/2^shift)*2^shift
+
+  invalidate(address,bytes):
+      address &= 0xffffff
+      invalidate each cached region overlapped by [address,address+bytes)
+      include 24-bit wraparound; bytes>=16 MiB invalidates all regions
+
+After a non-rejected rectangle, invalidate the conservative framebuffer range
+from its image base through width*y1*bpp/8. A full-width, origin-zero, non-field
+16-bit fill with integral bottom, matching fill halfwords, and low two fill bits
+zero may record a uniform region at the framebuffer address. Decode its Z from
+the fill value. Require 8-byte alignment and the complete region inside RAM.
+
+For a non-rejected primitive-Z updating rectangle, invalidate the depth range.
+It may record a quantized uniform Z proof only when: origin-zero, full-width,
+integral right/bottom, no field scissor, (modes&0x24)==0x24,
+(modes&(8|0x3000))==0, zero primitive DZ, and both alpha/depth proofs PASS.
+Unknown proofs must not create a new proof. Use an existing matching slot,
+otherwise an invalid slot, otherwise slot (address>>10)&7.
+
+  texture_load_words(op):
+      size_bits=4<<texture_size
+      extract SL,TL from word0 and SH,TH from word1 (12-bit fields)
+      if op==0x33:                       # LoadBlock integer coordinates
+          if SH<SL: return 0
+          first=texture_address*8+(TL*texture_width+SL)*size_bits
+          return bus_words(first,(SH-SL+1)*size_bits)
+      SL/=4; TL/=4; SH/=4; TH/=4         # LoadTile / LoadTLUT 10.2
+      if SH<SL or TH<TL: return 0
+      if op==0x30 and TH!=TL: return 0
+      if op==0x30 and texture_size==2: return SH-SL+1
+      total=0
+      for y in [TL,TH+1):
+          first=texture_address*8+(y*texture_width+SL)*size_bits
+          total+=bus_words(first,(SH-SL+1)*size_bits)
+      return total
+
+This finishes the work-cost pseudocode. The production header optimizes repeat
+periods and edge bounds; copying the standalone header is the simplest way to
+retain all of its existing corner-case arithmetic.
+
+
+17. DETAILED INTEGRATION INTO ANOTHER EMULATOR
+---------------------------------------------
+
+18.1 Files and build requirements
+
+Copy rdp_timing/rdp_timing.h and rdp_timing_adapter.h into the target
+emulator. The former is byte-identical to this repository's current timing
+header. Both are header-only and use standard C headers. C99 and C++11 builds
+are checked. The repository license is included at rdp_timing/LICENSE.
+
+There is no dependency on n64emu structs, a particular renderer, libretro,
+threading library, CPU/RSP JIT, or graphics API. The legacy STATE_OFFSET macros
+only name this emulator's save-state extension locations; another emulator
+should use its own state format and does not need those byte offsets.
+
+The cost code assumes the usual two's-complement, arithmetic signed-right-shift
+behavior for edge coordinates. A language port must implement the explicit
+signed floor/sign-extension operations above. Do not convert all intermediates
+to 32-bit integers: queue times, edge walks, address products and VI service
+need the documented 64-bit widths.
+
+18.2 Pick one shared clock representation
+
+The API takes 64-bit CPU COUNT ticks, not wall-clock milliseconds, frames,
+raw 32-bit CP0_COUNT values or CPU instruction counts. COUNT runs at 46.875 MHz
+under the model's clock convention. The host must extend any wrapping 32-bit
+register to a monotonic timeline before submitting commands.
+
+If a scheduler uses 93.75-MHz CPU cycles, one COUNT tick is two CPU cycles.
+If it uses 187.5-MHz master ticks, one COUNT tick is four master ticks and one
+RCP clock is three master ticks. Preserve the fractional RCP-to-COUNT carry;
+round only at the event boundary required by the host scheduler. Busy callbacks
+are already in quarter COUNT/master ticks and retain finer precision.
+
+For native RSP execution, use the command's production/submission time: the
+RSP slice's start plus elapsed RSP work converted with its own remainder.
+For synchronous HLE, supply the producer's modeled elapsed work. CPU COUNT
+at entry to the HLE call alone is insufficient if later commands have not yet
+been produced. Keep timestamps in the same epoch as VI field start and events.
+
+18.3 Attach state and feed the DPC stream once
+
+Create one rdp_timing_adapter per emulated RDP. Initialize it on machine/reset
+with the current monotonic COUNT time, installed RAM size, and callbacks. RDP
+state starts cleared; the guest's setup commands establish images, scissor,
+cycle type and combiner. Do not assume a default 320x240 drawing surface.
+
+At command consumption, feed the exact native command words the renderer sees.
+Use adapter_feed_words for already decoded numeric words, or adapter_feed_be
+for an ordinary big-endian byte buffer. If RAM is word-swapped, the host must
+first expose numeric words or convert from its storage layout; casting its
+bytes to uint32_t is not a portable endianness conversion.
+
+The word API's count is 32-bit words. The byte API's count is bytes and must
+be divisible by four; the byte pointer may be unaligned. Both retain incomplete
+packets between calls. A DPC END window ending halfway through a triangle is
+not a reset. The timestamp used when a packet completes is its submission time
+for this estimator. Payload words that resemble opcodes must remain payload.
+
+The host owns DPC address alignment/wrapping, RDRAM/DMEM selection, command
+availability, FREEZE/unfreeze and FLUSH policy. Feed only the words actually
+consumed, once. Rendering the stream and feeding timing are two observers of
+the same stream, not two timing submissions. Retained frozen HLE commands must
+come from the same preserved stream that is later rendered.
+
+18.4 Supply VI state
+
+Before feeding after a VI change, call set_vi with fourteen numeric registers
+in this order:
+
+  STATUS, ORIGIN, WIDTH, INTR, CURRENT, BURST, V_SYNC, H_SYNC, LEAP,
+  H_START, V_START, V_BURST, X_SCALE, Y_SCALE.
+
+Also supply the current field start and field duration in COUNT ticks. The
+adapter copies the array into owned storage. Passing NULL disables scanout
+reservation. A zero field duration or invalid display setup also produces
+no VI reservation. A bare "VI enabled" Boolean is not enough for the phase,
+active range, scaled source-row and bank calculations.
+
+This remains submission-time aggregate contention. Changing VI registers does
+not retroactively rebuild memory requests for already queued work. Preserve
+the same approximation when comparing ports; a more detailed scheduler is a
+separate model change.
+
+18.5 Integrate FullSync and busy counters
+
+The FullSync callback receives the rounded COUNT deadline of that fence. It
+should enqueue the target emulator's DP completion event at that absolute time,
+or convert it to max(deadline-now,0) if the scheduler accepts relative delays.
+Use the first fence's own milestone when later commands extend the queue.
+The adapter reports all fences; the host retains its normal interrupt-pending
+and acknowledgement behavior. Callback code must not recursively feed timing.
+
+Remove or bypass any other fixed FullSync/frame/geometry delay for the same
+decoded fence. Keep a fallback only for a backend notification that genuinely
+has no corresponding command. Host draw completion and a guest DP interrupt
+are different events; a fast GPU does not make the guest deadline disappear.
+
+The busy callback reports [begin,end) in quarter COUNT ticks with masks:
+1=buffer/command, 2=pipeline, 4=texture-load activity. If the host implements
+the busy registers, retain interval unions, gaps, future publications and
+timestamped clears; do not implement them as "time since last draw". Divide
+accumulated quarter ticks by three for RCP clocks and apply 24-bit wrapping.
+Existing rdp_counters.h is a separate implementation example in this source
+tree. DPC_CLOCK needs the host's own running-clock/clear policy.
+
+18.6 Notify memory writes and restore proofs correctly
+
+Call notify_write(address,bytes) for CPU stores, RSP/PI/SI/DMA writes and other
+memory producers that can overlap a cached uniform depth region. The RDP
+command decoder invalidates its own affected raster ranges. Logical ranges
+must be expressed in guest byte addresses, not host pointers.
+
+The model does not read framebuffer RAM during normal estimation. Its uniform
+cache is based on command proofs. On restore, the optional validate_uniform
+callback may preserve a proof only after synchronizing the backing storage
+and checking every packed 16-bit Z value and DZ bits against the saved region.
+A few samples from GPU-stale RAM are insufficient. Without that callback,
+after_load drops all proofs conservatively. That can increase post-load costs;
+a host requiring identical continuation should implement full validation or
+consistently disable proof creation by initializing with RAM size zero.
+
+18.7 Serialize explicitly and rebind
+
+Use the target emulator's versioned serializer, with a specified byte order.
+Store deadline and overhang, packet words/position/length, cycle/mode/image/
+scissor/combiner/color/depth/atomic fields, and all uniform-region scalar fields
+listed in section 17. Keep the deadline absolute if the host restores the same
+COUNT epoch; otherwise serialize its offset and rebase it on the restored epoch.
+
+Do not memcpy the enclosing C adapter into an on-disk state. It contains
+callback and VI pointers whose layout and addresses are process-specific.
+Do not serialize vi_elapsed as a cross-command device clock: it is recomputed
+at each command. The host separately serializes VI registers/field phase,
+scheduled DP interrupts, and busy-counter interval/clear history.
+
+A restore sequence is:
+
+  initialize a fresh adapter
+  deserialize the persistent fields into adapter.timing
+  restore host COUNT epoch, event queue and VI device state
+  call after_load(adapter, RAM_size, callbacks); reject invalid state on failure
+  call set_vi(adapter, restored_VI_registers, restored_field_start, duration)
+  resume the unfinished packet/next consumed window
+
+after_load validates packet phase and scalar bounds, reattaches callbacks,
+clears runtime VI bindings and temporary progress, and drops or validates
+uniform proofs. It does not reconstruct the host's event queue or validate
+arbitrary serialized file buffers. Reject malformed state before continuing.
+Reset instead discards all queued/partial work and starts a new timeline at
+the supplied COUNT time.
+
+18.8 Reentrancy, lifetime and parameter contracts
+
+Use a single owner/thread for an adapter or synchronize access externally.
+Busy/fence/proof callbacks must not reenter its feed methods. Keep callback
+context alive while the adapter is active. If moving/copying the enclosing
+adapter in memory, rebind VI, because timing.vi_regs points into its owned
+array. Moving objects without restoring embedded pointers is a common port bug.
+
+feed_words/feed_be return 0 for invalid arguments/state; check that result.
+Negative timestamps, missing nonempty input and non-word byte counts are
+rejected before input is consumed. Valid commands may span any number of
+windows. The host remains responsible for legal device input and consistent
+time ordering. The adapter does not allocate, read guest RAM or render pixels.
+
+
+18. STANDALONE C/C++ ADAPTER AND EXAMPLE
+----------------------------------------
+
+The directly reusable files are:
+
+  rdp_timing/rdp_timing.h
+  rdp_timing/rdp_timing_adapter.h
+  rdp_timing/example.c
+
+The adapter's public operations are:
+
+  init(a, now_COUNT, RAM_bytes, callbacks)
+  set_vi(a, numeric_registers14_or_NULL, field_start_COUNT, field_ticks_COUNT)
+  feed_words(a, words, number_of_32bit_words, submitted_COUNT)
+  feed_be(a, bytes, number_of_bytes, submitted_COUNT)
+  notify_write(a, guest_byte_address, number_of_bytes)
+  after_load(a, RAM_bytes, callbacks)
+
+The actual names use the rdp_timing_adapter_ prefix. The callbacks structure
+contains context, busy, full_sync, and optional validate_uniform function
+pointers. The current rounded queue deadline is a.timing.deadline and its
+fractional overhang is a.timing.clock_overhang.
+
+Minimal host-side pseudocode using the supplied adapter:
+
+  callbacks.full_sync = function(context, deadline_COUNT):
+      host_enqueue_DP_event_at_COUNT(deadline_COUNT)
+  callbacks.busy = function(context, begin_quarters, end_quarters, mask):
+      host_accumulate_timestamped_busy_interval(begin_quarters,end_quarters,mask)
+  init(dp, host_COUNT64(), installed_RAM_size, callbacks)
+
+  on_DPC_commands_consumed(data, byte_count, producer_COUNT):
+      set_vi(dp, host_numeric_VI_registers(), field_start_COUNT, field_ticks_COUNT)
+      if not feed_be(dp, data, byte_count, producer_COUNT):
+          report_invalid_host_input_or_state()
+
+  on_CPU_or_DMA_write(address, bytes):
+      notify_write(dp,address,bytes)
+
+example.c contains a real standalone implementation of the callback and native
+packet feed. It submits SetColorImage, SetScissor, SetOtherModes, a full-screen
+one-cycle rectangle and FullSync, with VI disabled. Three setup delivery clocks
+plus 80,401 rectangle clocks plus one FullSync clock equal 80,405 RCP clocks:
+
+  ceil(80,405*3/4) = 60,304 COUNT ticks.
+
+Its callback prints that fence deadline and the program checks the result.
+Copy only the example and two headers into another directory to compile it;
+no files from src/, deps/, a renderer, or a built emulator are linked.
+
+  cc -std=c99 -Wall -Wextra -Werror -pedantic example.c -o example
+  c++ -x c++ -std=c++11 -Wall -Wextra -Werror -pedantic example.c -o example_cpp
+
+The same headers can be included in an emulator adapter translation unit while
+the host keeps its existing command renderer and scheduler implementation.

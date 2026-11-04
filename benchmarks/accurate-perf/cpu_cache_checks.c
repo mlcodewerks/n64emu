@@ -1,6 +1,9 @@
 #define main archived_cpu_timing_main
 #include "../cpu_timing.c"
 #undef main
+#ifndef CPU_CACHE_CHECKS_MAIN
+#define CPU_CACHE_CHECKS_MAIN main
+#endif
 #include "device/r4300/fastmem.h"
 #include "device/r4300/jit/n64emujit.h"
 static void verify(int ok, const char *what, unsigned seed, unsigned mode) {
@@ -89,7 +92,7 @@ static unsigned memory_checks(struct n64emujit *jit);
 static void memory_benchmark(struct n64emujit *jit);
 static unsigned branch_checks(struct n64emujit *jit);
 static unsigned ownership_checks(struct n64emujit *jit);
-int main(void) {
+int CPU_CACHE_CHECKS_MAIN(void) {
 #ifdef _WIN32
   _putenv("N64EMU_CPU_HOST_FAULTS=1");
 #else

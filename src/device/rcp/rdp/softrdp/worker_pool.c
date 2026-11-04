@@ -4,7 +4,7 @@
  * parallel_run() is a generation: the caller publishes the task, bumps
  * the generation counter, runs its own lane and waits for the other
  * workers to report in. Workers park on a condition variable between
- * generations and the caller parks on another while the workers finish,
+ * generations. The caller briefly polls completion before parking on another,
  * so a pool that is not rendering costs nothing: every thread the
  * renderer is not using is a thread the emulator, the frontend or an SMT
  * sibling gets back.
@@ -27,6 +27,9 @@
 #include "../performance_cores.h"
 #include <rthreads/rthreads.h>
 #include <features/features_cpu.h>
+#if defined(__i386__) || defined(__x86_64__)
+#include <emmintrin.h>
+#endif
 
 #define PARALLEL_LINE_PAD 64
 
@@ -180,8 +183,20 @@ static void parallel_worker(void *data)
 
 static void parallel_wait_completion(struct parallel_pool *p)
 {
-    if (retro_atomic_load_acquire_int(&p->remaining) == 0)
-        return;
+    /* Only wait actively for an already running generation, for a bounded
+     * number of pause instructions. Small batches often finish just after
+     * lane zero: avoid parking and waking the emulation thread for those.
+     * Idle workers and longer waits still use the condition variables. */
+    for (unsigned spin = 0; spin < 128; ++spin) {
+        if (retro_atomic_load_acquire_int(&p->remaining) == 0) return;
+#if defined(_WIN32)
+        YieldProcessor();
+#elif defined(__i386__) || defined(__x86_64__)
+        _mm_pause();
+#elif defined(__arm__) || defined(__aarch64__)
+        __asm__ __volatile__("yield");
+#endif
+    }
 
     parallel_lock_lock(p->done_lock);
     while (retro_atomic_load_acquire_int(&p->remaining) != 0)

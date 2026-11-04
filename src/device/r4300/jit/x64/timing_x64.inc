@@ -22,6 +22,10 @@ static void emit_pending_transfer_guard(const struct n64emujit_config* config,
     unsigned cached_bound, unsigned uncached_bound, struct memory_exit* failure)
 {
     if (!config->cache_timing || config->compat_issue_clock) return;
+    // Both queues are normally empty. Skip deadline construction together.
+    emit_mem(0x8b,0,RAX,R12,-1,0,offsetof(struct r4300_core,write_buffer_count));
+    JIT(or_(Xbyak::Reg32(RAX),host_mem(32,R12,-1,0,offsetof(struct r4300_core,icache_fill_index))));
+    auto *no_transfers=emit_jump(4);
     emit_movimm(0, RDX);
     emit_mem(0x8b, 0, RAX, R12, -1, 0, offsetof(struct r4300_core, write_buffer_count));
     emit_reg_op(0x85, RAX, RAX, 0); auto *no_writes = emit_jump(4);
@@ -49,10 +53,12 @@ static void emit_pending_transfer_guard(const struct n64emujit_config* config,
     }
     emit_reg_op(0x39, RAX, RDX, 1); memory_guard(failure, 3);
     patch_jump(empty, out);
+    patch_jump(no_transfers,out);
 }
 
 static void emit_region_guard(const struct n64emujit_config* config, unsigned start,
-    unsigned count, unsigned base, unsigned memory_count, struct memory_exit* failure)
+    unsigned count, unsigned base, unsigned memory_count, struct memory_exit* failure,
+    unsigned memory_flags=0)
 {
     emit_movimm64((intptr_t)&breakloop, R11);
     emit_mem_imm(0x80, 0, 7, R11, -1, 0, 0,0); memory_guard(failure, 5);
@@ -65,6 +71,17 @@ static void emit_region_guard(const struct n64emujit_config* config, unsigned st
     JIT(test(Xbyak::Reg32(RAX),CP0_STATUS_MODE_MASK));unsigned char* kernel=emit_jump(4);
     JIT(test(Xbyak::Reg32(RAX),CP0_STATUS_EXL|CP0_STATUS_ERL));memory_guard(failure,4);
     patch_jump(kernel, out);
+    /* Native RAM cannot change CU1 or MI repeat-write mode. Precise resumes
+     * re-enter this guard, so sample these once for the remaining region. */
+    if (memory_flags & 1) {
+        emit_mem(0x8b,1,RAX,R12,-1,0,offsetof(struct r4300_core,mi));
+        emit_mem_imm(0xf7,0,0,RAX,-1,0,offsetof(struct mi_controller,regs[MI_INIT_MODE_REG]),0x80);
+        memory_guard(failure,5);
+    }
+    if (memory_flags & 2) {
+        emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_CU1);
+        memory_guard(failure,4);
+    }
     if (config->cache_timing) {
         uint32_t pc = config->virtual_pc + start * 4;
         if ((pc & UINT32_C(0xe0000000)) == UINT32_C(0x80000000)) {

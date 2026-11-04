@@ -21,6 +21,8 @@ extern "C" {
 struct performance_affinity {
 #ifdef _WIN32
     GROUP_AFFINITY previous;
+    GROUP_AFFINITY cached_previous;
+    bool cache_was_known, scoped;
 #elif defined(__linux__)
     cpu_set_t previous;
 #endif

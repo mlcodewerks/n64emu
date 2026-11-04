@@ -38,10 +38,6 @@ with RSP LLE fallback for those ucodes not supported.
 
 **Cycle-based timing** selects **On** (default; complete CPU cache and pipeline timing) or **Off** (simplified CPU timing for higher performance). Component clocks and work-based RDP timing remain active in both settings.
 
-[RDP timing research notes](RDP_TIMING_RESEARCH.txt) describe the command and memory timing model, hardware references, game-video calibration, methodology and remaining accuracy limits.
-The [collected video-timing toolkit](rdp_timing/README.txt) contains the recovered comparison scripts, input fixtures, trace helpers and historical reports.
-The [standalone RDP timing adapter](rdp_timing/portable/README.txt) includes C/C++ headers, an example, implementation pseudocode and a guide for integration into other emulators.
-
 This emulator fork is based on  **very** extensive tests such as:
 - Lemmy's nemu64-test
 - Wiseguy's cache timing tests

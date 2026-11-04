@@ -123,24 +123,44 @@ static void emit_itlb_native(uint32_t pc)
 }
 /* Resolve a same-page target's IF access before executing its delay slot.
  * R14 holds the selected successor for conditional and indirect branches. */
-static void emit_branch_prefetch(const struct n64emujit_config* config,unsigned char** cold_exit=nullptr)
+static void emit_branch_prefetch(const struct n64emujit_config* config,unsigned char** cold_exit=nullptr,
+    uint32_t instruction=0,uint32_t pc=0)
 {
     if(!config->cache_timing||config->compat_issue_clock)return;
+    unsigned major=instruction>>26;
+    bool fixed=false;
+    uint32_t target=0;
+    if(major==2 || major==3) {
+        target=((pc+4)&UINT32_C(0xf0000000))|((instruction&UINT32_C(0x03ffffff))<<2);
+        fixed=true;
+    } else if(major==1 || (major>=4 && major<=7) || (major>=20 && major<=23)) {
+        target=pc+4+int32_t(int16_t(instruction))*4;
+        // Both outcomes fetch the identical line, including its page/tag.
+        fixed=(target>>5)==((pc+8)>>5);
+    }
+    if(fixed && (target>>12)!=(config->virtual_pc>>12))return;
+    // The branch's own fetch has already made this line resident. Native
+    // instructions cannot evict it, and the hit path has no other effects.
+    if(fixed && (target>>5)==(pc>>5))return;
     emit_mem_imm(0xf7,0,0,RSP,-1,0,4,2);auto *uncached=emit_jump(4);
     // R11 is reserved scratch: the overwhelmingly common hit needs no saves.
-    emit_mov(R14,R11);emit_imm_op(4,R11,UINT32_C(0xfffff000),0);
-    emit_imm_op(7,R11,config->virtual_pc&UINT32_C(0xfffff000),0);auto *different_page=emit_jump(5);
-    emit_mov(R14,R11);emit_shift_reg(R11,5,5,0);emit_imm_op(4,R11,511,0);
+    unsigned char *different_page=nullptr;
+    if(!fixed) {
+        emit_mov(R14,R11);emit_imm_op(4,R11,UINT32_C(0xfffff000),0);
+        emit_imm_op(7,R11,config->virtual_pc&UINT32_C(0xfffff000),0);different_page=emit_jump(5);
+        emit_mov(R14,R11);emit_shift_reg(R11,5,5,0);emit_imm_op(4,R11,511,0);
+    }
     uint32_t key=(config->physical_page<<12)|1;
-    emit_mem_imm(0x81,0,7,R12,R11,2,offsetof(struct r4300_core,icache_tags),key);auto *hit=emit_jump(4);
+    size_t tag=offsetof(struct r4300_core,icache_tags)+(fixed?((target>>5)&511)*4:0);
+    emit_mem_imm(0x81,0,7,R12,fixed?-1:R11,2,tag,key);auto *hit=emit_jump(4);
     if(cold_exit) {
         // A rewind must leave the target fetch to the precise branch.
         *cold_exit=emit_b();
-        patch_jump(hit,out);patch_jump(different_page,out);patch_jump(uncached,out);
+        patch_jump(hit,out);if(different_page)patch_jump(different_page,out);patch_jump(uncached,out);
         return;
     }
     JIT(push(Xbyak::Reg64(RAX)));JIT(push(Xbyak::Reg64(RCX)));JIT(push(Xbyak::Reg64(RDX)));
-    emit_mov(R11,RCX);
+    if(fixed)emit_movimm((target>>5)&511,RCX);else emit_mov(R11,RCX);
     emit_icache_fill_wait_native(config);
     emit_mem(0x8b,0,RAX,R12,RCX,2,offsetof(struct r4300_core,icache_shadow_tags));
     emit_reg_op(0x85,RAX,RAX,0);auto *plain=emit_jump(4);
@@ -152,9 +172,9 @@ static void emit_branch_prefetch(const struct n64emujit_config* config,unsigned 
     emit_mem_imm(0xc7,0,0,R12,RCX,2,offsetof(struct r4300_core,icache_shadow_tags),0);
     patch_jump(plain,out);
     emit_mem_imm(0xc7,0,0,R12,RCX,2,offsetof(struct r4300_core,icache_tags),key);
-    emit_icache_prefetch_native(config,0,UINT32_MAX);
+    emit_icache_prefetch_native(config,0,fixed?(target>>5)&511:UINT32_MAX);
     JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RCX)));JIT(pop(Xbyak::Reg64(RAX)));
-    patch_jump(hit,out);patch_jump(different_page,out);patch_jump(uncached,out);
+    patch_jump(hit,out);if(different_page)patch_jump(different_page,out);patch_jump(uncached,out);
 }
 /* Fetch state changes happen only after the current instruction's guards.
  * A region stays on one code page, so its first fetch establishes the exact
@@ -219,6 +239,50 @@ static void emit_pipeline_clear(void)
     JIT(pxor(Xbyak::Xmm(0),Xbyak::Xmm(0)));
     JIT(movdqu(Xbyak::util::ptr[Xbyak::Reg64(R12)+offsetof(struct r4300_core,pipeline_load_mask)],Xbyak::Xmm(0)));
     JIT(movq(Xbyak::util::ptr[Xbyak::Reg64(R12)+offsetof(struct r4300_core,pipeline_fpu_cc)],Xbyak::Xmm(0)));
+}
+static bool deferred_pipeline(const struct n64emujit_config* config)
+{
+    return config->cache_timing == 1 && !r4300_issue_reservation(config->compat_issue_clock);
+}
+static bool native_store(uint32_t instruction)
+{
+    unsigned major = instruction >> 26;
+    return major == 0x28 || major == 0x29 || major == 0x2b ||
+        major == 0x3f || major == 0x39 || major == 0x3d;
+}
+static unsigned native_memory_flags(uint32_t instruction)
+{
+    if (!native_ram_opcode(r4300_get_idec(instruction)->opcode)) return 0;
+    unsigned major = instruction >> 26;
+    return unsigned(native_store(instruction)) |
+        ((major == 0x31 || major == 0x35 || major == 0x39 || major == 0x3d) ? 2 : 0);
+}
+/* Within a native region, LDI uses the decoded predecessor. Store cacheability
+ * remains live because a resumed precise store may have been uncached.
+ * Materialize history only where C or a successor region can observe it.
+ * This also runs in cold exits before committing their executed prefix. */
+static void emit_pipeline_history(uint32_t instruction)
+{
+    if (native_store(instruction)) {
+        emit_state_imm(offsetof(struct r4300_core,pipeline_load_mask),0,1);
+        emit_state_imm(offsetof(struct r4300_core,pipeline_fpu_result_mask),0,1);
+        emit_state_imm(offsetof(struct r4300_core,pipeline_fpu_cc),0,0);
+        return;
+    }
+    emit_pipeline_clear();
+    if (!native_ram_opcode(r4300_get_idec(instruction)->opcode)) return;
+    unsigned rt = (instruction >> 16) & 31;
+    unsigned major = instruction >> 26;
+    bool fp = major == 0x31 || major == 0x35;
+    if (!rt && !fp) return;
+    emit_movimm64(UINT64_C(1) << (rt + (fp ? 32 : 0)), RAX);
+    if (fp && (rt & 1)) {
+        emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
+        auto *fr = emit_jump(5);
+        emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)),RAX);
+        patch_jump(fr,out);
+    }
+    emit_mem(0x89,1,RAX,R12,-1,0,offsetof(struct r4300_core,pipeline_load_mask));
 }
 /* Native timing cannot absorb LDI in a compatibility issue reservation. Test
  * raw fields just like the hardware's deliberately imprecise detector. */
@@ -351,18 +415,8 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_reg_op(0x39, RDX, RAX, 1);
         memory_guard(exit, 5);
     }
-    if (write) {
-        emit_mem(0x8b, 1, RAX, R12, -1, 0, offsetof(struct r4300_core, mi));
-        emit_mem_imm(0xf7, 0, 0, RAX, -1, 0, offsetof(struct mi_controller, regs[MI_INIT_MODE_REG]), 0x80);
-        memory_guard(exit, 5);
-    }
-    if (fp) {
-        emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_CU1);
-        memory_guard(exit,4);
-    }
     if (size > 1 && (!constant_address || (address & (size-1)))) {
-        emit_mov(R11, RAX); emit_imm_op(4, RAX, size - 1, 0);
-        emit_reg_op(0x85, RAX, RAX, 0); memory_guard(exit, 5);
+        JIT(test(Xbyak::Reg32(R11),size-1)); memory_guard(exit, 5);
     }
     unsigned char *direct_cache_hit = nullptr;
     if (config->cache_timing == 1 && (!write || !config->fastmem) &&
@@ -550,11 +604,14 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_reg_op(0x01, RDX, R13, 0);
         if (!r4300_issue_reservation(config->compat_issue_clock)) {
             emit_ldi_native(instruction, fp, previous, known);
-            emit_reg_op(0x85, RCX, RCX, 0); unsigned char* no_cache = emit_jump(4);
-            emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, pipeline_cached_store),0);
-            unsigned char* no_store = emit_jump(4);
-            emit_addimm(R13, 1, R13);
-            patch_jump(no_store, out); patch_jump(no_cache, out);
+            if (!known || native_store(previous)) {
+                emit_reg_op(0x85, RCX, RCX, 0); unsigned char* no_cache = emit_jump(4);
+                emit_mem_imm(0x81, 0, 7, R12, -1, 0, offsetof(struct r4300_core, pipeline_cached_store),0);
+                unsigned char* no_store = emit_jump(4);
+                emit_addimm(R13, 1, R13);
+                patch_jump(no_store, out);
+                patch_jump(no_cache, out);
+            }
         } else {
         /* LDI and DCB can coexist in restored/test history at region entry.
          * Thereafter every instruction writes mutually exclusive load/store
@@ -587,12 +644,15 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         if (fpr_history) patch_jump(fpr_history, out);
         }
         }
-        if (!write) emit_movimm(0, RCX);
-        emit_mem(0x89, 0, RCX, R12, -1, 0, offsetof(struct r4300_core, pipeline_cached_store));
+        if (write || !deferred_pipeline(config)) {
+            if (!write) emit_movimm(0, RCX);
+            emit_mem(0x89, 0, RCX, R12, -1, 0, offsetof(struct r4300_core, pipeline_cached_store));
+        }
     } else {
         emit_fetch_native(config, index, exit->start, 1, check_line);
         emit_state_imm(offsetof(struct r4300_core, pipeline_cached_store), 0, 0);
     }
+    if (!deferred_pipeline(config)) {
     emit_movimm64(config->cache_timing && !write && (rt || fp) ? UINT64_C(1) << (rt + (fp ? 32 : 0)) : 0, RAX);
     if (fp && config->cache_timing && !write && (rt & 1)) {
         emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
@@ -602,6 +662,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
     if (index == exit->start) {
         emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_result_mask), 0, 1);
         emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_cc), 0, 0);
+    }
     }
     if (size < 4) {
         if(constant_address)emit_movimm((address^(size==1?3:2))&(size==1?3:2),RDX);

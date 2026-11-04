@@ -1,5 +1,9 @@
 # Headless interpreter benchmarks
 
+[Cycle timing performance with SoftRDP](CYCLE_PERFORMANCE.md) records the x64
+pipeline bookkeeping optimization, repeated component/whole-core measurements,
+and fresh Nemu/Wiseguy timing ROM regression checks.
+
 Accurate timing always uses native LLE RSP; Fast always uses strict HLE and
 stops with an error on unsupported tasks. Independent RSP overrides are
 ignored in production and diagnostic libretro builds. See

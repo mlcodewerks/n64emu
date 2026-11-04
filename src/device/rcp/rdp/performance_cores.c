@@ -13,6 +13,26 @@ static bool initialized, enabled = true;
 static unsigned core_count;
 #ifdef _WIN32
 static GROUP_AFFINITY cores[1024];
+/* A retro_run scope owns this thread's affinity until it returns to the
+ * frontend. Nested renderer lanes can reuse that known mask, avoiding a
+ * Windows query for every batch. The outer leave discards the cache, so a
+ * frontend can change its affinity freely between calls. */
+static _Thread_local GROUP_AFFINITY cached_affinity;
+static _Thread_local bool affinity_known;
+static bool affinity_current(GROUP_AFFINITY *current)
+{
+    if (affinity_known) { *current = cached_affinity; return true; }
+    return GetThreadGroupAffinity(GetCurrentThread(), current) != 0;
+}
+static void affinity_scope(struct performance_affinity *state,
+        const GROUP_AFFINITY *current)
+{
+    state->cached_previous = cached_affinity;
+    state->cache_was_known = affinity_known;
+    state->scoped = true;
+    cached_affinity = *current;
+    affinity_known = true;
+}
 #elif defined(__linux__)
 static cpu_set_t cores[CPU_SETSIZE];
 static int linux_topology_value(unsigned cpu, const char *name)
@@ -124,7 +144,7 @@ bool performance_emulation_enter(struct performance_affinity *state)
     {
         GROUP_AFFINITY current, preferred;
         KAFFINITY eligible = 0;
-        if (!GetThreadGroupAffinity(GetCurrentThread(), &current))
+        if (!affinity_current(&current))
             return false;
         preferred = current;
         preferred.Mask = 0;
@@ -143,6 +163,7 @@ bool performance_emulation_enter(struct performance_affinity *state)
         if (eligible && eligible != current.Mask)
             state->changed = SetThreadGroupAffinity(GetCurrentThread(),
                     &preferred, &state->previous) != 0;
+        affinity_scope(state, state->changed ? &preferred : &current);
     }
 #elif defined(__linux__)
     if (enabled && core_count && !sched_getaffinity(0, sizeof(state->previous), &state->previous)) {
@@ -162,9 +183,10 @@ bool performance_core_enter(unsigned worker, struct performance_affinity *state)
     if (enabled && core_count) {
         const GROUP_AFFINITY *target = &cores[worker % core_count];
         GROUP_AFFINITY current;
-        if (GetThreadGroupAffinity(GetCurrentThread(), &current) &&
-            (current.Group != target->Group || current.Mask != target->Mask))
+        if (!affinity_current(&current)) return false;
+        if (current.Group != target->Group || current.Mask != target->Mask)
             state->changed = SetThreadGroupAffinity(GetCurrentThread(), target, &state->previous) != 0;
+        affinity_scope(state, state->changed ? target : &current);
     }
 #elif defined(__linux__)
     if (enabled && core_count && !sched_getaffinity(0, sizeof(state->previous), &state->previous)) {
@@ -181,8 +203,14 @@ bool performance_core_enter(unsigned worker, struct performance_affinity *state)
 void performance_core_leave(struct performance_affinity *state)
 {
 #ifdef _WIN32
+    bool restored = true;
     if (state->changed)
-        SetThreadGroupAffinity(GetCurrentThread(), &state->previous, NULL);
+        restored = SetThreadGroupAffinity(GetCurrentThread(), &state->previous, NULL) != 0;
+    if (state->scoped) {
+        cached_affinity = state->cached_previous;
+        affinity_known = restored && state->cache_was_known;
+        state->scoped = false;
+    }
 #elif defined(__linux__)
     if (state->changed)
         sched_setaffinity(0, sizeof(state->previous), &state->previous);
