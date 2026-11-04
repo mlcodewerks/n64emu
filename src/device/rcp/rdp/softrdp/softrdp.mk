@@ -10,7 +10,7 @@ SOFTRDP_ISA := -mno-avx -mno-avx2 -mno-fma -mno-sse4.2 -mno-sse4.1 -mno-ssse3 -m
 SOFTRDP_KERNELS += kernel_sse42 vi_sse42
 SOFTRDP_DEFINES := -DSOFTRDP_HAVE_SSE42
 endif
-SOURCES_C += $(SOFTRDP_DIR)/adapter.c $(SOFTRDP_DIR)/thread_bridge.c $(SOFTRDP_DIR)/dps_model.c \
+SOURCES_C += $(SOFTRDP_DIR)/adapter.c $(SOFTRDP_DIR)/thread_bridge.c $(SOFTRDP_DIR)/worker_eventcount.c $(SOFTRDP_DIR)/dps_model.c \
  $(SOFTRDP_CORE)/sr_dispatch.c $(SOFTRDP_DIR)/upstream/present/sr_field_output.c
 SOFTRDP_OBJECTS := $(foreach scale,$(SOFTRDP_SCALES),$(addprefix $(SOFTRDP_BUILD)/s$(scale)/,$(addsuffix .o,$(SOFTRDP_SCALED) $(SOFTRDP_KERNELS))))
 SOFTRDP_PROFILE ?= 0

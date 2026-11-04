@@ -1,5 +1,6 @@
 /* Compile: cc -std=c99 -Wall -Wextra -Werror example.c -o example
- * Copy this file and the two headers into any directory; no core is linked. */
+ * Copy this file and the two headers into any directory; no core is linked.
+ * License: WTFPL */
 #include <stdio.h>
 #include "rdp_timing_adapter.h"
 

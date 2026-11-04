@@ -1,122 +1,52 @@
-/* Worker pool for the software renderer.
+/* SoftRDP pool adapted from libretro/parallel-n64 parallel_al.c,
+ * commit 3ce14f1be1826b61d9a908f7dc92b8b1532cefd6.
+ * Existing n64emu worker selection and affinity policy are retained.
  *
  * One thread per worker, worker 0 being the calling thread. Every
  * parallel_run() is a generation: the caller publishes the task, bumps
  * the generation counter, runs its own lane and waits for the other
- * workers to report in. Workers park on a condition variable between
- * generations. The caller briefly polls completion before parking on another,
+ * workers to report in. Workers park on one eventcount between
+ * generations and the caller parks on another while the workers finish,
  * so a pool that is not rendering costs nothing: every thread the
  * renderer is not using is a thread the emulator, the frontend or an SMT
  * sibling gets back.
  *
+ * No lock anywhere. The generation and the completion counter are the
+ * predicates; the eventcounts only park and wake. A notify with nobody
+ * parked is one atomic RMW and one load, so the hot path (workers still
+ * awake from the last generation) never takes a lock or a syscall.
+ *
  * The two counters the threads hammer live on their own cache lines:
  * workers poll the generation while the completion counter is being
- * decremented, and neither should invalidate the other. The generation
- * bump is done under the work lock, which is what makes the "broadcast
- * only if someone is parked" test safe: a worker registers as a sleeper
- * and re-checks the generation under the same lock, so the caller either
- * sees the sleeper or the sleeper sees the bump.
+ * decremented, and neither should invalidate the other.
  */
 
 #include "worker_pool.h"
+#include "../performance_cores.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 #include "worker_atomic.h"
-#include "../performance_cores.h"
 #include <rthreads/rthreads.h>
-#include <features/features_cpu.h>
-#if defined(__i386__) || defined(__x86_64__)
-#include <emmintrin.h>
-#endif
+#include "worker_eventcount.h"
 
 #define PARALLEL_LINE_PAD 64
-
-#ifdef _WIN32
-/* Native condition variables park atomically with the critical-section
- * release and wake workers without the rthreads compatibility event relay.
- * This core already requires Windows 7 processor-topology APIs. */
-typedef CRITICAL_SECTION parallel_lock_t;
-typedef CONDITION_VARIABLE parallel_cond_t;
-static parallel_lock_t *parallel_lock_new(void)
-{
-    parallel_lock_t *lock = malloc(sizeof(*lock));
-    if (lock) InitializeCriticalSection(lock);
-    return lock;
-}
-static parallel_cond_t *parallel_cond_new(void)
-{
-    parallel_cond_t *condition = malloc(sizeof(*condition));
-    if (condition) InitializeConditionVariable(condition);
-    return condition;
-}
-static void parallel_lock_free(parallel_lock_t *lock)
-{
-    if (lock) { DeleteCriticalSection(lock); free(lock); }
-}
-static void parallel_cond_free(parallel_cond_t *condition) { free(condition); }
-static void parallel_lock_lock(parallel_lock_t *lock) { EnterCriticalSection(lock); }
-static void parallel_lock_unlock(parallel_lock_t *lock) { LeaveCriticalSection(lock); }
-static void parallel_cond_wait(parallel_cond_t *condition, parallel_lock_t *lock)
-{
-    SleepConditionVariableCS(condition, lock, INFINITE);
-}
-static void parallel_cond_signal(parallel_cond_t *condition) { WakeConditionVariable(condition); }
-static void parallel_cond_broadcast(parallel_cond_t *condition) { WakeAllConditionVariable(condition); }
-#elif defined(__linux__)
-#include <pthread.h>
-typedef pthread_mutex_t parallel_lock_t;
-typedef pthread_cond_t parallel_cond_t;
-static parallel_lock_t *parallel_lock_new(void)
-{
-    parallel_lock_t *lock = malloc(sizeof(*lock));
-    if (lock && pthread_mutex_init(lock, NULL)) { free(lock); return NULL; }
-    return lock;
-}
-static parallel_cond_t *parallel_cond_new(void)
-{
-    parallel_cond_t *condition = malloc(sizeof(*condition));
-    if (condition && pthread_cond_init(condition, NULL)) { free(condition); return NULL; }
-    return condition;
-}
-static void parallel_lock_free(parallel_lock_t *lock)
-{ if (lock) { pthread_mutex_destroy(lock); free(lock); } }
-static void parallel_cond_free(parallel_cond_t *condition)
-{ if (condition) { pthread_cond_destroy(condition); free(condition); } }
-#define parallel_lock_lock pthread_mutex_lock
-#define parallel_lock_unlock pthread_mutex_unlock
-#define parallel_cond_wait pthread_cond_wait
-#define parallel_cond_signal pthread_cond_signal
-#define parallel_cond_broadcast pthread_cond_broadcast
-#else
-typedef slock_t parallel_lock_t;
-typedef scond_t parallel_cond_t;
-#define parallel_lock_new slock_new
-#define parallel_cond_new scond_new
-#define parallel_lock_free slock_free
-#define parallel_cond_free scond_free
-#define parallel_lock_lock slock_lock
-#define parallel_lock_unlock slock_unlock
-#define parallel_cond_wait scond_wait
-#define parallel_cond_signal scond_signal
-#define parallel_cond_broadcast scond_broadcast
-#endif
 
 struct parallel_pool
 {
     void (*task)(uint32_t);
-    parallel_lock_t *work_lock;
-    parallel_cond_t *work_cond;
-    parallel_lock_t *done_lock;
-    parallel_cond_t *done_cond;
+    /* workers park here between generations */
+    retro_eventcount_t work_ec;
+    /* the caller parks here until the workers finish */
+    retro_eventcount_t done_ec;
+    int ec_live;
     sthread_t *threads[PARALLEL_MAX_WORKERS];
     uint32_t worker_ids[PARALLEL_MAX_WORKERS];
     /* number of workers, worker 0 included; 0 while no pool is live */
     uint32_t num_workers;
-    /* workers parked on work_cond, kept under work_lock */
-    uint32_t sleepers;
-    /* cleared under work_lock before the final generation bump */
+    /* cleared before the final generation bump; the release store of
+     * the generation publishes it to the workers */
     int accept_work;
     char pad0[PARALLEL_LINE_PAD];
     /* bumped once per parallel_run() and once at shutdown */
@@ -133,24 +63,23 @@ static struct parallel_pool pool;
  * Returns the new generation. */
 static int parallel_await_generation(struct parallel_pool *p, int seen)
 {
-    /* A worker finishing the previous lane may already have another job.
-     * Acquire pairs with publication without touching the parking mutex. */
-    int gen = retro_atomic_load_acquire_int(&p->generation);
-    if (gen != seen)
-        return gen;
+    int gen;
+    int key;
 
-    parallel_lock_lock(p->work_lock);
-    p->sleepers++;
     for (;;)
     {
         gen = retro_atomic_load_acquire_int(&p->generation);
         if (gen != seen)
-            break;
-        parallel_cond_wait(p->work_cond, p->work_lock);
+            return gen;
+        key = retro_eventcount_prepare_wait(&p->work_ec);
+        gen = retro_atomic_load_acquire_int(&p->generation);
+        if (gen != seen)
+        {
+            retro_eventcount_cancel_wait(&p->work_ec);
+            return gen;
+        }
+        retro_eventcount_commit_wait(&p->work_ec, key);
     }
-    p->sleepers--;
-    parallel_lock_unlock(p->work_lock);
-    return gen;
 }
 
 static void parallel_worker(void *data)
@@ -169,58 +98,39 @@ static void parallel_worker(void *data)
 
         p->task(worker_id);
 
-        /* Notify under done_lock so a signal cannot slip between the
-         * caller's completion check and its condition-variable wait. */
+        /* the last worker out wakes the caller */
         if (retro_atomic_fetch_sub_int(&p->remaining, 1) == 1)
-        {
-            parallel_lock_lock(p->done_lock);
-            parallel_cond_signal(p->done_cond);
-            parallel_lock_unlock(p->done_lock);
-        }
+            retro_eventcount_notify(&p->done_ec);
     }
     performance_core_leave(&affinity);
 }
 
 static void parallel_wait_completion(struct parallel_pool *p)
 {
-    /* Only wait actively for an already running generation, for a bounded
-     * number of pause instructions. Small batches often finish just after
-     * lane zero: avoid parking and waking the emulation thread for those.
-     * Idle workers and longer waits still use the condition variables. */
-    for (unsigned spin = 0; spin < 128; ++spin) {
-        if (retro_atomic_load_acquire_int(&p->remaining) == 0) return;
-#if defined(_WIN32)
-        YieldProcessor();
-#elif defined(__i386__) || defined(__x86_64__)
-        _mm_pause();
-#elif defined(__arm__) || defined(__aarch64__)
-        __asm__ __volatile__("yield");
-#endif
-    }
+    int key;
 
-    parallel_lock_lock(p->done_lock);
-    while (retro_atomic_load_acquire_int(&p->remaining) != 0)
-        parallel_cond_wait(p->done_cond, p->done_lock);
-    parallel_lock_unlock(p->done_lock);
+    for (;;)
+    {
+        if (retro_atomic_load_acquire_int(&p->remaining) == 0)
+            return;
+        key = retro_eventcount_prepare_wait(&p->done_ec);
+        if (retro_atomic_load_acquire_int(&p->remaining) == 0)
+        {
+            retro_eventcount_cancel_wait(&p->done_ec);
+            return;
+        }
+        retro_eventcount_commit_wait(&p->done_ec, key);
+    }
 }
 
-/* Publish the next generation. A worker still on its way to park re-checks
- * the counter under the lock, so only registered sleepers need the
- * broadcast. */
+/* Publish the next generation. Only the caller writes the generation, so
+ * a plain load and a release store are enough; the notify costs nothing
+ * extra while every worker is still awake. */
 static void parallel_bump_generation(struct parallel_pool *p)
 {
-    int gen;
-    uint32_t sleepers;
-
-    parallel_lock_lock(p->work_lock);
-    gen = retro_atomic_load_acquire_int(&p->generation);
+    int gen = retro_atomic_load_acquire_int(&p->generation);
     retro_atomic_store_release_int(&p->generation, (int)((unsigned)gen + 1u));
-    sleepers = p->sleepers;
-    /* The legacy Windows scond implementation requires the associated
-     * lock to remain held while broadcasting to its waiter queue. */
-    if (sleepers)
-        parallel_cond_broadcast(p->work_cond);
-    parallel_lock_unlock(p->work_lock);
+    retro_eventcount_notify(&p->work_ec);
 }
 
 void parallel_alinit(uint32_t num)
@@ -232,8 +142,6 @@ void parallel_alinit(uint32_t num)
         parallel_close();
 
     performance_cores_init();
-    /* Auto counts physical performance cores, not SMT logical processors.
-     * Manual counts remain exact and may share performance cores. */
     if (num == 0)
         num = performance_cores_count();
     if (num == 0)
@@ -253,11 +161,9 @@ void parallel_alinit(uint32_t num)
     if (num == 1)
         return;
 
-    p->work_lock = parallel_lock_new();
-    p->work_cond = parallel_cond_new();
-    p->done_lock = parallel_lock_new();
-    p->done_cond = parallel_cond_new();
-    if (!p->work_lock || !p->work_cond || !p->done_lock || !p->done_cond)
+    p->ec_live = 1;
+    if (  !retro_eventcount_init(&p->work_ec)
+       || !retro_eventcount_init(&p->done_ec))
     {
         parallel_close();
         p->num_workers = 1;
@@ -285,8 +191,6 @@ void parallel_run(void task(uint32_t))
 {
     struct parallel_pool *p = &pool;
     struct performance_affinity affinity;
-    /* Lane 0 is also the frontend/emulation thread. Restore its original
-     * affinity before returning so the host is not permanently pinned. */
     performance_core_enter(0, &affinity);
 
     /* single-worker pools and no pool at all have nobody to hand the
@@ -319,23 +223,19 @@ void parallel_close(void)
 
     if (p->num_workers > 1)
     {
-        parallel_lock_lock(p->work_lock);
         p->accept_work = 0;
-        parallel_lock_unlock(p->work_lock);
         parallel_bump_generation(p);
 
         for (i = 1; i < p->num_workers; i++)
             sthread_join(p->threads[i]);
     }
 
-    if (p->work_cond)
-        parallel_cond_free(p->work_cond);
-    if (p->work_lock)
-        parallel_lock_free(p->work_lock);
-    if (p->done_cond)
-        parallel_cond_free(p->done_cond);
-    if (p->done_lock)
-        parallel_lock_free(p->done_lock);
+    /* free is safe on a zeroed object and on one init failed for */
+    if (p->ec_live)
+    {
+        retro_eventcount_free(&p->work_ec);
+        retro_eventcount_free(&p->done_ec);
+    }
 
     memset(p, 0, sizeof(*p));
 }

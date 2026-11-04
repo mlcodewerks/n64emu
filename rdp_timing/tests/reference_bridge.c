@@ -1,4 +1,5 @@
-/* Optional original-header differential, isolated in its own translation unit. */
+/* Optional original-header differential, isolated in its own translation unit.
+ * License: WTFPL */
 #include RDP_TIMING_REFERENCE_HEADER
 #include "observe.h"
 static struct rdp_timing reference;

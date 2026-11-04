@@ -3,6 +3,7 @@
  * Timestamps: signed 64-bit monotonic CPU COUNT ticks (46.875 MHz).
  * Busy intervals: quarter COUNT ticks; masks 1=buffer, 2=pipe, 4=TMEM.
  * Callbacks may enqueue host events; they must not reenter this adapter.
+ * License: WTFPL
  */
 #ifndef RDP_TIMING_ADAPTER_H
 #define RDP_TIMING_ADAPTER_H

@@ -1228,6 +1228,44 @@ static INLINE int64_t retro_atomic_exchange_64_impl_(retro_atomic_64_t *p, int64
 #endif
 
 
+/* Eventcount's register/recheck handshake needs one total order across the
+ * epoch and waiter count. Acquire/release alone permits a missed wake on ARM.
+ * These are the corresponding operations from upstream retro_atomic.h. */
+#if defined(RETRO_ATOMIC_BACKEND_C11)
+#define retro_atomic_fetch_add_seq_cst_int(p, v) \
+   atomic_fetch_add_explicit((p), (v), memory_order_seq_cst)
+#define retro_atomic_load_seq_cst_int(p) \
+   atomic_load_explicit((p), memory_order_seq_cst)
+#elif defined(RETRO_ATOMIC_BACKEND_CXX11)
+#define retro_atomic_fetch_add_seq_cst_int(p, v) \
+   std::atomic_fetch_add_explicit((p), (int)(v), std::memory_order_seq_cst)
+#define retro_atomic_load_seq_cst_int(p) \
+   std::atomic_load_explicit((p), std::memory_order_seq_cst)
+#elif defined(RETRO_ATOMIC_BACKEND_GCC_NEW)
+#define retro_atomic_fetch_add_seq_cst_int(p, v) \
+   __atomic_fetch_add((p), (v), __ATOMIC_SEQ_CST)
+#define retro_atomic_load_seq_cst_int(p) \
+   __atomic_load_n((p), __ATOMIC_SEQ_CST)
+#elif defined(RETRO_ATOMIC_BACKEND_MSVC)
+static INLINE LONG retro_atomic_fetch_add_seq_cst_int_impl_(retro_atomic_int_t *p, LONG v)
+{
+   LONG old;
+   RETRO_ATOMIC_MSVC_ARM_FENCE();
+   old = InterlockedExchangeAdd(p, v);
+   RETRO_ATOMIC_MSVC_ARM_FENCE();
+   return old;
+}
+#define retro_atomic_fetch_add_seq_cst_int(p, v) \
+   retro_atomic_fetch_add_seq_cst_int_impl_((p), (LONG)(v))
+#define retro_atomic_load_seq_cst_int(p) retro_atomic_fetch_add_seq_cst_int((p), 0)
+#else
+/* Older OSAtomic/__sync backends already use full-barrier RMWs.
+ * A zero add supplies a full-barrier read there. The volatile fallback is
+ * never used across threads: parallel_alinit keeps that pool serial. */
+#define retro_atomic_fetch_add_seq_cst_int(p, v) retro_atomic_fetch_add_int((p), (v))
+#define retro_atomic_load_seq_cst_int(p) retro_atomic_fetch_add_int((p), 0)
+#endif
+
 /* ---- Convenience wrappers (backend-agnostic) -------------------------- */
 
 #define retro_atomic_inc_int(p)    ((void)retro_atomic_fetch_add_int((p), 1))

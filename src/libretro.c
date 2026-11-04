@@ -1007,8 +1007,10 @@ int renderer_open_content(void)
     n64video_set_native_lod(renderer_settings.native_lod);
     if (log_cb) {
         extern uint32_t parallel_num_workers(void);
-        log_cb(RETRO_LOG_INFO, "SoftRDP: %u rendering workers, generation/condition synchronization.\n",
-                parallel_num_workers());
+        extern const char *retro_eventcount_backend_name(void);
+        log_cb(RETRO_LOG_INFO, "SoftRDP: %u rendering workers, generation/eventcount synchronization (%s).\n",
+                parallel_num_workers(), parallel_num_workers() > 1 ?
+                retro_eventcount_backend_name() : "serial");
     }
     renderer_open = true;
 

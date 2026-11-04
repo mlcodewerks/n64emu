@@ -115,6 +115,7 @@ benchmarks/softrdp/*
 !benchmarks/softrdp/*.mk
 !benchmarks/softrdp/*.md
 !benchmarks/softrdp/validation.json
+!benchmarks/softrdp/threading-validation.json
 !benchmarks/softrdp/profile-summary.json
 src/device/rcp/rdp/softrdp/.build-config
 src/device/rcp/rdp/softrdp/build/

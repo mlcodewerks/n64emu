@@ -7,7 +7,8 @@
 /* Standalone C99/C++ header: no emulator structs or renderer calls required.
  * Inputs are numeric N64 command words and monotonic CPU COUNT timestamps.
  * See rdp_timing/portable/rdp_timing_adapter.h and RDP_TIMING_RESEARCH.txt for
- * host integration, big-endian byte input, fences and restore requirements. */
+ * host integration, big-endian byte input, fences and restore requirements. 
+ * License: WTFPL */
 
 #ifndef RDP_TIMING_OBSERVE_SPAN
 #define RDP_TIMING_OBSERVE_SPAN(t, pixels, rows) ((void)(t), (void)(pixels), (void)(rows))

@@ -1,6 +1,8 @@
 #ifndef PORT_TEST_OBSERVE_H
 #define PORT_TEST_OBSERVE_H
 #include <stdint.h>
+
+//License: WTFPL
 struct port_test_trace {
     uint64_t busy_hash;
     unsigned busy_count, fence_count;
