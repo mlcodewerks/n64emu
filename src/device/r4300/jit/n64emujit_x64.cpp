@@ -3,8 +3,6 @@
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #define XBYAK_NO_OP_NAMES
 #include <xbyak/xbyak.h>
-#include <map>
-#include <memory>
 extern "C" {
 #include "n64emujit.h"
 #include "core/log.h"

@@ -116,6 +116,9 @@ benchmarks/softrdp/*
 !benchmarks/softrdp/*.md
 !benchmarks/softrdp/validation.json
 !benchmarks/softrdp/threading-validation.json
+!benchmarks/softrdp/jit-compilation-validation.json
+!benchmarks/softrdp/jet-force-gemini-validation.json
+!benchmarks/softrdp/jet-force-gemini-goldwood.csv
 !benchmarks/softrdp/profile-summary.json
 src/device/rcp/rdp/softrdp/.build-config
 src/device/rcp/rdp/softrdp/build/

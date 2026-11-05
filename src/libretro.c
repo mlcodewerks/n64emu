@@ -101,8 +101,6 @@ struct retro_rumble_interface rumble;
 
 save_memory_data saved_memory;
 
-static uint8_t *game_data = NULL;
-static uint32_t game_size = 0;
 static bool emu_initialized = false;
 static unsigned audio_buffer_size = 2048;
 
@@ -199,15 +197,6 @@ static void cleanup_global_paths()
 }
 
 
-
-static bool emu_step_load_data(void)
-{
-    bool loaded = core_open_content(game_data, game_size);
-    free(game_data);
-    game_data = NULL;
-    if (!loaded && log_cb) log_cb(RETRO_LOG_ERROR, "Failed to load content.\n");
-    return loaded;
-}
 
 static void emu_step_initialize(void)
 {
@@ -561,6 +550,9 @@ static void format_saved_memory(void)
 bool retro_load_game(const struct retro_game_info *game)
 {
     if (!game || load_game_successful) return false;
+    const void *content_data = game->data;
+    size_t content_size = game->size;
+    void *file_data = NULL;
     renderer_read_options(environ_cb);
     if (log_cb)
         log_cb(RETRO_LOG_INFO, "Renderer: %s, upscale %ux, performance cores %s.\n",
@@ -603,20 +595,21 @@ bool retro_load_game(const struct retro_game_info *game)
 
 
     if (game->size > UINT32_MAX) goto load_failed;
-    if (game->data) {
-        game_data = malloc(game->size);
-        if (!game_data) goto load_failed;
-        memcpy(game_data, game->data, game->size);
-        game_size = (uint32_t)game->size;
-    } else {
-        size_t size = 0;
-        if (!game->path || load_file(game->path, (void **)&game_data, &size) != file_ok)
+    if (!content_data) {
+        if (!game->path || load_file(game->path, &file_data, &content_size) != file_ok)
             goto load_failed;
-        if (size > UINT32_MAX) goto load_failed;
-        game_size = (uint32_t)size;
+        if (content_size > UINT32_MAX) goto load_failed;
+        content_data = file_data;
     }
 
-    if (!emu_step_load_data()) goto load_failed;
+    /* Loading is synchronous and open_rom copies into core-owned storage.
+     * Borrow frontend data during this call, avoiding an extra full ROM copy. */
+    bool loaded = core_open_content(content_data, (uint32_t)content_size);
+    free(file_data); file_data = NULL;
+    if (!loaded) {
+        if (log_cb) log_cb(RETRO_LOG_ERROR, "Failed to load content.\n");
+        goto load_failed;
+    }
     format_saved_memory();
     deinit_audio_libretro();
     init_audio_libretro(audio_buffer_size);
@@ -627,7 +620,7 @@ bool retro_load_game(const struct retro_game_info *game)
     load_game_successful = true;
     return true;
 load_failed:
-    free(game_data); game_data = NULL; game_size = 0;
+    free(file_data);
     core_close_content();
     cleanup_global_paths();
     return false;

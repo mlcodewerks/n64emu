@@ -15,8 +15,14 @@ RSP_HEADERS := $(wildcard $(RSP)/*.hpp) $(wildcard $(RSP)/*.inc) src/jit32/assem
 RSP_FLAGS := $(INCLUDES) -I$(RSP) -I$(RSP)/arch/simd/rsp -O2 -std=c++17 -DN64EMU_RSP_TEST_SILENT
 
 .PHONY: all check proxy
+all: $(OUT)/jit-emit-checks$(EXE)
+all: $(OUT)/precise-nop-checks$(EXE)
+all: $(OUT)/rsp-poll-checks$(EXE)
 all: $(OUT)/cpu-cache-checks$(EXE) $(OUT)/cycle-pipeline-checks$(EXE) $(OUT)/worker-pool-checks$(EXE) $(AFFINITY_CHECK) $(OUT)/mixed-checks$(EXE) $(OUT)/gl-binding-checks$(EXE) $(OUT)/rsp-checks$(EXE) $(OUT)/vector-checks$(EXE)
 check: all
+	$(OUT)/jit-emit-checks$(EXE)
+	$(OUT)/precise-nop-checks$(EXE)
+	$(OUT)/rsp-poll-checks$(EXE)
 	$(OUT)/cpu-cache-checks$(EXE)
 	$(OUT)/cycle-pipeline-checks$(EXE)
 	$(OUT)/worker-pool-checks$(EXE)
@@ -39,12 +45,21 @@ $(OUT)/cpu-cache-checks$(EXE): $(CPU_OBJECTS) $(OUT)/jit.o
 	$(CXX) $^ -Wl,--gc-sections -lm -o $@
 $(OUT)/cycle-pipeline-checks$(EXE): $(OUT)/benchmarks/cycle_pipeline_checks.o $(filter-out $(OUT)/benchmarks/accurate-perf/cpu_cache_checks.o,$(CPU_OBJECTS)) $(OUT)/jit.o
 	$(CXX) $^ -Wl,--gc-sections -lm -o $@
+$(OUT)/jit-emit-checks$(EXE): benchmarks/softrdp/jit_emit_checks.cpp $(CPU)/jit/x64/xbyak_emit.h $(CPU)/jit/x64/assem_x64.h | $(OUT)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -O2 -std=c++17 $< -o $@
+$(OUT)/precise-nop-checks.o: benchmarks/softrdp/precise_nop_checks.c $(CPU)/jit_runtime.c benchmarks/accurate-perf/cpu_cache_checks.c | $(OUT)
+	$(CC) $(CFLAGS) $(INCLUDES) -O3 -g -std=gnu99 -ffunction-sections -fdata-sections -fno-strict-aliasing -DHAVE_N64EMUJIT -MMD -MP -c $< -o $@
+$(OUT)/precise-nop-checks$(EXE): $(OUT)/precise-nop-checks.o $(filter-out $(OUT)/$(CPU)/jit_runtime.o $(OUT)/benchmarks/accurate-perf/cpu_cache_checks.o,$(CPU_OBJECTS)) $(OUT)/jit.o
+	$(CXX) $^ -Wl,--gc-sections -lm -o $@
+-include $(OUT)/precise-nop-checks.d
 $(OUT)/affinity-scope-checks$(EXE): benchmarks/affinity_scope_checks.c src/device/rcp/rdp/performance_cores.c src/device/rcp/rdp/performance_cores.h | $(OUT)
 	$(CC) $(INCLUDES) -O2 -std=c11 $< -o $@
-$(OUT)/worker-pool-checks$(EXE): benchmarks/worker_pool_checks.c src/device/rcp/rdp/softrdp/worker_pool.c src/device/rcp/rdp/softrdp/worker_pool.h src/device/rcp/rdp/softrdp/worker_atomic.h src/device/rcp/rdp/performance_cores.c src/device/rcp/rdp/performance_cores.h deps/libretro-common/rthreads/rthreads.c deps/libretro-common/features/features_cpu.c | $(OUT)
+$(OUT)/worker-pool-checks$(EXE): benchmarks/worker_pool_checks.c src/device/rcp/rdp/softrdp/worker_pool.c src/device/rcp/rdp/softrdp/worker_pool.h src/device/rcp/rdp/softrdp/worker_atomic.h src/device/rcp/rdp/softrdp/worker_eventcount.c src/device/rcp/rdp/softrdp/worker_eventcount.h src/device/rcp/rdp/performance_cores.c src/device/rcp/rdp/performance_cores.h deps/libretro-common/rthreads/rthreads.c deps/libretro-common/features/features_cpu.c | $(OUT)
 	$(CC) $(INCLUDES) -O2 -std=gnu11 $(filter %.c,$^) -pthread -o $@
 $(OUT)/mixed-checks$(EXE): benchmarks/accurate-perf/rsp_mixed_checks.cpp $(RSP_SOURCES) $(RSP)/rsp_interpreter.cpp $(RSP_HEADERS) | $(OUT)
 	$(CXX) $(CXXFLAGS) $(RSP_FLAGS) $< $(RSP_SOURCES) $(RSP)/rsp_interpreter.cpp -o $@
+$(OUT)/rsp-poll-checks$(EXE): benchmarks/softrdp/rsp_poll_checks.cpp $(RSP_SOURCES) $(RSP)/rsp_interpreter.cpp $(RSP_HEADERS) $(RSP)/rsp/timing.hpp | $(OUT)
+	$(CXX) $(CXXFLAGS) $(RSP_FLAGS) -DPARALLEL_INTEGRATION $< $(RSP_SOURCES) $(RSP)/rsp_interpreter.cpp -o $@
 $(OUT)/rsp-checks$(EXE): $(RSP)/jit_tests.cpp $(RSP_SOURCES) $(RSP_HEADERS) | $(OUT)
 	$(CXX) $(CXXFLAGS) $(RSP_FLAGS) $< $(RSP_SOURCES) -o $@
 $(OUT)/vector-checks$(EXE): $(RSP)/vector_jit_tests.cpp $(RSP_SOURCES) $(RSP_HEADERS) | $(OUT)

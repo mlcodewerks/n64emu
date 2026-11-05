@@ -1,8 +1,12 @@
 /* Xbyak encoding for the shared n64emuJIT frontend. GPL-2.0-or-later. */
 static unsigned char* out;
 struct x64_emitter : Xbyak::CodeGenerator {
-    std::map<unsigned char*, std::unique_ptr<Xbyak::Label>> jumps;
+    size_t pending_jumps = 0;
     x64_emitter(size_t size, void* memory) : CodeGenerator(size, memory) {}
+    void ready() {
+        if (pending_jumps) throw Xbyak::Error(Xbyak::ERR_LABEL_IS_NOT_FOUND);
+        CodeGenerator::ready();
+    }
 };
 static x64_emitter* assembler;
 struct emitter_binding {
@@ -109,34 +113,43 @@ static void emit_mem_imm(unsigned opcode,int wide,int ext,int base,int index,uns
 static void emit_state_imm(size_t offset,uint32_t value,int wide) { emit_mem_imm(0xc7,wide,0,R12,-1,0,offset,value); }
 static unsigned char* emit_jump(unsigned condition)
 {
+    if (condition > 15) throw Xbyak::Error(Xbyak::ERR_BAD_PARAMETER);
     auto site=out;
-    auto label=std::make_unique<Xbyak::Label>();
-    switch(condition) {
-#define COND(n,op) case n: JIT(op(*label,Xbyak::CodeGenerator::T_NEAR)); break
-    COND(0,jo); COND(1,jno); COND(2,jb); COND(3,jae);
-    COND(4,je); COND(5,jne); COND(6,jbe); COND(7,ja);
-    COND(8,js); COND(9,jns); COND(10,jp); COND(11,jnp);
-    COND(12,jl); COND(13,jge); COND(14,jle); COND(15,jg);
-#undef COND
-    default: abort();
-    }
-    assembler->jumps.emplace(site,std::move(label));
+    // Frontend branches always use rel32 and stay inside this fixed buffer.
+    // Patch them directly instead of allocating labels and map nodes per guard.
+    JIT(db(0x0f)); JIT(db(0x80 | condition)); JIT(dd((uint32_t)INT32_MIN));
+    ++assembler->pending_jumps;
     return site;
 }
 static unsigned char* emit_b()
 {
     auto site=out;
-    auto label=std::make_unique<Xbyak::Label>();
-    JIT(jmp(*label,Xbyak::CodeGenerator::T_NEAR));
-    assembler->jumps.emplace(site,std::move(label));
+    JIT(db(0xe9)); JIT(dd((uint32_t)INT32_MIN));
+    ++assembler->pending_jumps;
     return site;
 }
 static void patch_jump(unsigned char* site,unsigned char* target)
 {
-    const size_t saved=assembler->getSize();
-    assembler->setSize(target-assembler->getCode());
-    assembler->L(*assembler->jumps.at(site));
-    assembler->setSize(saved);
+    const uintptr_t base=(uintptr_t)assembler->getCode();
+    const size_t size=assembler->getSize();
+    const uintptr_t offset=(uintptr_t)site-base;
+    if (offset >= size || (uintptr_t)target-base > size)
+        throw Xbyak::Error(Xbyak::ERR_BAD_PARAMETER);
+    const size_t length=site[0]==0xe9 ? 5 : 6;
+    if (size-offset < length ||
+        (length==6 && (site[0]!=0x0f || (site[1]&0xf0)!=0x80)))
+        throw Xbyak::Error(Xbyak::ERR_BAD_PARAMETER);
+    int32_t previous;
+    memcpy(&previous,site+length-4,sizeof(previous));
+    if (previous!=INT32_MIN || !assembler->pending_jumps)
+        throw Xbyak::Error(Xbyak::ERR_LABEL_IS_REDEFINED);
+    const int64_t displacement=(int64_t)((uintptr_t)target-base)-(int64_t)(offset+length);
+    // INT32_MIN marks an unresolved branch; local blocks cannot span 2 GiB.
+    if (displacement<=INT32_MIN || displacement>INT32_MAX)
+        throw Xbyak::Error(Xbyak::ERR_OFFSET_IS_TOO_BIG);
+    const int32_t relative=(int32_t)displacement;
+    memcpy(site+length-4,&relative,sizeof(relative));
+    --assembler->pending_jumps;
 }
 static void emit_set_condition(int reg,unsigned condition)
 {

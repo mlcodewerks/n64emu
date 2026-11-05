@@ -1442,6 +1442,39 @@ static CI_FORCE_INLINE void ci_execute_one(struct r4300_core* r4300)
 }
 
 #ifdef HAVE_N64EMUJIT
+static CI_FORCE_INLINE int ci_jit_step_finished(struct r4300_core* r, struct cached_block* block, uint32_t pc)
+{
+    struct r4300_jit_state* state = r->jit;
+    r->regs[0] = 0;
+    r4300_finish_irq_writeback(r);
+    if (!r->delay_slot && r->cp0.cycle_count >= 0) {
+        gen_interrupt(r);
+        return 0;
+    }
+    if (breakloop || r->prefetch_valid || r->irq_writeback_pending || r->instruction_pc.addr != pc + 4) return 0;
+    return block->epoch == state->epoch &&
+           block->page_generation == state->page_generation[block->physical_page] &&
+           ci_mapping_matches(r, block);
+}
+
+static CI_FORCE_INLINE int ci_jit_nop_step(struct r4300_core* r, struct cached_block* block, unsigned i)
+{
+    struct r4300_jit_state* state = r->jit;
+    const uint32_t pc = block->virtual_pc + i * 4;
+    if (state->fastmem) n64emujit_fault_resolve(state->jit, r, 0);
+#ifdef N64EMUJIT_PROFILE
+    ++state->profile_slow[0]; ++state->profile_special[0];
+#endif
+    /* DMA polling replays long NOP prefixes. Specialize the constant opcode
+     * and inline this path into region replay, retaining every fetch, clock,
+     * interrupt boundary and code/mapping validity check. */
+    if (!r4300_begin_instruction_cycles(r, 0, pc, 1, r->cache_timing)) return 0;
+    ++r->retired_ops;
+    r->instruction_pc.addr = pc + 4;
+    state->pending_delay_valid = 0;
+    return ci_jit_step_finished(r, block, pc);
+}
+
 /* Precise stubs retain the shared instruction ordering and delay-slot rules.
  * Native guards/timing commit in machine code. A memory stub writes back its
  * prefix before calling here, and reloads its allocation before resuming. */
@@ -1457,14 +1490,19 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
 #ifdef N64EMUJIT_PROFILE
         ++state->profile_regions[count];
 #endif
-        for (unsigned n = 0; n < count; ++n)
-            if (!ci_jit_step(r, block, i + n, 2)) return 0;
+        for (unsigned n = 0; n < count; ++n) {
+            const unsigned index = i + n;
+            if (index < block->count && block->instructions[index].op == 0) {
+                if (!ci_jit_nop_step(r, block, index)) return 0;
+            } else if (!ci_jit_step(r, block, index, 2)) return 0;
+        }
         return 1;
     }
 
     /* A precise branch may already have executed a sequential slot. */
     if (i >= block->count) { ci_execute_one(r); return 0; }
     uint32_t op = block->instructions[i].op;
+    if (phase == 2 && op == 0) return ci_jit_nop_step(r, block, i);
 #ifdef N64EMUJIT_PROFILE
     if (phase == 2) {
         ++state->profile_slow[op >> 26];
@@ -1504,16 +1542,7 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
             block->handlers[i](r, op);
         state->pending_delay_valid = 0;
     } else {++r->retired_ops;r->instruction_pc.addr = pc + 4;}
-    r->regs[0] = 0;
-    r4300_finish_irq_writeback(r);
-    if (!r->delay_slot && r->cp0.cycle_count >= 0) {
-        gen_interrupt(r);
-        return 0;
-    }
-    if (breakloop || r->prefetch_valid || r->irq_writeback_pending || r->instruction_pc.addr != pc + 4) return 0;
-    return block->epoch == state->epoch &&
-           block->page_generation == state->page_generation[block->physical_page] &&
-           ci_mapping_matches(r, block);
+    return ci_jit_step_finished(r, block, pc);
 }
 
 static n64emujit_entry ci_jit_link(struct r4300_core* r)

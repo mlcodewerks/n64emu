@@ -89,6 +89,16 @@ extern "C"
 			{
                 /* Waiting for the CPU is a scheduler yield, not a hardware
                  * HALT. BROKE can remain set while a restarted SP runs. */
+                if (rsp->cycle_limit != UINT32_MAX) {
+                    /* Finish this block before yielding. Returning directly
+                     * after MFC0 resumes at its consumer with no predecessor
+                     * load hazard in the JIT's timing model. In polling loops
+                     * that loses two clocks per slice (CIC-6105 then fails the
+                     * SDK boot self-test). The block guard keeps that hazard
+                     * and the branch's delay slot together. */
+                    rsp->cycle_limit = rsp->cycles;
+                    return MODE_CONTINUE;
+                }
                 return MODE_TIMESLICE;
 			}
 		}

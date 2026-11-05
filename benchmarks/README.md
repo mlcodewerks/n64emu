@@ -1,12 +1,22 @@
 # Headless interpreter benchmarks
 
+[SoftRDP eventcount worker pool](softrdp/THREADPOOL.md) records the replacement
+of condition-variable synchronization, stress checks and whole-core timings.
+The [threading follow-up](softrdp/THREADING_PERFORMANCE.md) compares polling
+policies, cache layouts and whole-core performance.
+
+[CPU JIT compilation hitches](softrdp/JIT_COMPILATION.md) measures first-use
+compilation, direct local-branch patching, and startup/intro frame times.
+
+[Jet Force Gemini repairs](softrdp/JET_FORCE_GEMINI.md) covers the native RSP
+boot self-test, Rare's HLE clipper selection, and opening/Goldwood checks.
+
 [Cycle timing performance with SoftRDP](CYCLE_PERFORMANCE.md) records the x64
 pipeline bookkeeping optimization, repeated component/whole-core measurements,
 and fresh Nemu/Wiseguy timing ROM regression checks.
 
-Accurate timing always uses native LLE RSP; Fast always uses strict HLE and
-stops with an error on unsupported tasks. Independent RSP overrides are
-ignored in production and diagnostic libretro builds. See
+Current runs select component timing (`wtfn64_timing=on`) and native RSP
+(`wtfn64_hle=off`) independently. Historical mode comparisons are recorded in
 [F-Zero X cadence and mode validation](FZERO_TIMING.md).
 
 [Mario Kart 64 track depth](MK64_DEPTH.md) documents the older F3DEX perspective

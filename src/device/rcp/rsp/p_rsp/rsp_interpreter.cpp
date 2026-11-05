@@ -270,7 +270,17 @@ ReturnMode Interpreter::step(uint32_t op) {
 ReturnMode Interpreter::run(uint32_t limit) {
     state.cycle_limit = limit;
     do {
-        if (state.cycles >= limit && !state.has_delay_slot)
+        /* A CP0 poll can shorten the slice. Let its consumers finish before
+         * returning to the scheduler, as the JIT's block-boundary guard does. */
+        bool poll_boundary = state.cycle_limit == limit;
+        if (!poll_boundary) {
+            poll_boundary = true;
+            for (const auto &stage : pipeline.previous)
+                if (stage.rw || stage.vw) poll_boundary = false;
+        }
+        if (!state.has_delay_slot &&
+            (state.cycles >= limit ||
+             (state.cycles >= state.cycle_limit && poll_boundary)))
             return MODE_TIMESLICE;
         const auto pc = state.pc & 0xffc, op = state.imem[pc >> 2];
         auto decoded = RSPTimingDecoder::decoderEXECUTE(op);

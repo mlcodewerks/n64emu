@@ -12,6 +12,7 @@
 #include "rdp_emit_f3ddkr.h"
 #include "rdp_emit_f3d.h"
 #include "rdp_emit_rsp.h"
+#include "rdp_emit_f3dtri.h"
 
 #if defined(_MSC_VER) && (_MSC_VER < 1600)
 typedef signed   __int32 dkr_int32_t;
@@ -224,6 +225,10 @@ void f3ddkr_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
     /* Preserve Rare's raw S/T domain while selecting its exact screen model. */
     gsp_set_rsp_screen_model(gsp, 0);
     gsp->viewport.dkr_model = 1;
+    /* The shared scalar sort signature also matches stock Fast3D revision B.
+     * Its clipper reads a different vertex layout and would replace Rare's
+     * background depth with near zero, hiding the entire 3D scene. */
+    gsp->viewport.f3d_tri_rev = F3D_TRI_NONE;
     rsp_set_tri_attr_dkr(1);
     f3ddkr_run_dl_impl(gsp, fifo, addr, textured, z_buffered);
 }
