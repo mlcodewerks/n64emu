@@ -63,9 +63,8 @@ static bool environment(unsigned command, void *data) {
  default: return false;
  }
 }
-static void video(const void *data,unsigned width,unsigned height,size_t pitch) {
+static void capture_video(const void *data,unsigned width,unsigned height,size_t pitch) {
  if(!data || data==RETRO_HW_FRAME_BUFFER_VALID || !width || !height)return;
- if(frames && frames+1!=frame_limit && !done)return;
  if(width!=capture_width || height!=capture_height) {
   free(capture);capture=malloc((size_t)width*height*3);capture_width=width;capture_height=height;
  }
@@ -81,6 +80,10 @@ static void video(const void *data,unsigned width,unsigned height,size_t pitch) 
   }
   size_t i=((size_t)y*width+x)*3;capture[i]=r;capture[i+1]=g;capture[i+2]=b;
  }
+}
+static void video(const void *data,unsigned width,unsigned height,size_t pitch) {
+ if(frames && frames+1!=frame_limit && !done)return;
+ capture_video(data,width,height,pitch);
 }
 static void audio(int16_t left,int16_t right){(void)left;(void)right;}
 static size_t audio_batch(const int16_t *data,size_t count){(void)data;return count;}
