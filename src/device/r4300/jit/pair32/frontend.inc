@@ -81,13 +81,16 @@ namespace {
 using namespace n64emu32;
 class Compiler {
 public:
-    Assembler host;
+    Assembler host{32 * 1024};
     uint64_t calls=0,native=0;
     static constexpr unsigned STATE=Assembler::STATE,FP=Assembler::FP;
     static int32_t gpr(unsigned n){return int32_t(offsetof(r4300_core,regs)+n*8);}
     void load(unsigned reg,unsigned low=0,unsigned high=2) {
         if(reg){host.load(low,STATE,gpr(reg));host.load(high,STATE,gpr(reg)+4);}
         else {host.imm(low,0);host.imm(high,0);}
+    }
+    void load_low(unsigned guest,unsigned host_reg) {
+        if(guest)host.load(host_reg,STATE,gpr(guest));else host.imm(host_reg,0);
     }
     void store(unsigned reg) { if(reg){host.store(0,STATE,gpr(reg));host.store(2,STATE,gpr(reg)+4);} }
     void sign_word() {host.mov(2,0);host.shift(2,ASR,31);}
@@ -156,17 +159,26 @@ bool Compiler::instruction(uint32_t op) {
         unsigned offset=fn==17?offsetof(r4300_core,hi):offsetof(r4300_core,lo);
         load(rs);host.store(0,STATE,int32_t(offset));host.store(2,STATE,int32_t(offset+4));return true;
     }
+    if(major==15) {constant(uint64_t(int64_t(int32_t(op<<16))));store(rt);return true;}
+    if(major==9 || (!major && (fn==33 || fn==35))) {
+        load_low(rs,0);
+        if(major)host.imm(1,uint32_t(int32_t(int16_t(op))));else load_low(rt,1);
+        host.alu(!major&&fn==35?SUB:ADD,0,1);sign_word();store(major?rt:rd);return true;
+    }
+    if(major==12) {
+        load_low(rs,0);host.immediate(AND,0,uint16_t(op));host.imm(2,0);store(rt);return true;
+    }
     bool word=false;
     if(!major&&(fn<=7||fn==20||fn==22||fn==23||fn>=56)) {
         bool variable=(fn>=4&&fn<=7)||(fn>=20&&fn<=23);
-        if(variable){load(rs);host.store(0,FP,-60);}
+        if(variable){load_low(rs,0);host.store(0,FP,-60);}
         load(rt);if(variable)host.load(1,FP,-60);else host.imm(1,amount+(fn>=60?32:0));
         Shift kind=(fn&3)==0?LSL:(fn&3)==2?LSR:ASR;
         word=fn<=7;
         if(word)host.immediate(AND,1,31);
         if(word&&kind!=ASR)host.shift_register(0,kind,1);else shift64(kind);
     } else {
-        load(rs);load(rt,1,3);
+        load(rs);if(!major)load(rt,1,3);
         if(major) {
             rd=rt;uint64_t value=major>=12&&major<=14?uint16_t(op):uint64_t(int64_t(int16_t(op)));
             host.imm(1,uint32_t(value));host.imm(3,uint32_t(value>>32));
@@ -195,11 +207,23 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
     if(!jit||!ops||!callback||!count||count>32)return nullptr;
     Compiler compiler;auto& host=compiler.host;host.frame();host.incoming_state();
     Label exit;
-    for(unsigned i=0;i<count;i++) {
+    for(unsigned i=0;i<count;) {
+        if(config && config->alu_regions && config->cache_timing==1 && native_instruction(ops[i])) {
+            unsigned end=i+1;
+            while(end<count && native_instruction(ops[end]))++end;
+            if(end-i>=2) {
+                Label done;
+                compiler.step(block,i,((end-i)<<8)|12,callback,exit);
+                host.immediate(CMP,0,2);host.branch(done,EQ);
+                for(unsigned j=i;j<end;++j){compiler.instruction(ops[j]);++compiler.native;}
+                host.bind(done);i=end;continue;
+            }
+        }
         if(native_instruction(ops[i])) {
             compiler.step(block,i,0,callback,exit);compiler.instruction(ops[i]);++compiler.native;
             compiler.step(block,i,1,callback,exit);
         } else compiler.step(block,i,2,callback,exit);
+        ++i;
     }
     if(config&&config->link) {
         host.mov(0,Assembler::STATE);host.argument(0,0);host.call(reinterpret_cast<const void*>(config->link));++compiler.calls;
@@ -216,10 +240,12 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
     host.bind(exit);host.leave();host.ret();
     size_t bytes=host.size(),reserve=(bytes+15)&~size_t(15);
     if(reserve>SEGMENT_BYTES)return nullptr;
+    bool entering=jit->used && jit->used%SEGMENT_BYTES==0;
+    jit->used%=ARENA_BYTES;
     if(jit->used%SEGMENT_BYTES+reserve>SEGMENT_BYTES) {
-        jit->used=((jit->used/SEGMENT_BYTES+1)*SEGMENT_BYTES)%ARENA_BYTES;
-        jit->stamps[jit->used/SEGMENT_BYTES]=++jit->generation;
+        jit->used=((jit->used/SEGMENT_BYTES+1)*SEGMENT_BYTES)%ARENA_BYTES;entering=true;
     }
+    if(entering)jit->stamps[jit->used/SEGMENT_BYTES]=++jit->generation;
     size_t page_start=jit->used&~(jit->page-1),page_end=(jit->used+reserve+jit->page-1)&~(jit->page-1);
     if(!code_protect(jit->code+page_start,page_end-page_start,0))return nullptr;
     code_write_scope publication(jit->code+page_start,page_end-page_start);
@@ -244,3 +270,10 @@ n64emujit_entry n64emujit_compile(n64emujit* jit,void* block,const uint32_t* ops
 n64emujit_entry n64emujit_compile_optimized(n64emujit* jit,void* block,const uint32_t* ops,unsigned count,n64emujit_step step,const n64emujit_config* config) {
     try{return compile(jit,block,ops,count,step,config);}catch(const std::exception& error){core_log(CORE_LOG_ERROR,"32-bit JIT emission failed: %s",error.what());return nullptr;}
 }
+
+#ifdef N64EMUJIT_GUARD_TEST
+extern "C" void n64emujit_debug_boundary(struct n64emujit* s,unsigned wrap)
+{
+    s->used=wrap?ARENA_BYTES:SEGMENT_BYTES;
+}
+#endif

@@ -21,6 +21,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__SSE2__) || defined(_M_X64)
+#include <emmintrin.h>
+#endif
 
 
 #if defined(_MSC_VER) && defined(_M_X64)
@@ -193,6 +196,7 @@ struct r4300_jit_state
     uint64_t jit_direct_links;
     uint64_t fetch_generation;
     struct n64emujit_fetch_cache fetch_cache[32];
+    struct n64emujit_fetch_cache data_cache[64];
     uint64_t jit_compile_misses[2], jit_verifications[2], jit_replacements;
 #ifdef N64EMUJIT_PROFILE
     uint64_t profile_slow[64], profile_special[64], profile_cop1[64];
@@ -824,6 +828,55 @@ static const uint32_t *ci_instruction_source(struct r4300_core *r,uint32_t pc,
     }
     return (copied?image:ram)+((pc&4095)>>2);
 }
+
+/* Verification needs the body and decode lookahead, not a reconstructed
+ * 4 KiB page. Select the same resident I-cache shadow independently for each
+ * covered line, including partial first/last lines and virtual aliases. */
+static int ci_instruction_matches(struct r4300_core* r, uint32_t pc,
+    uint32_t physical_page, const uint32_t* expected, unsigned count)
+{
+    const uint32_t* ram = mem_base_u32(r->mem->base, physical_page << CI_PAGE_SHIFT);
+    if (!r->cache_timing || !r4300_access_cached(r, pc))
+        return memcmp(ram + ((pc & 4095) >> 2), expected, count * sizeof(uint32_t)) == 0;
+    const uint32_t key = (physical_page << CI_PAGE_SHIFT) | 1;
+    while (count) {
+        const unsigned line = (pc >> 5) & 511, word = (pc >> 2) & 7;
+        unsigned words = 8 - word;
+        if (words > count) words = count;
+        const uint32_t* source = r->icache_tags[line] == key && r->icache_shadow_tags[line] == key ?
+            r->icache_shadow_words[line] + word : ram + ((pc & 4095) >> 2);
+        if (memcmp(source, expected, words * sizeof(uint32_t))) return 0;
+        pc += words * 4; expected += words; count -= words;
+    }
+    return 1;
+}
+
+static void ci_snapshot_icache_page(struct r4300_core* r, uint32_t physical_page)
+{
+    const uint32_t key = (physical_page << CI_PAGE_SHIFT) | 1;
+    for (unsigned first = 0; first < 512; first += 4) {
+#if defined(__SSE2__) || defined(_M_X64)
+        /* Most groups contain no matching line, or already have a shadow.
+         * Filter four tags together before visiting the uncommon copies. */
+        const __m128i keys = _mm_set1_epi32((int)key);
+        const __m128i tags = _mm_loadu_si128((const __m128i*)(r->icache_tags + first));
+        const __m128i shadows = _mm_loadu_si128((const __m128i*)(r->icache_shadow_tags + first));
+        const unsigned mask = (unsigned)_mm_movemask_ps(_mm_castsi128_ps(
+            _mm_andnot_si128(_mm_cmpeq_epi32(shadows,keys), _mm_cmpeq_epi32(tags,keys))));
+        if (!mask) continue;
+#else
+        const unsigned mask = 15;
+#endif
+        for (unsigned lane = 0; lane < 4; ++lane) {
+            const unsigned i = first + lane;
+            if ((mask & (1u << lane)) && r->icache_tags[i] == key && r->icache_shadow_tags[i] != key) {
+                const uint32_t* source = mem_base_u32(r->mem->base,(physical_page << CI_PAGE_SHIFT) | ((i & 127) * 32));
+                memcpy(r->icache_shadow_words[i], source, 32);
+                r->icache_shadow_tags[i] = key;
+            }
+        }
+    }
+}
 static CI_COLD_NOINLINE struct cached_block* ci_build_block(struct r4300_core* r4300, uint32_t pc, uint32_t physical_page)
 {
     struct r4300_jit_state* state = r4300->jit;
@@ -987,9 +1040,7 @@ static CI_COLD_NOINLINE int ci_verify_dirty_block(struct r4300_core* r, struct c
     if (block->epoch == r->jit->epoch &&
         block->page_generation == r->jit->page_generation[physical_page]) return 1;
     const uint32_t* source = fast_mem_access(r, pc);
-    uint32_t instruction_image[1024];
-    if(source)source=ci_instruction_source(r,pc,physical_page,instruction_image);
-    if (!source || memcmp(source, block->source_words, block->source_count * sizeof(uint32_t))) {
+    if (!source || !ci_instruction_matches(r, pc, physical_page, block->source_words, block->source_count)) {
 #ifdef HAVE_N64EMUJIT
         ++r->jit->jit_verifications[1];
 #endif
@@ -1292,10 +1343,26 @@ void r4300_jit_tlb_changed(struct r4300_core* r4300)
     if(state && ++state->fetch_generation==0) {
         state->fetch_generation=1;
         memset(state->fetch_cache,0,sizeof(state->fetch_cache));
+        memset(state->data_cache,0,sizeof(state->data_cache));
     }
 #else
     (void)r4300;
 #endif
+}
+int r4300_jit_mapped_cached(struct r4300_core* r, uint32_t address)
+{
+#ifdef HAVE_N64EMUJIT
+    struct r4300_jit_state* s=r->jit;
+    if(s) {
+        struct n64emujit_fetch_cache* slot=&s->data_cache[(address>>12)&63];
+        uint32_t tag=UINT32_C(0x80000000)|((address>>12)<<8)|(r->cp0.regs[CP0_ENTRYHI_REG]&255);
+        if(slot->tag==tag && slot->generation==s->fetch_generation)return slot->cached;
+        slot->cached=r4300_mapped_access_cached_scan(r,address);
+        slot->tag=tag;slot->generation=s->fetch_generation;
+        return slot->cached;
+    }
+#endif
+    return r4300_mapped_access_cached_scan(r,address);
 }
 void r4300_jit_invalidate(struct r4300_core* r4300, uint32_t address, size_t size)
 {
@@ -1333,13 +1400,7 @@ void r4300_jit_invalidate(struct r4300_core* r4300, uint32_t address, size_t siz
         uint32_t physical_page;
         if (ci_virtual_to_physical_page_noexcept(r4300, (uint32_t)page_address, &physical_page)) {
             if(r4300->cache_timing && ci_page_is_cached(state,physical_page)) {
-                uint32_t key=(physical_page<<12)|1;
-                for(unsigned i=0;i<512;i++)
-                    if(r4300->icache_tags[i]==key && r4300->icache_shadow_tags[i]!=key) {
-                        const uint32_t *source=mem_base_u32(r4300->mem->base,(physical_page<<12)|((i&127)*32));
-                        memcpy(r4300->icache_shadow_words[i],source,32);
-                        r4300->icache_shadow_tags[i]=key;
-                    }
+                ci_snapshot_icache_page(r4300,physical_page);
             }
             ci_bump_page(state, physical_page);
         }
@@ -1478,6 +1539,9 @@ static CI_FORCE_INLINE int ci_jit_nop_step(struct r4300_core* r, struct cached_b
 /* Precise stubs retain the shared instruction ordering and delay-slot rules.
  * Native guards/timing commit in machine code. A memory stub writes back its
  * prefix before calling here, and reloads its allocation before resuming. */
+#include <assert.h>
+#include "jit/alu_region.h"
+
 static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned phase)
 {
     struct cached_block* block = opaque;
@@ -1486,6 +1550,24 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
     if (state->fastmem) n64emujit_fault_resolve(state->jit, r, i < block->count ? block->instructions[i].op : 0);
 
     unsigned count = (phase >> 8) & 63;
+    if ((phase & 255) == 12) {
+        unsigned base=0;
+        for(unsigned n=0;n<count;++n)base+=block->instructions[i+n].cycles;
+        if(!ci_alu_region_admitted(r,pc,count,base))
+            return ci_jit_step(r,block,i,5|(count<<8))?2:0;
+        /* The admission bound prevents events throughout this nontrapping
+         * register-only run. Keep the exact fetch, prefetch and hazard order;
+         * native arithmetic observes no intermediate timing state. */
+        for(unsigned n=0;n<count;++n) {
+            unsigned index=i+n;
+            int ok=r4300_begin_instruction_cycles(r,block->instructions[index].op,
+                pc+n*4,block->instructions[index].cycles,r->cache_timing);
+            assert(ok);(void)ok;
+        }
+        r->retired_ops+=count;state->jit_fast_commits+=count;
+        r->regs[0]=0;r->instruction_pc.addr=pc+count*4;
+        return 1;
+    }
     if ((phase & 255) == 5) {
 #ifdef N64EMUJIT_PROFILE
         ++state->profile_regions[count];
@@ -1654,6 +1736,8 @@ static void ci_execute_jit(struct r4300_core* r, int one)
         config.previous_block = &state->previous_block; config.epoch = &state->epoch;
         config.fetch_generation=&state->fetch_generation;
         config.fetch_cache=&state->fetch_cache[(block->virtual_pc>>12)&31];
+        config.data_cache=state->data_cache;
+        config.alu_regions=1;
         config.entries = NULL; config.linked_entries = NULL; config.direct_links = &state->jit_direct_links;
 #ifdef N64EMUJIT_PROFILE
         config.profile = 1;

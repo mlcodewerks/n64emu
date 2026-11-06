@@ -6,7 +6,7 @@ enum { T0=9,T1=10,T2=11,ADDRESS=12,STATE=19,CLOCKS=20,TARGET=21,
 static unsigned char* out;
 static uint64_t compile_absolute_calls;
 struct arm64_emitter : CodeGenerator {
-    std::map<unsigned char*,std::unique_ptr<Label>> jumps;
+    /* Local branch fixups are patched directly; no per-branch labels. */
     arm64_emitter(size_t size,void* memory) : CodeGenerator(size,memory) {}
 };
 static arm64_emitter* assembler;
@@ -37,19 +37,23 @@ static Cond host_condition(unsigned condition)
 }
 static unsigned char* emit_jump(unsigned condition)
 {
-    auto site=out; auto label=std::make_unique<Label>();
-    JIT(b(host_condition(condition),*label));
-    assembler->jumps.emplace(site,std::move(label)); return site;
+    auto* site=out;JIT(dd(0x54000000u|unsigned(host_condition(condition))));return site;
 }
 static unsigned char* emit_b()
 {
-    auto site=out; auto label=std::make_unique<Label>(); JIT(b(*label));
-    assembler->jumps.emplace(site,std::move(label)); return site;
+    auto* site=out;JIT(dd(0x14000000u));return site;
 }
 static void patch_jump(unsigned char* site,unsigned char* target)
 {
-    const size_t saved=assembler->getSize();
-    assembler->setSize(target-assembler->getCode()); assembler->L(*assembler->jumps.at(site)); assembler->setSize(saved);
+    const int64_t distance=int64_t(uintptr_t(target))-int64_t(uintptr_t(site));uint32_t word;memcpy(&word,site,4);
+    const bool conditional=(word&0xff000010u)==0x54000000u;
+    const bool unconditional=(word&0xfc000000u)==0x14000000u;
+    const int64_t limit=conditional?(INT64_C(1)<<20):(INT64_C(1)<<27);
+    if((distance&3) || (!conditional&&!unconditional) || distance< -limit || distance>=limit)
+        throw std::runtime_error("AArch64 branch fixup out of range or invalid");
+    word=conditional?(word&0xff00001fu)|((uint32_t(distance>>2)&0x7ffffu)<<5):
+        (word&0xfc000000u)|(uint32_t(distance>>2)&0x3ffffffu);
+    memcpy(site,&word,4);
 }
 static void emit_set_condition(int reg,unsigned condition) { JIT(cset(XReg(reg),host_condition(condition))); }
 static void emit_reg_op(unsigned opcode,int source,int dest,int wide)
@@ -97,9 +101,15 @@ static void emit_shift_reg(int reg,unsigned kind,unsigned amount,int wide)
 }
 static void emit_address(int base,int index,unsigned scale,size_t offset)
 {
-    emit_mov64(base,13);
-    if(index>=0) JIT(add(XReg(13),XReg(13),XReg(index),LSL,scale));
-    if(offset) { emit_movimm64((int64_t)offset,14); JIT(add(XReg(13),XReg(13),XReg(14))); }
+    if(index>=0 && base!=SP)JIT(add(XReg(13),XReg(base),XReg(index),LSL,scale));
+    else {
+        emit_mov64(base,13);
+        if(index>=0)JIT(add(XReg(13),XReg(13),XReg(index),LSL,scale));
+    }
+    if(offset && offset<=0xffffff) {
+        if(offset>>12)JIT(add(XReg(13),XReg(13),uint32_t(offset>>12),12));
+        if(offset&4095)JIT(add(XReg(13),XReg(13),uint32_t(offset&4095)));
+    } else if(offset) { emit_movimm64((int64_t)offset,14); JIT(add(XReg(13),XReg(13),XReg(14))); }
 }
 static void emit_load_at(int reg,int wide,unsigned bytes,int sign)
 {
@@ -117,6 +127,22 @@ static void emit_store_at(int reg,int wide,unsigned bytes)
 }
 static void emit_mem(unsigned opcode,int wide,int reg,int base,int index,unsigned scale,size_t offset)
 {
+    if(index<0) {
+        const unsigned bytes=wide?8:4;
+        if((opcode==0x8b || opcode==0x89) && !(offset&(bytes-1)) && offset<=0xffffff) {
+            if(offset/bytes>4095) {
+                JIT(add(XReg(13),XReg(base),uint32_t(offset>>12),12));base=13;offset&=4095;
+            }
+            if(opcode==0x8b) {
+                if(wide)JIT(ldr(XReg(reg),ptr(XReg(base),int32_t(offset))));
+                else JIT(ldr(WReg(reg),ptr(XReg(base),int32_t(offset))));
+            } else {
+                if(wide)JIT(str(XReg(reg),ptr(XReg(base),int32_t(offset))));
+                else JIT(str(WReg(reg),ptr(XReg(base),int32_t(offset))));
+            }
+            return;
+        }
+    }
     emit_address(base,index,scale,offset);
     switch(opcode) {
     case 0x8b: emit_load_at(reg,wide,wide?8:4,0); break;

@@ -1,11 +1,12 @@
 
 #ifndef N64EMUJIT_X64_ARENA_BYTES
+/* Windows commits one recycling segment at a time; unused capacity is VA only. */
 #define N64EMUJIT_X64_ARENA_BYTES (8 << TARGET_SIZE_2)
 #endif
 enum { CODE_BYTES = N64EMUJIT_X64_ARENA_BYTES, MAX_INSTRUCTIONS = 32 };
 #ifndef N64EMUJIT_X64_SEGMENTS
 /* Keep the default 8 MiB recycling granularity as the arena grows. */
-#define N64EMUJIT_X64_SEGMENTS (CODE_BYTES >= (256 << 20) ? 32 : CODE_BYTES >= (1 << 20) ? 16 : 1)
+#define N64EMUJIT_X64_SEGMENTS (CODE_BYTES >= (8 << 20) ? CODE_BYTES / (8 << 20) : CODE_BYTES >= (1 << 20) ? 16 : 1)
 #endif
 enum { CODE_SEGMENTS = N64EMUJIT_X64_SEGMENTS,
     SEGMENT_BYTES = CODE_BYTES / CODE_SEGMENTS };
@@ -48,13 +49,16 @@ struct n64emujit* n64emujit_create(void)
         uintptr_t end = (uintptr_t)region.BaseAddress + region.RegionSize;
         uintptr_t aligned = (cursor + info.dwAllocationGranularity - 1) & ~((uintptr_t)info.dwAllocationGranularity - 1);
         if (region.State == MEM_FREE && aligned < end && end - aligned >= CODE_BYTES && limit - cursor >= CODE_BYTES) {
-            s->code = (unsigned char*)VirtualAlloc((void*)aligned, CODE_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            s->code = (unsigned char*)VirtualAlloc((void*)aligned, CODE_BYTES, MEM_RESERVE, PAGE_READWRITE);
             if (s->code) break;
         }
         if (end <= cursor) break;
         cursor = end;
     }
-    if (!s->code) s->code = (unsigned char*)VirtualAlloc(NULL, CODE_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!s->code) s->code = (unsigned char*)VirtualAlloc(NULL, CODE_BYTES, MEM_RESERVE, PAGE_READWRITE);
+    if (s->code && !VirtualAlloc(s->code, SEGMENT_BYTES, MEM_COMMIT, PAGE_READWRITE)) {
+        VirtualFree(s->code, 0, MEM_RELEASE); s->code = NULL;
+    }
 #else
     s->page_size = (size_t)sysconf(_SC_PAGESIZE);
     s->code = (unsigned char*)mmap(NULL, CODE_BYTES, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -321,6 +325,7 @@ static void emit_step_call(void* block, unsigned index, unsigned phase, n64emuji
 #undef OPT_TEMP2
 #include "branch_x64.inc"
 #include "timing_x64.inc"
+#include "../resume_guard.inc"
 #include "fpu_x64.inc"
 
 #include "link_x64.inc"
@@ -441,8 +446,16 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
         config->fetch_generation && (config->virtual_pc & UINT32_C(0xc0000000)) != UINT32_C(0x80000000))
         reserve += 2048 + count * 1024;
     if (reserve > SEGMENT_BYTES) return NULL;
+    bool entering=s->used && s->used%SEGMENT_BYTES==0;
+    s->used%=CODE_BYTES;
     if ((s->used % SEGMENT_BYTES) + reserve > SEGMENT_BYTES) {
-        s->used = ((s->used / SEGMENT_BYTES + 1) * SEGMENT_BYTES) % CODE_BYTES;
+        s->used = ((s->used / SEGMENT_BYTES + 1) * SEGMENT_BYTES) % CODE_BYTES;entering=true;
+    }
+    if(entering) {
+#ifdef _WIN32
+        if (!s->segment_generation[s->used / SEGMENT_BYTES] &&
+            !VirtualAlloc(s->code + s->used, SEGMENT_BYTES, MEM_COMMIT, PAGE_READWRITE)) return NULL;
+#endif
         if (!code_protect(s->code + s->used, SEGMENT_BYTES, 0)) return NULL;
         s->segment_generation[s->used / SEGMENT_BYTES] = ++s->generation;
         if (s->faults) s->faults->segments[s->used / SEGMENT_BYTES].count = 0;
@@ -458,6 +471,13 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     unsigned char* exits[MAX_INSTRUCTIONS * 14 + 16];
     struct memory_exit memory_exits[MAX_INSTRUCTIONS];
     unsigned memory_exit_count = 0;
+    struct {
+        unsigned char* address;
+        resume_admission admission;
+        uint32_t hit_key, hit_lines;
+        bool hit_credit;
+    } resume_data[MAX_INSTRUCTIONS * 2];
+    unsigned resume_data_count = 0;
     unsigned exit_count = 0;
     x64_emitter code(reserve,start);
     emitter_binding binding(code);
@@ -518,6 +538,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 struct regcache_state annul_registers;
                 struct memory_exit prepare = {0};
                 emit_region_guard(config, i, end - i, base, memory_count, &prepare, memory_flags);
+                unsigned char* admitted=out;
 
                 if(ram_delay&&i==branch_index&&config->cache_timing&&!config->compat_issue_clock) {
                     uint32_t pc=config->virtual_pc+i*4,key=(config->physical_page<<12)|1;
@@ -606,8 +627,25 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 /* Unconditional jump over the precise event/mode slow path. */
                 unsigned char* done = emit_b();
                 for (unsigned g = 0; g < prepare.guard_count; ++g) patch_jump(prepare.guards[g], out);
+                /* Amortize the cold call over longer regions. Retry with
+                 * confirmed resident fetch lines before replaying precisely.
+                 * Branch/RAM checkpoint guards retain their direct exit. */
+                if(config->cache_timing==1 && end-i>=8 && memory_count<=2 && !(ram_delay && i==branch_index)) {
+                    auto& data=resume_data[resume_data_count++];
+                    data.admission=make_resume_admission(config,i,end-i,base,memory_count,memory_flags);
+                    data.hit_credit=true;data.hit_key=(config->physical_page<<12)|1;
+                    unsigned pc=config->virtual_pc+i*4;
+                    data.hit_lines=((pc+(end-i-1)*4)>>5)-(pc>>5)+1;
+                    emit_mov64(R12,ARG1_REG);data.address=out;emit_movimm64(INT64_MIN,ARG2_REG);
+                    emit_helper_call((const void*)hit_region_admitted);
+                    emit_reg_op(0x85,RAX,RAX,0);auto* precise=emit_jump(4);
+                    emit_imm_op(4,RAX,2,0);emit_mem(0x89,0,RAX,RSP,-1,0,4);
+                    auto* retry=emit_b();patch_jump(retry,admitted);patch_jump(precise,out);
+                }
                 exits[exit_count++] = emit_step(block, i, ((ram_delay && branch_region ? 1 : end-i) << 8) | 5, step);
                 patch_jump(done, out);
+                for (unsigned n = 0; n < memory_exit_count; ++n)
+                    if (memory_exits[n].start == i) memory_exits[n].region_end = out;
             } else {
                 exits[exit_count++] = emit_step(block, i, 0, step);
                 emit_native(ops[i], op);
@@ -649,6 +687,14 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 exits[exit_count++] = emit_b();
                 continue;
             }
+            if (exit->index + 1 == exit->end) {
+                /* The precise helper has retired the region's final memory
+                 * instruction and committed its clocks/history. There is no
+                 * native suffix to admit or register allocation to restore. */
+                unsigned char* done = emit_b();
+                patch_jump(done, exit->region_end);
+                continue;
+            }
             unsigned base = 0, memory_count = 0, memory_flags = 0;
             for (unsigned j = exit->index + 1; j < exit->end; ++j) {
                 base += r4300_base_cycles(ops[j], 0);
@@ -656,7 +702,18 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 memory_flags |= native_memory_flags(ops[j]);
             }
             struct memory_exit prepare = {0};
-            emit_region_guard(config, exit->index + 1, exit->end - exit->index - 1, base, memory_count, &prepare, memory_flags);
+            if (config->cache_timing == 1) {
+                auto& data = resume_data[resume_data_count++];
+                data.hit_credit=false;
+                data.admission = make_resume_admission(config,exit->index+1,exit->end-exit->index-1,
+                    base,memory_count,memory_flags);
+                emit_mov64(R12,ARG1_REG);
+                data.address = out;
+                emit_movimm64(INT64_MIN,ARG2_REG); // Fixed imm64; patched to the readonly descriptor below.
+                emit_helper_call((const void*)resume_region_admitted);
+                emit_reg_op(0x85,RAX,RAX,0);memory_guard(&prepare,4);
+                emit_imm_op(4,RAX,2,0);emit_mem(0x89,0,RAX,RSP,-1,0,4);
+            } else emit_region_guard(config, exit->index + 1, exit->end - exit->index - 1, base, memory_count, &prepare, memory_flags);
             for (unsigned g = 0; g < prepare.guard_count; ++g) exits[exit_count++] = prepare.guards[g];
             emit_mem_imm(0xc7, 0, 0, RSP, -1, 0, 8,exit->index + 1 - exit->start);
             emit_movimm(0, R13);
@@ -697,6 +754,18 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     for (unsigned i = 0; i < exit_count; ++i) {
         patch_jump(exits[i], epilogue);
     }
+    if (resume_data_count) {
+        while ((uintptr_t)out & 7) JIT(db(0));
+        for (unsigned i = 0; i < resume_data_count; ++i) {
+            uintptr_t address = (uintptr_t)out;
+            assert((resume_data[i].address[1] & 0xf8) == 0xb8);
+            memcpy(resume_data[i].address + 2,&address,8);
+            JIT(db((const uint8_t*)&resume_data[i].admission,sizeof(resume_admission)));
+            if(resume_data[i].hit_credit) {
+                JIT(dd(resume_data[i].hit_key));JIT(dd(resume_data[i].hit_lines));
+            }
+        }
+    }
     code.ready();
     assert((size_t)(out - start) <= reserve);
     s->used = ((size_t)(out - s->code) + 15) & ~(size_t)15;
@@ -728,3 +797,43 @@ n64emujit_entry n64emujit_compile_optimized(struct n64emujit* s, void* block,
     try { return compile_block(s, block, ops, count, step, 1, config); }
     catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak emission failed at %08x (%u instructions): %s",config?config->virtual_pc:0,count,error.what()); return NULL; }
 }
+
+#ifdef N64EMUJIT_GUARD_TEST
+/* Private check-object entry points; absent from production objects/exports. */
+extern "C" n64emujit_entry n64emujit_test_region_guard(struct n64emujit* s,
+    const n64emujit_config* config,unsigned start,unsigned count,unsigned base,unsigned memory_count,unsigned flags)
+{
+    if(!code_protect(s->code,8192,0))abort();
+    x64_emitter code(8192,s->code);emitter_binding binding(code);out=s->code;
+    JIT(endbr64());JIT(push(Xbyak::Reg64(R12)));emit_mov64(ARG1_REG,R12);
+    emit_addimm64(RSP,-32,RSP);
+    struct memory_exit failure={0};
+    emit_region_guard(config,start,count,base,memory_count,&failure,flags);
+    emit_mem(0x8b,0,RAX,RSP,-1,0,4);emit_imm_op(1,RAX,1,0);
+    unsigned char* done=emit_b();
+    for(unsigned i=0;i<failure.guard_count;++i)patch_jump(failure.guards[i],out);
+    emit_movimm(0,RAX);patch_jump(done,out);
+    emit_state_store_raw(gpr_offset(2),RAX);
+    emit_addimm64(RSP,32,RSP);JIT(pop(Xbyak::Reg64(R12)));JIT(ret());code.ready();
+    if(!code_protect(s->code,8192,1))abort();
+#ifdef _WIN32
+    FlushInstructionCache(GetCurrentProcess(),s->code,8192);
+#else
+    __builtin___clear_cache((char*)s->code,(char*)out);
+#endif
+    return (n64emujit_entry)(void*)s->code;
+}
+extern "C" unsigned n64emujit_test_resume_guard(struct r4300_core* r,
+    const n64emujit_config* config,unsigned start,unsigned count,unsigned base,unsigned memory_count,unsigned flags)
+{
+    auto admission=make_resume_admission(config,start,count,base,memory_count,flags);
+    return resume_region_admitted(r,&admission);
+}
+#endif
+
+#ifdef N64EMUJIT_GUARD_TEST
+extern "C" void n64emujit_debug_boundary(struct n64emujit* s,unsigned wrap)
+{
+    s->used=wrap?CODE_BYTES:SEGMENT_BYTES;
+}
+#endif

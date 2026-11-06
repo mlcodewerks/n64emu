@@ -119,6 +119,7 @@ static int code_protect(void* p,size_t size,int execute) {
 #undef OPT_TEMP2
 #include "arm64/branch_arm64.inc"
 #include "arm64/timing_arm64.inc"
+#include "resume_guard.inc"
 #include "arm64/fpu_arm64.inc"
 #include "arm64/link_arm64.inc"
 #include "arm64/frontend_arm64.inc"

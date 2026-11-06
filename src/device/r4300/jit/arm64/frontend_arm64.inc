@@ -68,8 +68,13 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                    optimized && native_fpu_instruction(ops[i]) ? 8192 : 2048;
     reserve = (reserve+15) & ~(size_t)15;
     if (reserve > N64EMUJIT_ARM64_SEGMENT_BYTES) return NULL;
+    bool entering=s->used && s->used%N64EMUJIT_ARM64_SEGMENT_BYTES==0;
+    s->used%=ARENA_BYTES;
     if ((s->used % N64EMUJIT_ARM64_SEGMENT_BYTES) + reserve > N64EMUJIT_ARM64_SEGMENT_BYTES) {
         s->used = ((s->used / N64EMUJIT_ARM64_SEGMENT_BYTES + 1) * N64EMUJIT_ARM64_SEGMENT_BYTES) % ARENA_BYTES;
+        entering=true;
+    }
+    if(entering) {
         if (!code_protect(s->code + s->used, N64EMUJIT_ARM64_SEGMENT_BYTES, 0)) return NULL;
         s->stamps[s->used / N64EMUJIT_ARM64_SEGMENT_BYTES] = ++s->generation;
     }
@@ -85,6 +90,13 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     struct memory_exit memory_exits[MAX_INSTRUCTIONS];
     unsigned memory_exit_count = 0;
     unsigned exit_count = 0;
+    struct admission_data {
+        unsigned char* address;
+        resume_admission admission;
+        uint32_t key, lines;
+        bool hit;
+    } admissions[MAX_INSTRUCTIONS*2];
+    unsigned admission_count=0;
     arm64_emitter code(reserve,start);
     emitter_binding binding(code);
     out=start;
@@ -119,6 +131,8 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 struct memory_exit prepare = {0};
                 emit_region_guard(config, i, end - i, base, memory_count, &prepare);
 
+                unsigned char* admitted=out;
+                unsigned region_memory_start=memory_exit_count;
                 regcache_begin(ops, i, end);
                 emit_mem_imm(0xc7, 0, 0, SP, -1, 0, 8,0);
                 if (memory_region || likely_region || (branch_region && branch_major == 0)) regcache.allow_dead_store = 0;
@@ -191,8 +205,22 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 /* Unconditional jump over the precise event/mode slow path. */
                 unsigned char* done = emit_b();
                 for (unsigned g = 0; g < prepare.guard_count; ++g) patch_jump(prepare.guards[g], out);
+                if(config->cache_timing==1 && end-i>=8 && memory_count<=2) {
+                    auto& data=admissions[admission_count++];data.hit=true;
+                    data.admission=make_resume_admission(config,i,end-i,base,memory_count,0);
+                    data.key=(config->physical_page<<12)|1;
+                    uint32_t pc=config->virtual_pc+i*4;
+                    data.lines=((pc+(end-i-1)*4)>>5)-(pc>>5)+1;
+                    emit_mov64(STATE,ARG1_REG);data.address=out;
+                    for(unsigned part=0;part<4;++part)JIT(dd((part?0xf2800000u:0xd2800000u)|(part<<21)|ARG2_REG));
+                    emit_helper_call((const void*)hit_region_admitted);
+                    emit_reg_op(0x85,T0,T0,0);auto* rejected=emit_jump(4);
+                    emit_imm_op(4,T0,2,0);emit_mem(0x89,0,T0,SP,-1,0,4);
+                    auto* retry=emit_b();patch_jump(retry,admitted);patch_jump(rejected,out);
+                }
                 exits[exit_count++] = emit_step(block, i, ((end - i) << 8) | 5, step);
                 patch_jump(done, out);
+                for(unsigned n=region_memory_start;n<memory_exit_count;++n)memory_exits[n].region_end=out;
             } else {
                 exits[exit_count++] = emit_step(block, i, 0, step);
                 emit_native(ops[i], op);
@@ -223,13 +251,24 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 exits[exit_count++] = emit_b();
                 continue;
             }
+            if(exit->index+1==exit->end) {
+                auto* done=emit_b();patch_jump(done,exit->region_end);continue;
+            }
             unsigned base = 0, memory_count = 0;
             for (unsigned j = exit->index + 1; j < exit->end; ++j) {
                 base += r4300_base_cycles(ops[j], 0);
                 memory_count += native_ram_opcode(r4300_get_idec(ops[j])->opcode) != 0;
             }
             struct memory_exit prepare = {0};
-            emit_region_guard(config, exit->index + 1, exit->end - exit->index - 1, base, memory_count, &prepare);
+            if(config->cache_timing==1) {
+                auto& data=admissions[admission_count++];data.hit=false;
+                data.admission=make_resume_admission(config,exit->index+1,exit->end-exit->index-1,base,memory_count,0);
+                emit_mov64(STATE,ARG1_REG);data.address=out;
+                for(unsigned part=0;part<4;++part)JIT(dd((part?0xf2800000u:0xd2800000u)|(part<<21)|ARG2_REG));
+                emit_helper_call((const void*)resume_region_admitted);
+                emit_reg_op(0x85,T0,T0,0);memory_guard(&prepare,4);
+                emit_imm_op(4,T0,2,0);emit_mem(0x89,0,T0,SP,-1,0,4);
+            } else emit_region_guard(config, exit->index + 1, exit->end - exit->index - 1, base, memory_count, &prepare);
             for (unsigned g = 0; g < prepare.guard_count; ++g) exits[exit_count++] = prepare.guards[g];
             emit_mem_imm(0xc7, 0, 0, SP, -1, 0, 8,exit->index + 1 - exit->start);
             emit_movimm(0, CLOCKS);
@@ -253,6 +292,21 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     emit_frame_leave(); JIT(ret());
     for (unsigned i = 0; i < exit_count; ++i) {
         patch_jump(exits[i], epilogue);
+    }
+    if(admission_count) {
+        if((uintptr_t)out&7)JIT(dd(0));
+        for(unsigned n=0;n<admission_count;++n) {
+            auto& data=admissions[n];uintptr_t address=(uintptr_t)out;
+            for(unsigned part=0;part<4;++part) {
+                uint32_t word=(part?0xf2800000u:0xd2800000u)|(part<<21)|(((address>>(part*16))&65535)<<5)|ARG2_REG;
+                memcpy(data.address+part*4,&word,4);
+            }
+            const unsigned char* bytes=(const unsigned char*)&data.admission;
+            for(unsigned part=0;part<sizeof(resume_admission);part+=4) {
+                uint32_t word;memcpy(&word,bytes+part,4);JIT(dd(word));
+            }
+            if(data.hit){JIT(dd(data.key));JIT(dd(data.lines));}
+        }
     }
     code.ready();
     assert((size_t)(out - start) <= reserve);
@@ -284,3 +338,10 @@ n64emujit_entry n64emujit_compile_optimized(struct n64emujit* s, void* block,
     try { return compile_block(s, block, ops, count, step, 1, config); }
     catch(const std::exception& error) { core_log(CORE_LOG_ERROR,"Xbyak_aarch64 emission failed: %s",error.what()); return NULL; }
 }
+
+#ifdef N64EMUJIT_GUARD_TEST
+extern "C" void n64emujit_debug_boundary(struct n64emujit* s,unsigned wrap)
+{
+    s->used=wrap?ARENA_BYTES:N64EMUJIT_ARM64_SEGMENT_BYTES;
+}
+#endif

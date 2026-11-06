@@ -18,6 +18,7 @@ struct memory_exit {
     struct regcache_state registers;
     struct regcache_state resume_registers;
     unsigned char* resume;
+    unsigned char* region_end;
     unsigned char* fault_pc;
     unsigned index, start, end, guard_count;
     unsigned char* guards[16];
@@ -381,6 +382,51 @@ static void emit_mapped_cacheability(void)
     emit_mem(0x8b, 0, RDX, RSP, -1, 0, 0);
 }
 #include "../fetch_cache.inc"
+static void emit_data_cache_slot(const n64emujit_config* config)
+{
+    emit_mov(R11,RAX);emit_shift_reg(RAX,5,12,0);emit_imm_op(4,RAX,63,0);emit_shift_reg(RAX,4,4,0);
+    emit_movimm64((intptr_t)config->data_cache,RCX);emit_reg_op(0x01,RCX,RAX,1);
+}
+static void emit_data_cache_tag(void)
+{
+    emit_mov(R11,RCX);emit_shift_reg(RCX,5,12,0);emit_shift_reg(RCX,4,8,0);
+    emit_imm_op(1,RCX,UINT32_C(0x80000000),0);
+    emit_mem(0x8b,0,RDX,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_ENTRYHI_REG]));
+    emit_imm_op(4,RDX,255,0);emit_reg_op(0x09,RDX,RCX,0);
+}
+static void emit_data_cacheability(const n64emujit_config* config)
+{
+    if(!config->data_cache || !config->fetch_generation){emit_mapped_cacheability();return;}
+    emit_mem(0x89,0,RDX,RSP,-1,0,0);
+    emit_data_cache_slot(config);emit_data_cache_tag();
+    emit_mem(0x39,0,RCX,RAX,-1,0,offsetof(n64emujit_fetch_cache,tag));
+    auto* tag_miss=emit_jump(5);
+    emit_movimm64((intptr_t)config->fetch_generation,RCX);emit_mem(0x8b,1,RCX,RCX,-1,0,0);
+    emit_mem(0x39,1,RCX,RAX,-1,0,offsetof(n64emujit_fetch_cache,generation));
+    auto* generation_miss=emit_jump(5);
+    emit_mem(0x8b,0,RAX,RAX,-1,0,offsetof(n64emujit_fetch_cache,cached));
+    emit_mem(0x8b,0,RDX,RSP,-1,0,0);auto* done=emit_b();
+    patch_jump(tag_miss,out);patch_jump(generation_miss,out);
+    /* A metadata miss fills attributes only. Keep the guest instruction on
+     * the existing native/precise data path, with no extra guest replay. */
+    emit_mem(0x8b,0,RDX,RSP,-1,0,0);
+    const int saved[]={RCX,RDX,R8,R9,R10,R11
+#ifndef _WIN32
+        ,RSI,RDI
+#endif
+    };
+    for(int reg:saved)JIT(push(Xbyak::Reg64(reg)));
+#ifdef _WIN32
+    JIT(sub(Xbyak::Reg64(RSP),32));
+#endif
+    emit_mov64(R12,ARG1_REG);emit_mov(R11,ARG2_REG);
+    emit_helper_call((const void*)r4300_jit_mapped_cached);
+#ifdef _WIN32
+    JIT(add(Xbyak::Reg64(RSP),32));
+#endif
+    for(unsigned n=sizeof(saved)/sizeof(saved[0]);n--;)JIT(pop(Xbyak::Reg64(saved[n])));
+    patch_jump(done,out);
+}
 static void emit_memory_native(uint32_t instruction, unsigned index,
     const struct n64emujit_config* config, struct memory_exit* exit, int check_line,
     uint32_t previous, int known)
@@ -550,7 +596,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         if(!fixed_direct) {
         unsigned char* direct_cached = emit_b();
         patch_jump(mapped, out);
-        emit_mapped_cacheability(); emit_reg_op(0x85, RAX, RAX, 0);
+        emit_data_cacheability(config); emit_reg_op(0x85, RAX, RAX, 0);
         mapped_uncached = emit_jump(4);
         patch_jump(direct_cached, out);
         }

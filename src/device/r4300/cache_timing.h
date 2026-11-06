@@ -4,6 +4,7 @@
 #include "device/rcp/rcp.h"
 #include "device/rdram.h"
 #include "memory_timing.h"
+#include "jit_runtime.h"
 #include <string.h>
 
 /* Shared compatibility hit estimate, including the existing cache handoff. */
@@ -29,7 +30,7 @@ static osal_force_inline unsigned r4300_dcache_hit_cycles(unsigned compatibility
  * The cache keeps write-back contents. VI arbitration is a coarse surcharge;
  * shared CPU/RSP/RDP bus arbitration remains unmodeled. */
 /* Keep the uncommon mapped-address scan out of every load/store handler. */
-static R4300_CACHE_NOINLINE int r4300_mapped_access_cached(struct r4300_core* r, uint32_t va)
+static R4300_CACHE_NOINLINE int r4300_mapped_access_cached_scan(struct r4300_core* r, uint32_t va)
 {
     unsigned int i;
     for (i = 0; i < 32; ++i) {
@@ -39,6 +40,10 @@ static R4300_CACHE_NOINLINE int r4300_mapped_access_cached(struct r4300_core* r,
         if (e->v_odd && va >= e->start_odd && va <= e->end_odd) return e->c_odd != 2;
     }
     return 0;
+}
+static osal_force_inline int r4300_mapped_access_cached(struct r4300_core* r, uint32_t va)
+{
+    return r->jit ? r4300_jit_mapped_cached(r,va) : r4300_mapped_access_cached_scan(r,va);
 }
 
 static osal_force_inline int r4300_access_cached(struct r4300_core* r, uint32_t va)

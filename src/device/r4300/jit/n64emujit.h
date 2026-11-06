@@ -23,7 +23,9 @@ struct n64emujit;
 typedef void (*n64emujit_entry)(struct r4300_core*);
 /* 0: begin native instruction, 1: commit native instruction,
  * 2: shared precise instruction; 5 | (count << 8): precise region;
- * 11: begin COP1 transfer with its unusable check. Zero exits the block. */
+ * 11: begin COP1 transfer with its unusable check;
+ * 12 | (count << 8): prepare register-only region clocks, returning 1 for
+ * native arithmetic or 2 when precise replay already executed it. Zero exits. */
 typedef int (*n64emujit_step)(struct r4300_core*, void*, unsigned, unsigned);
 typedef n64emujit_entry (*n64emujit_link)(struct r4300_core*);
 typedef int (*n64emujit_fpu_prepare)(struct r4300_core*, uint32_t, uint64_t inputs[3], uint64_t* commits);
@@ -69,6 +71,8 @@ struct n64emujit_config {
     struct n64emujit_fetch_cache* fetch_cache;
     const uint64_t* fetch_generation;
     struct r4300_fastmem* fastmem;
+    struct n64emujit_fetch_cache* data_cache;
+    unsigned alu_regions; /* Step callback implements phase 12. */
 };
 struct n64emujit* n64emujit_create(void);
 void n64emujit_destroy(struct n64emujit*);

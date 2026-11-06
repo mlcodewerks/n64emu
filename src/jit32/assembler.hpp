@@ -27,7 +27,8 @@ class Assembler {
     struct ScratchAllocator : Xbyak::Allocator { bool useProtect() const override { return false; } } allocator;
     std::vector<uint8_t> buffer = std::vector<uint8_t>(1024 * 1024);
 public:
-    Xbyak::CodeGenerator code{buffer.size(),buffer.data(),&allocator};
+    Xbyak::CodeGenerator code;
+    explicit Assembler(size_t capacity=1024*1024) : buffer(capacity),code(capacity,buffer.data(),&allocator) {}
     static constexpr unsigned FP=5, STATE=6, DMEM=7, INDIRECT=3, TEMP=0, COUNT=1, AUX=2;
     static Xbyak::Reg32 reg(unsigned n) { return Xbyak::Reg32(n); }
     static Xbyak::Address mem(unsigned bits,unsigned base,int32_t offset) {
@@ -107,6 +108,8 @@ public:
         static const unsigned cc[]={0,1,3,2,11,10,13,12,8,9,4,5,14};return cc[condition];
     }
 public:
+    explicit Assembler(size_t capacity=0) { if(capacity)buffer.reserve(capacity); }
+
     static constexpr unsigned FP=11, STATE=4, DMEM=5, INDIRECT=6, TEMP=0, COUNT=1, AUX=2;
     size_t size() const { return buffer.size(); }
     const uint8_t* data() const { return buffer.data(); }
@@ -122,6 +125,19 @@ public:
         word(0xe0000000u|(codes[op]<<21)|(flags<<20)|(d<<16)|((op==CMP||op==TEST?0:d)<<12)|s);
     }
     void immediate(Operation op,unsigned d,uint32_t v) {
+        static const unsigned codes[]={4,5,2,6,0,12,1,10,8};
+        for(unsigned rotate=0;rotate<16;++rotate) {
+            unsigned shift=rotate*2;
+            uint32_t literal=shift?(v<<shift)|(v>>(32-shift)):v;
+            /* TST with an unrotated register preserves C. A rotated immediate
+             * would replace it with bit 31 of the constant, so retain that
+             * register form unless the immediate uses rotation zero. */
+            if(literal<=255 && (op!=TEST || !rotate)) {
+                unsigned flags=op==ADD||op==ADC||op==SUB||op==SBC||op==CMP||op==TEST;
+                word(0xe2000000u|(codes[op]<<21)|(flags<<20)|(d<<16)|
+                     ((op==CMP||op==TEST?0:d)<<12)|(rotate<<8)|literal);return;
+            }
+        }
         unsigned temporary=d==12?3:12;imm(temporary,v);alu(op,d,temporary);
     }
     void shift(unsigned d,Shift kind,unsigned amount) {

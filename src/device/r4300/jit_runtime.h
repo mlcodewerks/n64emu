@@ -13,6 +13,7 @@ int r4300_jit_init(struct r4300_core* r4300);
 void r4300_jit_destroy(struct r4300_core* r4300);
 void r4300_jit_invalidate(struct r4300_core* r4300, uint32_t address, size_t size);
 void r4300_jit_tlb_changed(struct r4300_core* r4300);
+int r4300_jit_mapped_cached(struct r4300_core*, uint32_t address);
 void r4300_jit_cache_stats(struct r4300_core*, uint64_t stats[2]);
 void r4300_jit_host_fault_stats(struct r4300_core*, uint64_t stats[2]);
 #ifdef HAVE_N64EMUJIT

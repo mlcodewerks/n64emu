@@ -12,6 +12,7 @@ struct memory_exit {
     struct regcache_state registers;
     struct regcache_state resume_registers;
     unsigned char* resume;
+    unsigned char* region_end;
     unsigned index, start, end, guard_count;
     unsigned char* guards[16];
 };
@@ -228,20 +229,24 @@ static void emit_ldi_native(uint32_t instruction, int fp, uint32_t previous, int
         }
         return;
     }
-    unsigned rs = (instruction >> 21) & 31, rt = (instruction >> 16) & 31;
+    unsigned rt = (instruction >> 16) & 31;
     uint32_t candidates = r4300_pipeline_ldi_gprs(instruction);
     if (!fp && !candidates) return;
     emit_mem(0x8b, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, pipeline_load_mask));
     unsigned char* fpr_history = NULL;
     if (fp) {
+        /* Match the precise detector's FPR priority in restored mixed-bank
+         * history, rather than counting an unrelated integer base match. */
+        emit_mov64(T0,T2);emit_shift_reg(T2,5,32,1);
+        emit_reg_op(0x85,T2,T2,0);auto* fpr=emit_jump(5);
+        emit_imm_op(4,T0,candidates,0);auto* selected=emit_b();patch_jump(fpr,out);
         emit_movimm64(UINT64_C(1) << (32 + rt), T2);
         if (rt & 1) {
             emit_mem_imm(0xf7, 0, 0, STATE, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
             unsigned char* fr = emit_jump(5);
             emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)), T2); patch_jump(fr, out);
         }
-        if(rs)JIT(orr(XReg(T2),XReg(T2),UINT64_C(1)<<rs));
-        emit_reg_op(0x21, T2, T0, 1);
+        emit_reg_op(0x21, T2, T0, 1);patch_jump(selected,out);
     } else {
         emit_mov64(T0, T2); emit_shift_reg(T2, 5, 32, 1);
         emit_reg_op(0x85, T2, T2, 0); fpr_history = emit_jump(5);
@@ -298,6 +303,38 @@ static void emit_mapped_cacheability(void)
     emit_mem(0x8b, 0, T2, SP, -1, 0, 0);
 }
 #include "../fetch_cache.inc"
+static void emit_data_cache_slot(const n64emujit_config* config)
+{
+    emit_mov(ADDRESS,T0);emit_shift_reg(T0,5,12,0);emit_imm_op(4,T0,63,0);emit_shift_reg(T0,4,4,0);
+    emit_movimm64((intptr_t)config->data_cache,T1);emit_reg_op(0x01,T1,T0,1);
+}
+static void emit_data_cache_tag(void)
+{
+    emit_mov(ADDRESS,T1);emit_shift_reg(T1,5,12,0);emit_shift_reg(T1,4,8,0);
+    emit_imm_op(1,T1,UINT32_C(0x80000000),0);
+    emit_mem(0x8b,0,T2,STATE,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_ENTRYHI_REG]));
+    emit_imm_op(4,T2,255,0);emit_reg_op(0x09,T2,T1,0);
+}
+static void emit_data_cacheability(const n64emujit_config* config)
+{
+    if(!config->data_cache || !config->fetch_generation){emit_mapped_cacheability();return;}
+    emit_mem(0x89,0,T2,SP,-1,0,0);
+    emit_data_cache_slot(config);emit_data_cache_tag();
+    emit_mem(0x39,0,T1,T0,-1,0,offsetof(n64emujit_fetch_cache,tag));
+    auto* tag_miss=emit_jump(5);
+    emit_movimm64((intptr_t)config->fetch_generation,T1);emit_mem(0x8b,1,T1,T1,-1,0,0);
+    emit_mem(0x39,1,T1,T0,-1,0,offsetof(n64emujit_fetch_cache,generation));
+    auto* generation_miss=emit_jump(5);
+    emit_mem(0x8b,0,T0,T0,-1,0,offsetof(n64emujit_fetch_cache,cached));
+    emit_mem(0x8b,0,T2,SP,-1,0,0);auto* done=emit_b();
+    patch_jump(tag_miss,out);patch_jump(generation_miss,out);
+    emit_mem(0x8b,0,T2,SP,-1,0,0);
+    JIT(sub(assembler->sp,assembler->sp,16));JIT(stp(XReg(T2),XReg(ADDRESS),ptr(assembler->sp)));
+    emit_mov64(STATE,ARG1_REG);emit_mov(ADDRESS,ARG2_REG);
+    emit_helper_call((const void*)r4300_jit_mapped_cached);
+    JIT(ldp(XReg(T2),XReg(ADDRESS),ptr(assembler->sp)));JIT(add(assembler->sp,assembler->sp,16));
+    patch_jump(done,out);
+}
 static void emit_memory_native(uint32_t instruction, unsigned index,
     const struct n64emujit_config* config, struct memory_exit* exit, int check_line,
     uint32_t previous, int known)
@@ -411,7 +448,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         if(!fixed_direct) {
         unsigned char* direct_cached = emit_b();
         patch_jump(mapped, out);
-        emit_mapped_cacheability(); emit_reg_op(0x85, T0, T0, 0);
+        emit_data_cacheability(config); emit_reg_op(0x85, T0, T0, 0);
         mapped_uncached = emit_jump(4);
         patch_jump(direct_cached, out);
         }
