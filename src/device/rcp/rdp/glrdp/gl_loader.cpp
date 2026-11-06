@@ -6,6 +6,7 @@ bool glrdp_image_load_store = false;
 bool glrdp_fragment_interlock = false;
 decltype(glad_glBindImageTexture) glad_glBindImageTexture = nullptr;
 decltype(glad_glMemoryBarrier) glad_glMemoryBarrier = nullptr;
+decltype(glad_glDispatchCompute) glad_glDispatchCompute = nullptr;
 decltype(glad_glFramebufferParameteri) glad_glFramebufferParameteri = nullptr;
 decltype(glad_glClearDepthf) glad_glClearDepthf = nullptr;
 GLRDPPrecisionQuery glrdp_precision_query = nullptr;
@@ -113,6 +114,7 @@ bool load_gl33(retro_hw_get_proc_address_t resolver, bool gles3) {
     glrdp_fragment_interlock = false;
     glad_glBindImageTexture = nullptr;
     glad_glMemoryBarrier = nullptr;
+    glad_glDispatchCompute = nullptr;
     glad_glFramebufferParameteri = nullptr;
     if (!resolver)
         return false;
@@ -241,6 +243,7 @@ bool load_gl33(retro_hw_get_proc_address_t resolver, bool gles3) {
     if (!gles3 && (major > 4 || (major == 4 && minor >= 3))) {
         glad_glBindImageTexture = reinterpret_cast<decltype(glad_glBindImageTexture)>(resolver("glBindImageTexture"));
         glad_glMemoryBarrier = reinterpret_cast<decltype(glad_glMemoryBarrier)>(resolver("glMemoryBarrier"));
+        glad_glDispatchCompute = reinterpret_cast<decltype(glad_glDispatchCompute)>(resolver("glDispatchCompute"));
         glad_glFramebufferParameteri = reinterpret_cast<decltype(glad_glFramebufferParameteri)>(resolver("glFramebufferParameteri"));
         if (glad_glBindImageTexture && glad_glMemoryBarrier && glad_glFramebufferParameteri) {
             GLint units = 0, fragment_units = 0;

@@ -8,7 +8,8 @@
     X(gpu_load) X(gpu_decode) X(color_bind) X(color_upload) X(color_read) \
     X(depth_ensure) X(depth_read) X(cpu_write) X(state_save) X(state_restore) \
     X(color_resize) X(color_merge) X(color_alias) X(color_retire) X(depth_alias) \
-    X(color_alloc) X(depth_alloc) X(depth_import) X(gpu_alias)
+    X(color_alloc) X(depth_alloc) X(depth_import) X(gpu_alias) \
+    X(legacy_uniforms) X(legacy_feedback)
 
 #ifdef N64EMU_GLRDP_PROFILE
 #include <array>

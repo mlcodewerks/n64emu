@@ -18,8 +18,10 @@ RSP_HEADERS := $(wildcard $(RSP)/*.hpp) $(wildcard $(RSP)/*.inc) src/jit32/assem
 all: $(OUT)/cpu-checks$(EXE) $(OUT)/rsp-checks$(EXE) $(OUT)/vector-checks$(EXE)
 $(OUT):
 	mkdir -p $@
-$(OUT)/cpu-checks$(EXE): benchmarks/jit32/cpu_checks.cpp $(CPU_EMITTER) $(wildcard src/device/r4300/jit/pair32/*.inc) src/jit32/assembler.hpp | $(OUT)
+$(OUT)/cpu-checks$(EXE): benchmarks/jit32/cpu_checks.cpp $(CPU_EMITTER) $(wildcard src/device/r4300/jit/pair32/*.inc) src/device/r4300/jit/n64emujit.h src/jit32/assembler.hpp | $(OUT)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 $< $(CPU_EMITTER) -o $@
+$(OUT)/arm-immediate-checks$(EXE): benchmarks/jit32/arm_immediate_checks.cpp src/jit32/assembler.hpp | $(OUT)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 $< -o $@
 $(OUT)/emitter-checks$(EXE): $(RSP)/jit_tests.cpp $(RSP)/jit_allocator.cpp $(RSP_HEADERS) | $(OUT)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 -DN64EMU_RSP_EMITTER_ONLY -ffunction-sections -fdata-sections $< $(RSP)/jit_allocator.cpp -Wl,--gc-sections -o $@
 $(OUT)/rsp-checks$(EXE): $(RSP)/jit_tests.cpp $(RSP_SOURCES) $(RSP_HEADERS) | $(OUT)

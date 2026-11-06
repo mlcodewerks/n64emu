@@ -1,5 +1,6 @@
 #include "libretro_legacy.h"
 #include "raster_renderer.hpp"
+#include "../glrdp/rdp_profile.hpp"
 #include "renderer_options.h"
 #include <array>
 #include <cstring>
@@ -283,6 +284,7 @@ extern "C" bool legacygpu_materialize() {
     }
 }
 extern "C" void legacygpu_process_commands() {
+    GLRDP_PROFILE_SCOPE(commands);
     if (!ready || !opened || !parser || !renderer)
         return;
     const auto start = *gfx_info.DPC_CURRENT_REG & 0xfffff8u, end = *gfx_info.DPC_END_REG & 0xfffff8u;
@@ -315,6 +317,7 @@ extern "C" void legacygpu_begin_frame() {
 }
 extern "C" void legacygpu_end_frame() { frame_session.reset(); }
 extern "C" void legacygpu_scanout() {
+    GLRDP_PROFILE_SCOPE(present);
     if (!ready || !opened || !renderer || !parser)
         return;
     try {

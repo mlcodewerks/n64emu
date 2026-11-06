@@ -46,6 +46,7 @@ static n64emujit_entry linked_body;
 static n64emujit_entry link(r4300_core*){return ++linked_count<100000?linked_body:nullptr;}
 int main(int argc, char** argv) {
     bool tail_only = argc == 2 && !std::strcmp(argv[1], "--tail-only");
+    bool no_recycle = argc == 2 && !std::strcmp(argv[1], "--no-recycle");
     auto* jit=n64emujit_create();require(jit,"code arena allocation");
     auto actual=std::make_unique<r4300_core>(),expected=std::make_unique<r4300_core>();
     std::mt19937_64 random(0x33324a4954);std::vector<uint32_t> instructions;
@@ -81,6 +82,10 @@ int main(int argc, char** argv) {
         n64emujit_destroy(jit);
         std::puts("CPU JIT32: 100000 ABI tail calls passed.");
         return 0;
+    }
+    if(no_recycle) {
+        n64emujit_destroy(jit);
+        std::printf("CPU JIT32: %u native arithmetic cases and 100000 ABI tail links passed (recycling excluded).\n",cases);return 0;
     }
     auto old=function;auto generation=n64emujit_generation(jit);
     for(unsigned i=0;n64emujit_entry_valid(jit,old,generation)&&i<100000;i++)require(n64emujit_compile(jit,nullptr,&increment,1,step),"arena recycling");

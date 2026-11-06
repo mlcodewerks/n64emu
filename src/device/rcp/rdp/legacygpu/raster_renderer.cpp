@@ -1,5 +1,6 @@
 ﻿#include "raster_renderer.hpp"
 #include "../glrdp/combiner_decode.hpp"
+#include "../glrdp/rdp_profile.hpp"
 #include "../glrdp/depth_codec.hpp"
 #include "../glrdp/rdp_combiner_usage.hpp"
 #include "../glrdp/texture_decode_cache.hpp"
@@ -172,6 +173,7 @@ RasterRenderer::Depth &RasterRenderer::depth(const RDPState &s, GLFramebuffer &f
                              (std::size_t(f.native_width) * 2))));
     if (!z.color || z.width != f.native_width || z.height != height || z.scale != f.internal_scale) {
         if (z.color) {
+            drain();
             export_depth(z);
             device_.release(z.color, z.fbo);
         }
@@ -188,6 +190,7 @@ RasterRenderer::Depth &RasterRenderer::depth(const RDPState &s, GLFramebuffer &f
         device_.allocate(z.color, z.fbo, z.width * z.scale, z.height * z.scale);
         import_depth(z);
     } else if (z.cpu_dirty || !memory_.matches_be(z.address, z.snapshot.data(), z.snapshot.size())) {
+        drain();
         export_depth(z);
         import_depth(z);
     }
@@ -336,6 +339,7 @@ void RasterRenderer::state(RasterDraw &d, const RDPState &s, GLFramebuffer &f, b
     else {
         auto &z = coverage_;
         if (!z.color || z.width != f.width || z.height != f.height) {
+            drain();
             if (z.color)
                 device_.release(z.color, z.fbo);
             z = {};
@@ -476,6 +480,7 @@ void RasterRenderer::submit(RasterDraw &d, const RDPState &s, GLFramebuffer &f) 
     queued_.push_back(std::move(d));
 }
 void RasterRenderer::drain() {
+    GLRDP_PROFILE_SCOPE(flush);
     if (queued_.empty())
         return;
     static const bool serial = std::getenv("GLRDP_LEGACY_SERIAL") != nullptr;

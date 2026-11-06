@@ -94,6 +94,8 @@ class GPUDepthBuffer {
         bool initialized = false;
         bool gpu_dirty = false;
         bool in_place = false;
+        bool uniform_clear = false;
+        std::array<std::uint32_t, 2> clear_state{};
         std::vector<std::uint32_t> visible_state;
         std::vector<std::uint16_t> visible_words;
     };
@@ -119,6 +121,7 @@ class GPUDepthBuffer {
     bool begin_pass(Surface &surface, int x, int y, int width, int height,
                     bool in_place = false, bool combined_color = false);
     void finish_pass(Surface &surface, bool writes_z = true);
+    void record_full_clear(Surface &surface, std::uint32_t fill_word);
 
     GLuint source_state_texture(const Surface &surface) const;
     GLuint active_state_texture(const Surface &surface) const;
@@ -136,6 +139,8 @@ class GPUDepthBuffer {
     // Allocation cache only: invalidated contents never retain ownership of RAM.
     std::vector<Surface> spare_surfaces_;
     std::size_t spare_pixels_ = 0;
+    GLuint resize_program_ = 0;
+    GLint resize_layout_ = -1;
 
     static constexpr std::uint32_t kMaxZ = 0x3ffffu;
     static constexpr std::uint32_t kDefaultState = kMaxZ | (15u << 18);
@@ -149,7 +154,11 @@ class GPUDepthBuffer {
     void recycle_surface(Surface &&surface);
     bool allocate_surface(Surface &surface, std::uint32_t address, int width, int height);
     void initialize_default(Surface &surface);
-    void import_from_rdram(Surface &surface, const N64Memory &memory, bool upload = true);
+    void initialize_resize();
+    void import_from_rdram(Surface &surface, const N64Memory &memory, bool upload = true, int first_row = 0);
+    void store_rows(Surface &, N64Memory &, int first, int count,
+                    std::uint32_t protected_address = 0, std::uint32_t protected_size = 0,
+                    bool protect_hidden = false);
 };
 
 class GPUTMEM {

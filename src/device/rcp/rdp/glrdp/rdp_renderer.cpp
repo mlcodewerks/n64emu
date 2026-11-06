@@ -2749,7 +2749,16 @@ void RDPRenderer::flush() {
     if (glrdp_image_load_store) {
         // A queue has one target and optional native depth image. Only UBO
         // records and the inter-draw memory barrier change between groups.
-        if (batch_depth_) gpu_depth_.begin_pass(*batch_depth_, 0, 0, 0, 0, true, true);
+        if (batch_depth_) {
+            int x0 = batch_target_->native_width, y0 = batch_target_->native_height;
+            int x1 = 0, y1 = 0;
+            for (const auto &bounds : batch_bounds_) {
+                x0 = std::min(x0, bounds.x); y0 = std::min(y0, bounds.y);
+                x1 = std::max(x1, bounds.x + bounds.w); y1 = std::max(y1, bounds.y + bounds.h);
+            }
+            gpu_depth_.begin_pass(*batch_depth_, x0, batch_depth_->height - y1,
+                                  x1 - x0, y1 - y0, true, true);
+        }
         glDisable(GL_SCISSOR_TEST);
         bind_image_target(*batch_target_, batch_depth_, false);
     }
@@ -2868,6 +2877,9 @@ bool RDPRenderer::render_gpu_depth(const std::vector<GLVertex> &vertices, bool t
     // atlas texture caches with an image barrier, publishing fully after color.
     issue_geometry(vertices, rectangle, combined);
     gpu_depth_.finish_pass(surface, raw_z_fill || (s.other_modes & 0x20u));
+    if (raw_z_fill && rectangle && bounds_x_ == 0 && bounds_y_ == 0 &&
+        bounds_w_ == surface.width && bounds_h_ == surface.height)
+        gpu_depth_.record_full_clear(surface, s.fill_color);
     combined_depth_color_ = combined;
     return true;
 }

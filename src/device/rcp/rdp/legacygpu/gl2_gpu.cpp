@@ -1,5 +1,6 @@
 #include "legacy_gpu.hpp"
 #include <GL/gl.h>
+#include "../glrdp/rdp_profile.hpp"
 #include <GL/glext.h>
 #include <algorithm>
 #include <array>
@@ -60,6 +61,7 @@ class GL2 final : public Device {
     unsigned width_ = 0, height_ = 0;
     unsigned target_width_ = 0, target_height_ = 0;
     bool pbo_ = false, srgb_ = false;
+    bool raster_state_valid_ = false;
     PFNGLBINDSAMPLERPROC BindSamplerOptional = nullptr;
     PFNGLBINDFRAMEBUFFERPROC BindFramebufferSplit = nullptr;
     bool presenting_ = false;
@@ -70,6 +72,8 @@ class GL2 final : public Device {
         GLint program = 0, framebuffer = 0, read_framebuffer = 0, active = 0, pack = 0, unpack = 0;
         std::array<GLint, 12> samplers{};
         Guard(GL2 &gpu) : g(gpu) {
+            g.raster_bindings_ = {};
+            g.raster_state_valid_ = false;
             glGetIntegerv(GL_CURRENT_PROGRAM, &program);
             glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &framebuffer);
             if (g.BindFramebufferSplit)
@@ -101,6 +105,8 @@ class GL2 final : public Device {
             glPixelTransferi(GL_MAP_COLOR, GL_FALSE);
         }
         ~Guard() {
+            g.raster_bindings_ = {};
+            g.raster_state_valid_ = false;
             g.UseProgram(program);
             if (g.BindFramebufferSplit) {
                 g.BindFramebufferSplit(GL_DRAW_FRAMEBUFFER, framebuffer);
@@ -156,8 +162,10 @@ class GL2 final : public Device {
         return id;
     }
     void raster_state() {
+        glDisable(GL_SCISSOR_TEST);
+        if (raster_state_valid_) return;
         for (GLenum v :
-             {GL_BLEND, GL_ALPHA_TEST, GL_DEPTH_TEST, GL_STENCIL_TEST, GL_CULL_FACE, GL_SCISSOR_TEST,
+             {GL_BLEND, GL_ALPHA_TEST, GL_DEPTH_TEST, GL_STENCIL_TEST, GL_CULL_FACE,
               GL_DITHER, GL_COLOR_LOGIC_OP, GL_MULTISAMPLE, GL_SAMPLE_ALPHA_TO_COVERAGE, GL_SAMPLE_COVERAGE})
             glDisable(v);
         for (unsigned i = 0; i < 6; i++)
@@ -166,12 +174,15 @@ class GL2 final : public Device {
             glDisable(GL_FRAMEBUFFER_SRGB);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        raster_state_valid_ = true;
     }
     void snapshot(RasterTarget &t, const RasterDraw &draw) {
+        GLRDP_PROFILE_SCOPE(legacy_feedback);
         BindFramebufferEXT(GL_FRAMEBUFFER_EXT, t.fbo);
         glReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
         ActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, t.feedback);
+        raster_bindings_.active = 0; raster_bindings_.valid[0] = false;
         int x0 = std::clamp(int(std::floor(draw.x0 * draw.scale)), 0, t.width),
             x1 = std::clamp(int(std::ceil(draw.x1 * draw.scale)), x0, t.width);
         int y0 = std::clamp(int(std::floor(draw.y0 * draw.scale)), 0, t.height),
@@ -193,8 +204,18 @@ class GL2 final : public Device {
         glVertex2f(right, bottom);
         glEnd();
     }
+    struct RasterBindings {
+        GLuint program = 0;
+        bool program_valid = false;
+        unsigned active = ~0u;
+        std::array<GLuint, 12> textures{};
+        std::array<bool, 12> valid{};
+    };
+    RasterBindings raster_bindings_;
     void raster_inputs(GLuint p, const std::array<GLuint, 12> &textures,
-                       const std::array<Float4, 112> &constants) {
+                       const std::array<Float4, 112> &constants, RasterBindings *bindings = nullptr) {
+        GLRDP_PROFILE_SCOPE(legacy_uniforms);
+        if (!bindings) bindings = &raster_bindings_;
         auto [it, inserted] = raster_locations_.try_emplace(p);
         if (inserted) {
             it->second[0] = GetUniformLocation(p, "c[0]");
@@ -205,7 +226,10 @@ class GL2 final : public Device {
                 it->second[i + 1] = GetUniformLocation(p, names[i]);
         }
         const auto &locations = it->second;
-        UseProgram(p);
+        if (!bindings || !bindings->program_valid || bindings->program != p) {
+            UseProgram(p);
+            if (bindings) { bindings->program = p; bindings->program_valid = true; }
+        }
         if (inserted)
             for (unsigned i = 0; i < 12; i++)
                 if (locations[i + 1] >= 0) Uniform1i(locations[i + 1], i);
@@ -220,8 +244,13 @@ class GL2 final : public Device {
         previous = constants;
         for (unsigned i = 0; i < 12; i++) {
             if (locations[i + 1] < 0) continue;
-            ActiveTexture(GL_TEXTURE0 + i);
+            if (bindings && bindings->valid[i] && bindings->textures[i] == textures[i]) continue;
+            if (!bindings || bindings->active != i) {
+                ActiveTexture(GL_TEXTURE0 + i);
+                if (bindings) bindings->active = i;
+            }
             glBindTexture(GL_TEXTURE_2D, textures[i]);
+            if (bindings) { bindings->textures[i] = textures[i]; bindings->valid[i] = true; }
         }
     }
     GLuint shader(GLenum type, const std::string &source) {
@@ -351,6 +380,7 @@ class GL2 final : public Device {
         glGenTextures(1, &t.feedback);
         GenFramebuffersEXT(1, &t.fbo);
         ActiveTexture(GL_TEXTURE0);
+        raster_bindings_.active = 0; raster_bindings_.valid[0] = false;
         for (auto id : {t.color, t.feedback}) {
             glBindTexture(GL_TEXTURE_2D, id);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, t.tw, t.th, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -371,6 +401,7 @@ class GL2 final : public Device {
         if (it == raster_targets_.end())
             return;
         auto &t = it->second;
+        raster_bindings_ = {};
         glDeleteTextures(1, &t.color);
         glDeleteTextures(1, &t.feedback);
         DeleteFramebuffersEXT(1, &t.fbo);
@@ -379,6 +410,7 @@ class GL2 final : public Device {
     void upload(unsigned color, int width, int height, const std::uint8_t *rgba) override {
         auto hold = raster_guard_ ? nullptr : std::make_unique<Guard>(*this);
         ActiveTexture(GL_TEXTURE0);
+        raster_bindings_.active = 0; raster_bindings_.valid[0] = false;
         glBindTexture(GL_TEXTURE_2D, raster_targets_.at(color).color);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     }
@@ -391,6 +423,7 @@ class GL2 final : public Device {
             std::memcpy(bytes.data() + std::size_t(height - 1 - row) * width * 4,
                         rgba + std::size_t(row) * width * 4, width * 4);
         ActiveTexture(GL_TEXTURE0);
+        raster_bindings_.active = 0; raster_bindings_.valid[0] = false;
         glBindTexture(GL_TEXTURE_2D, t.color);
         glTexSubImage2D(GL_TEXTURE_2D, 0, x, t.height - y - height, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
                         bytes.data());
@@ -403,6 +436,7 @@ class GL2 final : public Device {
     }
     void draw_raster(const RasterDraw &draw) override { draw_batch({&draw}); }
     void draw_batch(const std::vector<const RasterDraw *> &draws) override {
+        GLRDP_PROFILE_SCOPE(submit);
         if (draws.empty())
             return;
         auto hold = raster_guard_ ? nullptr : std::make_unique<Guard>(*this);
@@ -449,18 +483,24 @@ class GL2 final : public Device {
         if (lod)
             ensure(lod_, color.width + 2 * first.scale, color.height);
         RasterDraw bounds = first;
-        bool memory = false;
+        bool memory = false, depth_feedback = false;
         for (auto *d : draws) {
             bounds.x0 = std::min(bounds.x0, d->x0);
             bounds.y0 = std::min(bounds.y0, d->y0);
             bounds.x1 = std::max(bounds.x1, d->x1);
             bounds.y1 = std::max(bounds.y1, d->y1);
             memory |= d->constants[41][2] > .5f;
+            // A raw clear or unconditional Z update replaces accepted Z/DZ.
+            // Rejected fragments retain the live target without sampling it.
+            depth_feedback |= d->constants[45][0] < .5f &&
+                              (d->constants[25][0] > .5f || d->constants[25][1] < .5f);
         }
         if (memory)
             snapshot(color, bounds);
-        if (depth_pass)
+        if (depth_pass && depth_feedback)
             snapshot(z, bounds);
+        // Guard bounds cache ownership. Uploads/copies invalidate texture
+        // unit zero; other units remain valid across adjacent FIFO batches.
         for (auto pass : {RasterShader::LOD, RasterShader::Texel0, RasterShader::Texel1, RasterShader::Shade,
                           RasterShader::Alpha0, RasterShader::Depth, RasterShader::Color}) {
             if (pass == RasterShader::LOD && !lod)
