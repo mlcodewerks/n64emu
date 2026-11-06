@@ -36,6 +36,17 @@ void pif_bootrom_hle_execute(struct r4300_core* r4300)
 {
     if (r4300->start_address == 0xbfc00000) return;
 
+#ifndef N64EMU_USF
+    /* IPL3's calibration time is observable even when gameplay uses Fast
+     * timing. Keep the native clock through the first VI so early controller
+     * initialization also observes its normal startup delay. */
+    if (!r4300->cache_timing) {
+        r4300->startup |= R4300_STARTUP_FAST_BOOT;
+        r4300->cache_timing = 1;
+        r4300->compat_issue_clock = 0;
+    }
+#endif
+
     uint32_t pif24;
     unsigned int seed;       /* seed (depends on CIC version) */
     unsigned int rom_type;   /* 0:Cart, 1:DD */
@@ -83,10 +94,10 @@ void pif_bootrom_hle_execute(struct r4300_core* r4300)
     s7         = (pif24 >> 18) & 0x01;
     reset_type = (pif24 >> 17) & 0x01;
     seed       = (pif24 >>  8) & 0xff;
-    /* RDRAM is already allocated/calibrated by the HLE boot environment.
-     * Advertise that state to IPL3 instead of running its analog calibration
-     * against synthetic RDRAM-device registers. Supply both IPL3 size slots. */
-    r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_RI_REGS + 4*RI_SELECT_REG, 0x14, ~UINT32_C(0));
+    /* IPL3 must perform cold-boot RDRAM calibration: its elapsed COUNT time
+     * is visible to controller startup before the VI manager initializes
+     * timers. Supply both IPL3 size slots. */
+    r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_RI_REGS + 4*RI_SELECT_REG, 0, ~UINT32_C(0));
     r4300_write_aligned_word(r4300, R4300_KSEG1 + 0x318, (uint32_t)r4300->rdram->dram_size, ~UINT32_C(0));
     r4300_write_aligned_word(r4300, R4300_KSEG1 + 0x3f0, (uint32_t)r4300->rdram->dram_size, ~UINT32_C(0));
     /* setup s3-s7 registers (needed by OS) */

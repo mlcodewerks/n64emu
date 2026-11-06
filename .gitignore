@@ -247,3 +247,7 @@ benchmarks/hle-calibration/*
 !benchmarks/hle-calibration/path-validation.json
 !benchmarks/hle-calibration/path-live-validation.json
 !benchmarks/hle-calibration/timing_path_checks.c
+!benchmarks/romset_sweep.py
+!benchmarks/boot_timing_checks.c
+!benchmarks/ROMSET_BOOT.md
+!benchmarks/romset-boot-validation.json

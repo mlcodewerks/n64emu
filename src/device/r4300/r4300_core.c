@@ -59,7 +59,7 @@ void poweron_r4300(struct r4300_core* r4300)
     r4300->pc_extension = 0;
     r4300->reset_hard_job = 0;
     r4300->stop = 0;
-    r4300->startup =1;
+    r4300->startup = R4300_STARTUP_INIT;
     r4300_pipeline_reset(r4300);
     r4300_itlb_reset(r4300);
     memset(r4300->icache_tags, 0, sizeof(r4300->icache_tags));

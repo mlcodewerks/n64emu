@@ -1826,7 +1826,7 @@ void run_r4300(struct r4300_core* r4300)
 #endif
 
     breakloop = false;
-    if (r4300->startup)
+    if (r4300->startup & R4300_STARTUP_INIT)
     {
         r4300->stop = 0;
         r4300->pc = &r4300->instruction_pc;
@@ -1842,14 +1842,40 @@ void run_r4300(struct r4300_core* r4300)
 #else
         core_log(CORE_LOG_INFO,"CPU backend: portable interpreter");
 #endif
-        r4300->startup = 0;
+        r4300->startup &= ~R4300_STARTUP_INIT;
     }
 
 #ifdef HAVE_N64EMUJIT
     r4300->execute_one=r4300_jit_execute_one;
-    r4300_jit_run(r4300);
 #else
     r4300->execute_one=r4300_ops_execute_one;
+#endif
+    /* Run boot and initial device setup through the first VI with full
+     * timing. Normal gameplay dispatch has no extra per-block mode checks. */
+    while (!breakloop && !r4300->stop && (r4300->startup & R4300_STARTUP_FAST_BOOT)) {
+#ifdef HAVE_N64EMUJIT
+        ci_execute_jit(r4300, 0);
+#else
+        r4300_ops_execute_one(r4300);
+#endif
+    }
+    if (breakloop && !r4300->stop && (r4300->startup & R4300_STARTUP_FAST_BOOT)) {
+        /* Preserve dirty boot data before bypassing caches, and discard
+         * native blocks compiled with the temporary timing configuration. */
+        for (unsigned i = 0; i < 512; ++i)
+            if ((r4300->dcache_tags[i] & 3) == 3)
+                r4300_dcache_writeback(r4300, UINT32_C(0x80000000) | i * 16);
+        r4300_icache_fill_wait(r4300);
+        r4300_write_buffer_drain(r4300);
+        r4300->cache_timing = 0;
+        r4300->compat_issue_clock = 1;
+        r4300->startup &= ~R4300_STARTUP_FAST_BOOT;
+        r4300_pipeline_reset(r4300);
+        r4300_jit_invalidate(r4300, 0, 0);
+    }
+#ifdef HAVE_N64EMUJIT
+    r4300_jit_run(r4300);
+#else
     while (!breakloop && !r4300->stop) {
 #ifdef N64EMU_USF
         if (!(r4300->retired_ops & 65535) && n64emu_usf_yield()) { breakloop = true; break; }

@@ -71,6 +71,10 @@ enum {
     EMUMODE_DYNAREC          = 2,
 };
 
+enum {
+    R4300_STARTUP_INIT = 1,
+    R4300_STARTUP_FAST_BOOT = 2, /* Restore Fast timing after the first VI. */
+};
 
 struct r4300_core
 {
@@ -86,7 +90,7 @@ struct r4300_core
     uint32_t skip_jump;
 	/* New dynarec uses a different memory layout */
     int stop;
-    int startup;
+    int startup; /* R4300_STARTUP_* flags; inactive after boot. */
 
     /* When reset_hard_job is set, next interrupt will cause hard reset */
     int reset_hard_job;
