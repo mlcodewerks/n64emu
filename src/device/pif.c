@@ -94,10 +94,11 @@ void pif_bootrom_hle_execute(struct r4300_core* r4300)
     s7         = (pif24 >> 18) & 0x01;
     reset_type = (pif24 >> 17) & 0x01;
     seed       = (pif24 >>  8) & 0xff;
-    /* IPL3 must perform cold-boot RDRAM calibration: its elapsed COUNT time
-     * is visible to controller startup before the VI manager initializes
-     * timers. Supply both IPL3 size slots. */
-    r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_RI_REGS + 4*RI_SELECT_REG, 0, ~UINT32_C(0));
+    /* Cold IPL3 calibration supplies the COUNT delay used by controller
+     * startup. An NMI retains initialized RDRAM and its RI selection, so IPL3
+     * must take its warm-boot path instead. Supply both IPL3 size slots. */
+    if (!reset_type)
+        r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_RI_REGS + 4*RI_SELECT_REG, 0, ~UINT32_C(0));
     r4300_write_aligned_word(r4300, R4300_KSEG1 + 0x318, (uint32_t)r4300->rdram->dram_size, ~UINT32_C(0));
     r4300_write_aligned_word(r4300, R4300_KSEG1 + 0x3f0, (uint32_t)r4300->rdram->dram_size, ~UINT32_C(0));
     /* setup s3-s7 registers (needed by OS) */

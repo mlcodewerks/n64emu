@@ -40,7 +40,7 @@ static osal_inline uint16_t idfield_value(uint32_t device_id)
 {
     return ((((device_id >> 26) & 0x3f) <<  0)
           | (((device_id >> 23) & 0x01) <<  6)
-          | (((device_id >> 16) & 0xff) <<  7)
+          | (((device_id >>  8) & 0xff) <<  7)
           | (((device_id >>  7) & 0x01) << 15));
 }
 
@@ -52,7 +52,8 @@ static size_t get_module(const struct rdram* rdram, uint32_t address)
 
 
     for (module = 0; module < modules; ++module) {
-        if (id_field == idfield_value(rdram->regs[module][RDRAM_DEVICE_ID_REG])) {
+        /* Each supported chip spans two adjacent 1 MiB device addresses. */
+        if ((id_field & ~1u) == (idfield_value(rdram->regs[module][RDRAM_DEVICE_ID_REG]) & ~1u)) {
             return module;
         }
     }
@@ -124,13 +125,15 @@ void poweron_rdram(struct rdram* rdram)
     for (module = 0; module < modules; ++module) {
         rdram->regs[module][RDRAM_CONFIG_REG] = UINT32_C(0xb4190010);
         rdram->regs[module][RDRAM_DEVICE_ID_REG] = UINT32_C(0x00000000);
-        rdram->regs[module][RDRAM_DELAY_REG] = UINT32_C(0x2b3b1a0b);
+        /* Cold chips require a repeated write to change WriteDelay from 4
+         * to the RI's one-cycle command timing. */
+        rdram->regs[module][RDRAM_DELAY_REG] = UINT32_C(0x00000023);
         rdram->regs[module][RDRAM_MODE_REG] = UINT32_C(0xc0c0c0c0);
         rdram->regs[module][RDRAM_REF_ROW_REG] = UINT32_C(0x00000000);
         rdram->regs[module][RDRAM_RAS_INTERVAL_REG] = UINT32_C(0x101c0a04);
         rdram->regs[module][RDRAM_MIN_INTERVAL_REG] = UINT32_C(0x00000000);
         rdram->regs[module][RDRAM_ADDR_SELECT_REG] = UINT32_C(0x00000000);
-        rdram->regs[module][RDRAM_DEVICE_MANUF_REG] = UINT32_C(0x00000000);
+        rdram->regs[module][RDRAM_DEVICE_MANUF_REG] = UINT32_C(0x00000500);
     }
 }
 
@@ -140,9 +143,15 @@ void read_rdram_regs(void* opaque, uint32_t address, uint32_t* value)
     struct rdram* rdram = (struct rdram*)opaque;
     uint32_t reg = rdram_reg(address);
     if (reg >= RDRAM_REGS_COUNT) { *value = 0; return; }
+    /* Odd registers occupy the upper half of the RDRAM register bus. */
+    if ((reg & 1) && !(rdram->r4300->mi->regs[MI_INIT_MODE_REG] & 0x200)) {
+        *value = 0;
+        return;
+    }
     size_t module;
 
     if (address & RDRAM_BCAST_ADDRESS_MASK) {
+        *value = 0;
         core_log(CORE_LOG_WARNING, "Reading from broadcast address is unsupported %08x", address);
         return;
     }
@@ -154,11 +163,29 @@ void read_rdram_regs(void* opaque, uint32_t address, uint32_t* value)
     }
 
     *value = rdram->regs[module][reg];
+    if (reg == RDRAM_DELAY_REG) {
+        /* The low bits in each timing byte are fixed on register reads. */
+        *value = (*value & UINT32_C(0x38381838)) | UINT32_C(0x03030203);
+    }
 
     /* some bits are inverted when read */
     if (reg == RDRAM_MODE_REG) {
         *value ^= UINT32_C(0xc0c0c0c0);
     }
+}
+
+static void write_rdram_module(struct rdram* rdram, size_t module, uint32_t reg,
+                               uint32_t value, uint32_t mask)
+{
+    uint32_t mi_mode = rdram->r4300->mi->regs[MI_INIT_MODE_REG];
+    if (((rdram->regs[module][RDRAM_DELAY_REG] >> 3) & 7) != 1) {
+        if (!(mi_mode & 0x80) || (mi_mode & 0x7f) < 15) return;
+        /* MI repeat supplies the initial command at the cold chip's phase. */
+        value = (value << 16) | (value >> 16);
+        mask = (mask << 16) | (mask >> 16);
+    }
+    if (reg == RDRAM_DELAY_REG) mask &= UINT32_C(0x38381838);
+    masked_write(&rdram->regs[module][reg], value, mask);
 }
 
 void write_rdram_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask)
@@ -169,40 +196,31 @@ void write_rdram_regs(void* opaque, uint32_t address, uint32_t value, uint32_t m
     size_t module;
     size_t modules = get_modules_count(rdram);
 
-    /* HACK: Detect when current Control calibration is about to start,
-     * so we can set corrupted rdram_dram handler
-     */
-    if (address & RDRAM_BCAST_ADDRESS_MASK && reg == RDRAM_DELAY_REG) {
-        map_corrupt_rdram(rdram, 1);
-    }
-
-    /* HACK: Detect when current Control calibration is over,
-     * so we can restore the original rdram_dram handler
-     * and let dynarec have it's fast_memory enabled.
-     */
-    if (address & RDRAM_BCAST_ADDRESS_MASK && reg == RDRAM_MODE_REG) {
-        map_corrupt_rdram(rdram, 0);
-
-        /* HACK: In the IPL3 procedure, at this point,
-         * the amount of detected memory can be found in s4 */
-        size_t ipl3_rdram_size = r4300_regs(rdram->r4300)[20] & UINT32_C(0x0fffffff);
-        if (ipl3_rdram_size != rdram->dram_size) {
-            core_log(CORE_LOG_ERROR, "IPL3 detected %u MB of RDRAM != %u MB",
-                (uint32_t) ipl3_rdram_size / (1024*1024), (uint32_t) rdram->dram_size / (1024*1024));
-        }
-    }
-
+    if (reg == RDRAM_CONFIG_REG || reg == RDRAM_DEVICE_MANUF_REG) return;
 
     if (address & RDRAM_BCAST_ADDRESS_MASK) {
         for (module = 0; module < modules; ++module) {
-            masked_write(&rdram->regs[module][reg], value, mask);
+            write_rdram_module(rdram, module, reg, value, mask);
         }
     }
     else {
         module = get_module(rdram, address);
         if (module != RDRAM_MAX_MODULES_COUNT) {
-            masked_write(&rdram->regs[module][reg], value, mask);
+            write_rdram_module(rdram, module, reg, value, mask);
         }
+    }
+    rdram->r4300->mi->regs[MI_INIT_MODE_REG] &= ~UINT32_C(0x80);
+
+    /* Calibration can alternate manual and automatic current control on
+     * individual chips. A broadcast MODE write is not necessarily its end. */
+    if (reg == RDRAM_MODE_REG) {
+        int corrupt = 0;
+        for (module = 0; module < modules; ++module) {
+            uint32_t mode = rdram->regs[module][RDRAM_MODE_REG] ^ UINT32_C(0xc0c0c0c0);
+            corrupt |= (mode & UINT32_C(0x80000000)) && cc_value(mode) == 0;
+        }
+        int was_corrupt = mem_get_handler(rdram->r4300->mem, MM_RDRAM_DRAM)->read32 == read_rdram_dram_corrupted;
+        if (corrupt != was_corrupt) map_corrupt_rdram(rdram, corrupt);
     }
 }
 
