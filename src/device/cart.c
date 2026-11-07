@@ -40,15 +40,23 @@ static void process_cart_command(void* jbd,
             rx_buf[1] = (uint8_t)(cart->eeprom.type >> 8);
             rx_buf[2] = 0x00;
         }
+        else {
+            /* An absent EEPROM times out. Leaving the caller's reply bytes
+             * untouched without the no-response flag can look like a busy
+             * device forever (Powerpuff Girls and Sydney 2000 probe it). */
+            *rx |= 0x80;
+        }
     } break;
 
     case JCMD_EEPROM_READ: {
         JOYBUS_CHECK_COMMAND_FORMAT(2, 8)
+        if (!cart->eeprom.type) { *rx |= 0x80; break; }
         eeprom_read_block(&cart->eeprom, tx_buf[1], &rx_buf[0]);
     } break;
 
     case JCMD_EEPROM_WRITE: {
         JOYBUS_CHECK_COMMAND_FORMAT(10, 1)
+        if (!cart->eeprom.type) { *rx |= 0x80; break; }
         eeprom_write_block(&cart->eeprom, tx_buf[1], &tx_buf[2], &rx_buf[0]);
     } break;
 
@@ -334,6 +342,20 @@ void init_cart_rom(struct cart_rom* cart_rom,
 {
     cart_rom->rom = rom;
     cart_rom->rom_size = rom_size;
+    cart_rom->prototype_dongle = 0;
+    if (rom_size >= 0x40) {
+        uint32_t header[16];
+        memcpy(header, rom, sizeof(header));
+        /* The original Dinosaur Planet development image probes its external
+         * dongle at BC000000. Without the accessory it deliberately wipes
+         * alternate words in the lower 4 MiB, including OS thread pointers.
+         * Model the read-only signature; leave the cartridge image intact.
+         * Restrict it to this unmodified build, not every NDP-labelled hack. */
+        cart_rom->prototype_dongle = header[0] == UINT32_C(0x80371240) &&
+            header[2] == UINT32_C(0x80000400) &&
+            header[4] == UINT32_C(0xd0f6a741) && header[5] == UINT32_C(0x7d57761e) &&
+            (header[14] & 255) == 'N' && (header[15] >> 16) == UINT32_C(0x4450);
+    }
 
     cart_rom->r4300 = r4300;
     cart_rom->pi = pi;
@@ -356,7 +378,12 @@ void read_cart_rom(void* opaque, uint32_t address, uint32_t* value)
     }
     else
     {
-        *value = addr + 4 <= cart_rom->rom_size ? *(uint32_t*)(cart_rom->rom + addr) : 0;
+        if (cart_rom->prototype_dongle && (address & UINT32_C(0x1ffffff8)) == UINT32_C(0x1c000000))
+            /* The PI's 16-bit CPU reads select the upper halfword of each
+             * successive bus word (BC000002 is delivered at 1C000004). */
+            *value = (address & 4) ? UINT32_C(0x46534653) : UINT32_C(0x4c534653);
+        else
+            *value = addr + 4 <= cart_rom->rom_size ? *(uint32_t*)(cart_rom->rom + addr) : 0;
     }
 }
 

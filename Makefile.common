@@ -135,7 +135,7 @@ GLRDP_DIR = $(CORE_DIR)/src/device/rcp/rdp/glrdp
 ifneq (,$(filter 1,$(HAVE_GLRDP) $(HAVE_GL2_RDP) $(HAVE_GLES2_RDP) $(HAVE_D3D9)))
 # FramebufferManager's storage interface is shared by modern and legacy devices.
 SOURCES_CXX += $(addprefix $(GLRDP_DIR)/,gl_loader.cpp framebuffer_manager.cpp rdp_parser.cpp rdp_tmem.cpp)
-$(addprefix $(GLRDP_DIR)/,gl_loader.o framebuffer_manager.o rdp_parser.o rdp_tmem.o): CXXFLAGS += -std=c++20 -O3 -fno-fast-math
+$(addprefix $(GLRDP_DIR)/,gl_loader.o framebuffer_manager.o rdp_parser.o rdp_tmem.o): CXXFLAGS += -O3 -fno-fast-math
 endif
 
 ifneq (,$(filter 1,$(HAVE_GL2_RDP) $(HAVE_GLES2_RDP) $(HAVE_D3D9)))
@@ -160,7 +160,7 @@ ifeq ($(HAVE_D3D9),1)
 SOURCES_CXX += $(LEGACY_GPU_DIR)/d3d9_gpu.cpp
 COREFLAGS += -DHAVE_D3D9
 endif
-$(addprefix $(LEGACY_GPU_DIR)/,libretro_legacy.o raster_renderer.o raster_shaders.o legacy_shaders.o gl2_gpu.o gles2_gpu.o d3d9_gpu.o): CXXFLAGS += -std=c++20 -O3 -fno-fast-math
+$(addprefix $(LEGACY_GPU_DIR)/,libretro_legacy.o raster_renderer.o raster_shaders.o legacy_shaders.o gl2_gpu.o gles2_gpu.o d3d9_gpu.o): CXXFLAGS += -O3 -fno-fast-math
 endif
 
 ifeq ($(HAVE_GLRDP),1)
@@ -169,8 +169,8 @@ COREFLAGS += -DHAVE_GLRDP
 ifneq (,$(filter 1,$(GLES) $(GLES3) $(FORCE_GLES) $(FORCE_GLES3)))
 COREFLAGS += -DGLRDP_DEFAULT_GLES3
 endif
-# Only GLRDP needs C++20; other renderers retain C++17.
-$(addprefix $(GLRDP_DIR)/,libretro_glrdp.o gl_loader.o gl_state_guard.o framebuffer_manager.o rdp_parser.o rdp_tmem.o rdp_renderer.o): CXXFLAGS += -std=c++20 -O3 -fno-fast-math
+# The top-level Makefile supplies C++17 for all backends, including GCC 9.
+$(addprefix $(GLRDP_DIR)/,libretro_glrdp.o gl_state_guard.o rdp_renderer.o): CXXFLAGS += -O3 -fno-fast-math
 endif
 
 # Shared ROM/PIF fingerprint implementation.

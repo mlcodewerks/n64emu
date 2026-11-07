@@ -650,7 +650,7 @@ V4 decode_tmem(float x,float y){
     if(c[3].y>0.5&&format==1.0){float index=bank_byte(rem(base+x,2048.0),y);return palette(size==0.0?c[3].x*16.0+floor(index/16.0):index);}
     if(size==0.0){
         float a=base+floor(x/2.0);if(c[3].y>0.5)a=rem(a,2048.0);
-        float packed=bank_byte(a,y),v=rem(x,2.0)>0.5?rem(packed,16.0):floor(packed/16.0);
+        float packed_byte=bank_byte(a,y),v=rem(x,2.0)>0.5?rem(packed_byte,16.0):floor(packed_byte/16.0);
         if(c[3].y>0.5)return palette(c[3].x*16.0+v);
         if(format==0.0||format==2.0||format==4.0)return V4(v,v,v,v)*17.0;
         if(format==3.0){float i=floor((floor(v/2.0)*255.0+3.0)/7.0);return V4(i,i,i,rem(v,2.0)*255.0);}

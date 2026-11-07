@@ -13,7 +13,7 @@
 #define N64EMU_CORE_PROTOTYPES 1
 #include "core/log.h"
 
-#include "rom_database_ares.h"
+#include "rom_database.h"
 #include "core/types.h"
 #include "device/device.h"
 #include "device/r4300/jit_runtime.h"
@@ -138,7 +138,7 @@ core_result open_rom(const unsigned char* romimage, unsigned int size)
     ROM_PARAMS.headername[20] = '\0';
     trim(ROM_PARAMS.headername); /* Remove trailing whitespace from ROM name. */
 
-    ares_rom_settings((const uint8_t*)&ROM_HEADER, &ROM_SETTINGS);
+    rom_database_settings((const uint8_t*)&ROM_HEADER, &ROM_SETTINGS);
 
     /* print out a bunch of info about the ROM */
     core_log(CORE_LOG_INFO, "Name: %s", ROM_PARAMS.headername);

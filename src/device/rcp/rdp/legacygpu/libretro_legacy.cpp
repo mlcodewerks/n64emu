@@ -412,7 +412,7 @@ extern "C" void legacygpu_save_state(void *data) {
     RDPState empty;
     auto &s = parser ? parser->state() : empty;
     std::apply([&](auto &...x) { ((std::memcpy(out, &x, sizeof(x)), out += sizeof(x)), ...); }, fields(s));
-    const auto pending = parser ? parser->pending_bytes() : std::span<const std::uint8_t>{};
+    const auto pending = parser ? parser->pending_bytes() : RDPSpan<const std::uint8_t>{};
     const auto count = std::uint32_t(std::min<std::size_t>(pending.size(), pending_capacity));
     std::memcpy(out, &count, 4);
     out += 4;

@@ -46,6 +46,8 @@ struct cart_rom
     size_t rom_size;
 
     uint32_t last_write;
+    /* Development cartridge accessory, selected from the complete ROM header. */
+    unsigned int prototype_dongle;
 
     struct r4300_core* r4300;
     struct pi_controller* pi;

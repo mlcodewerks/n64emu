@@ -116,8 +116,16 @@ AR := $(CROSS_COMPILE)ar
 endif
 endif
 
+# Compiler names alone do not identify a toolchain: cc/g++ can change through
+# PATH or system alternatives. Include both target triples and versions in the
+# rebuild stamps, including when only CXX changes to a GCC 9 installation.
+CC_MACHINE := $(shell $(CC) -dumpmachine 2>/dev/null)
+CXX_MACHINE := $(shell $(CXX) -dumpmachine 2>/dev/null)
+CC_VERSION := $(shell $(CC) -dumpfullversion -dumpversion 2>/dev/null || $(CC) -dumpversion 2>/dev/null)
+CXX_VERSION := $(shell $(CXX) -dumpfullversion -dumpversion 2>/dev/null || $(CXX) -dumpversion 2>/dev/null)
+
 ifeq (,$(ARCH))
-   ARCH = $(firstword $(subst -, ,$(shell $(CC) -dumpmachine)))
+   ARCH = $(firstword $(subst -, ,$(CC_MACHINE)))
    ifeq (,$(ARCH))
       ARCH = $(shell uname -m)
    endif
@@ -303,7 +311,7 @@ endif
 # Use -fcommon
 CPUOPTS += -fcommon
 
-# set C/C++ standard to use
+# C++17 is the common baseline for GCC 9 and every renderer.
 CFLAGS += -std=gnu99 -D_CRT_SECURE_NO_WARNINGS -Wno-discarded-qualifiers
 
 ifeq ($(HEADLESS_BENCHMARK),1)
@@ -328,7 +336,7 @@ endif
 # Rebuild HLE when its ISA contract changes without invalidating unrelated
 # CPU and renderer objects. Header dependencies cover the walker layouts.
 HLE_SIMD_CONFIG := $(CORE_DIR)/.hle-simd-config
-HLE_SIMD_CONFIG_VALUE := arch=$(ARCH):cc=$(CC):simd=$(HLE_SIMD):sse2-neon-v2
+HLE_SIMD_CONFIG_VALUE := arch=$(ARCH):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):simd=$(HLE_SIMD):sse2-neon-v2
 ifneq ($(strip $(shell cat "$(HLE_SIMD_CONFIG)" 2>/dev/null)),$(HLE_SIMD_CONFIG_VALUE))
 $(file >$(HLE_SIMD_CONFIG),$(HLE_SIMD_CONFIG_VALUE))
 endif
@@ -352,7 +360,7 @@ endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
 # n64emuJIT emitter, runtime layout and optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):glrdp=$(HAVE_GLRDP):gl2=$(HAVE_GL2_RDP):gles2=$(HAVE_GLES2_RDP):d3d9=$(HAVE_D3D9):headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):cxx=$(CXX):$(CXX_MACHINE):$(CXX_VERSION):cxxstd=c++17:glrdp=$(HAVE_GLRDP):gl2=$(HAVE_GL2_RDP):gles2=$(HAVE_GLES2_RDP):d3d9=$(HAVE_D3D9):headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
 # Wrapper invocations must leave the child's configuration stamp intact.
 CONFIG_WRAPPERS := x86 arm32 usf usf-x86 usf-arm32 rpi4 rpi5
 ifneq ($(strip $(MAKECMDGOALS)),)

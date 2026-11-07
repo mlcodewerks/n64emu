@@ -24,7 +24,7 @@ RDPColor color32(std::uint64_t w) {
     return {std::uint8_t(w >> 24), std::uint8_t(w >> 16), std::uint8_t(w >> 8), std::uint8_t(w)};
 }
 
-RDPEdgeCoefficients decode_edges(std::span<const std::uint64_t> w) {
+RDPEdgeCoefficients decode_edges(RDPSpan<const std::uint64_t> w) {
     RDPEdgeCoefficients e{};
     e.right_major = ((w[0] >> 55) & 1) != 0;
     e.level = std::uint8_t((w[0] >> 51) & 7);
@@ -43,7 +43,7 @@ RDPEdgeCoefficients decode_edges(std::span<const std::uint64_t> w) {
 
 // Each 64-bit word packs the four 16-bit component halves in RGBA order.
 // Value/DX integer halves precede their fractional halves, followed by DE/DY.
-RDPAttribute4 decode_attribute(std::span<const std::uint64_t> w) {
+RDPAttribute4 decode_attribute(RDPSpan<const std::uint64_t> w) {
     if (w.size() < 8)
         throw std::runtime_error("truncated RDP coefficient block");
     RDPAttribute4 a{};
@@ -62,7 +62,7 @@ RDPAttribute4 decode_attribute(std::span<const std::uint64_t> w) {
     return a;
 }
 
-RDPTriangle decode_triangle(RDPOpcode op, std::span<const std::uint64_t> w) {
+RDPTriangle decode_triangle(RDPOpcode op, RDPSpan<const std::uint64_t> w) {
     RDPTriangle t{};
     t.opcode = op;
     t.edge = decode_edges(w.first(4));
@@ -122,20 +122,20 @@ void decode_bounds(RDPState &s, std::uint64_t w) {
 }
 } // namespace
 
-RDPCommandParser::RDPCommandParser(std::span<const std::uint8_t> rdram) : rdram_(rdram) {
+RDPCommandParser::RDPCommandParser(RDPSpan<const std::uint8_t> rdram) : rdram_(rdram) {
 }
-void RDPCommandParser::set_rdram(std::span<const std::uint8_t> r) {
+void RDPCommandParser::set_rdram(RDPSpan<const std::uint8_t> r) {
     rdram_ = r;
 }
 void RDPCommandParser::reset() {
     state_ = {};
     pending_.clear();
 }
-void RDPCommandParser::feed(std::span<const std::uint8_t> b) {
+void RDPCommandParser::feed(RDPSpan<const std::uint8_t> b) {
     pending_.insert(pending_.end(), b.begin(), b.end());
     parse_pending();
 }
-void RDPCommandParser::execute(std::span<const std::uint8_t> b) {
+void RDPCommandParser::execute(RDPSpan<const std::uint8_t> b) {
     feed(b);
     if (!pending_.empty())
         throw std::runtime_error("incomplete RDP command stream");
@@ -156,14 +156,14 @@ void RDPCommandParser::parse_pending() {
         std::array<std::uint64_t, 22> w{};
         for (std::size_t i = 0; i < words; ++i)
             w[i] = load_be64(pending_.data() + used + i * 8);
-        dispatch(op, std::span<const std::uint64_t>(w.data(), words));
+        dispatch(op, RDPSpan<const std::uint64_t>(w.data(), words));
         used += words * 8;
     }
     if (used)
         pending_.erase(pending_.begin(), pending_.begin() + std::ptrdiff_t(used));
 }
 
-void RDPCommandParser::dispatch(RDPOpcode op, std::span<const std::uint64_t> w) {
+void RDPCommandParser::dispatch(RDPOpcode op, RDPSpan<const std::uint64_t> w) {
     const auto x = w[0];
     if (rdp_is_triangle(op)) {
         if (callbacks_.draw_triangle)

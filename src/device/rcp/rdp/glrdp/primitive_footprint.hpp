@@ -1,7 +1,7 @@
 #pragma once
 #include "primitive_batch.hpp"
 #include "rdp_types.hpp"
-#include <bit>
+#include <cstring>
 #include <utility>
 
 // Native full-coverage triangles can share a bounding box without touching a
@@ -17,8 +17,11 @@ struct PrimitiveFootprint {
         const auto full = std::pair{bounds.x, bounds.x + bounds.w};
         if (!native_triangle) return full;
         auto at = [](int x, int slope, int steps) {
-            return std::bit_cast<std::int32_t>(std::uint32_t(x & ~1) +
-                std::uint32_t((slope >> 2) & ~1) * std::uint32_t(steps));
+            const std::uint32_t bits = std::uint32_t(x & ~1) +
+                std::uint32_t((slope >> 2) & ~1) * std::uint32_t(steps);
+            std::int32_t wrapped;
+            std::memcpy(&wrapped, &bits, sizeof(wrapped));
+            return wrapped;
         };
         auto span = [&](int subrow) {
             const int major = at(edge.xh, edge.dxhdy, subrow - (edge.yh & ~3));

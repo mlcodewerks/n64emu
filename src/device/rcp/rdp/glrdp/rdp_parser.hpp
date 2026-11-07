@@ -3,7 +3,7 @@
 #include "rdp_tmem.hpp"
 #include <cstdint>
 #include <functional>
-#include <span>
+#include "rdp_span.hpp"
 #include <vector>
 
 struct RDPCallbacks {
@@ -21,17 +21,17 @@ struct RDPCallbacks {
 
 class RDPCommandParser {
   public:
-    explicit RDPCommandParser(std::span<const std::uint8_t> rdram = {});
-    void set_rdram(std::span<const std::uint8_t>);
+    explicit RDPCommandParser(RDPSpan<const std::uint8_t> rdram = {});
+    void set_rdram(RDPSpan<const std::uint8_t>);
     void set_memory(const N64Memory *memory) {
         rdram_ = RDPMemoryView(memory);
     }
     void reset();
-    void feed(std::span<const std::uint8_t>);
-    void execute(std::span<const std::uint8_t>);
+    void feed(RDPSpan<const std::uint8_t>);
+    void execute(RDPSpan<const std::uint8_t>);
     void discard_pending();
-    std::span<const std::uint8_t> pending_bytes() const { return pending_; }
-    void restore_pending(std::span<const std::uint8_t> bytes) { pending_.assign(bytes.begin(),bytes.end()); }
+    RDPSpan<const std::uint8_t> pending_bytes() const { return pending_; }
+    void restore_pending(RDPSpan<const std::uint8_t> bytes) { pending_.assign(bytes.begin(),bytes.end()); }
     RDPState &state() {
         return state_;
     }
@@ -44,7 +44,7 @@ class RDPCommandParser {
 
   private:
     void parse_pending();
-    void dispatch(RDPOpcode, std::span<const std::uint64_t>);
+    void dispatch(RDPOpcode, RDPSpan<const std::uint64_t>);
     RDPState state_{};
     RDPCallbacks callbacks_{};
     RDPMemoryView rdram_{};

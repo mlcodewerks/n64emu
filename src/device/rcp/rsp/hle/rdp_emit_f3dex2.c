@@ -853,6 +853,9 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
             if (cmd == 0xaf)   /* G_LOAD_UCODE (GBI1): mid-list ucode swap */
             {
                 unsigned int t = seg_addr(w1);
+                unsigned int data = seg_addr(s_half1);
+                unsigned int data_bytes = (w0 & 0xffffu) + 1u;
+                int family = f3d_ucode_family(r, s_rdram_size, data, data_bytes);
                 if (fifo->load_ucode)
                     fifo->load_ucode(fifo, t, seg_addr(s_half1), (w0 & 0xffffu) + 1u);
                 /* S2DEX 1.06 lists (Yoshi's Story title) hot-swap to an
@@ -861,12 +864,15 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                  * section through the F3D walker (its NoN/extended encoding
                  * matches the Doom 64 / Turok family), stopping at the next
                  * G_LOAD_UCODE so 2D object drawing resumes here. */
-                if (f3d_is_ucode(s_rdram_base, s_rdram_size, t))
+                if (f3d_is_ucode(s_rdram_base, s_rdram_size, t) || family)
                 {
                     f3d_set_rdram(s_rdram_base);
                     f3d_set_rdram_size(s_rdram_size);
                     f3d_set_variant(1);          /* n<<10 vtx / x2 indices */
-                    f3d_set_line_variant(0);
+                    /* L3DEX's GBI1 text has no Fast3D version word. Its
+                     * primary data banner still identifies the line grammar
+                     * (Hamster Monogatari swaps S2DEX -> L3DEX here). */
+                    f3d_set_line_variant(family == 2);
                     f3d_set_variant_wr64(0);
                     {
                         unsigned int data=seg_addr(s_half1);

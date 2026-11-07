@@ -228,6 +228,11 @@ benchmarks/accurate-perf/*
 !benchmarks/cycle_perf.c
 !benchmarks/cycle_perf.py
 !benchmarks/cycle_pipeline_checks.c
+!benchmarks/cart_dongle_checks.c
+!benchmarks/rom_database_checks.c
+!benchmarks/romset_repair_sweep.py
+!benchmarks/ROMSET_REPAIRS.md
+!benchmarks/romset-repair-validation.json
 !benchmarks/affinity_scope_checks.c
 !benchmarks/worker_pool_checks.c
 !benchmarks/CYCLE_PERFORMANCE.md
@@ -253,6 +258,7 @@ benchmarks/hle-calibration/*
 !benchmarks/ROMSET_BOOT.md
 !benchmarks/romset-boot-validation.json
 !benchmarks/gpu_depth_checks.cpp
+!benchmarks/gpu_parser_checks.cpp
 !benchmarks/gpu_legacy_checks.cpp
 !benchmarks/gpu_checks.mk
 !benchmarks/gpu_optimization.py

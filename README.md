@@ -10,10 +10,10 @@
 
 Personal N64 emulator code playset for anything with:
 
-* **x86/x86-64 CPUs with SSE2, or Linux ARMv7/AArch64 CPUs with NEON**.
-* **Vulkan 1.1//DX9/DX11/GL2/GL3.3/GL4/GLES2/GLES 3.0**.
+* **x86/x86-64 CPUs with SSE2, or ARMv7/AArch64 CPUs with NEON**.
+* **Vulkan 1.1/DX9/DX11/GL2/GL3.3/GL4/GLES2/GLES 3.0**.
 * **Win7 and above/modern Linux**
-* **Modern GCC/G++ with C++20 support**
+* **GCC/G++ 9 or newer with C++17 support**
 
 ## How?
 
@@ -46,13 +46,29 @@ This emulator fork is based on  **very** extensive tests such as:
 
 ## Building
 
+Linux builds require GNU Make, GCC/G++ 9 or newer, and the OpenGL development
+headers/libraries. On Debian/Ubuntu, install `build-essential libgl-dev`.
+For an i686 build on an x86-64 host, also install `gcc-multilib g++-multilib`
+and the 32-bit OpenGL development libraries. Select GCC 9 explicitly with
+`CC=gcc-9 CXX=g++-9` when multiple compiler versions are installed.
+The build tracks both compiler versions and target triples and rebuilds objects
+when the selected toolchain changes.
+
 | Target | Build command | Libretro output | USF playback library output (`USF=1`) |
 | --- | --- | --- | --- |
-| Windows x64, MSYS2 MINGW64 or UCRT64 shell | `make -j8 platform=win ARCH=x86_64` | `n64emu_libretro.dll` | `build/usf/x64/n64emu_usf.dll` |
-| Windows x86, MSYS2 MINGW32 shell | `make -j8 platform=win ARCH=x86` | `n64emu_libretro.dll` | `build/usf/Win32/n64emu_usf.dll` |
-| Linux x86-64 | `make -j8 platform=unix ARCH=x86_64` | `n64emu_libretro.so` | `n64emu_usf.so` |
-| Linux x86, with multilib and 32-bit development libraries | `make -j8 platform=unix ARCH=x86` | `n64emu_libretro.so` | `n64emu_usf.so` |
+| Windows x64, MinGW-w64 | `make -j8 platform=win64` | `n64emu_libretro.dll` | `build/usf/x64/n64emu_usf.dll` |
+| Windows x86, MinGW-w64 | `make -j8 platform=win32` | `n64emu_libretro.dll` | `build/usf/Win32/n64emu_usf.dll` |
+| Linux x86-64 | `make -j8 platform=linux-x86_64` | `n64emu_libretro.so` | `n64emu_usf.so` |
+| Linux i686, with multilib and 32-bit development libraries | `make -j8 platform=linux-i686` | `n64emu_libretro.so` | `n64emu_usf.so` |
 | Linux ARMv7 hard-float, NEON | `make -j8 platform=unix ARCH=arm` | `n64emu_libretro.so` | `n64emu_usf.so` |
 | Linux AArch64 | `make -j8 platform=unix ARCH=aarch64` | `n64emu_libretro.so` | `n64emu_usf.so` |
 | Raspberry Pi 4, 64-bit Raspberry Pi OS | `make -j8 platform=rpi4` | `n64emu_libretro.so` | `n64emu_usf.so` |
 | Raspberry Pi 5, 64-bit Raspberry Pi OS | `make -j8 platform=rpi5` | `n64emu_libretro.so` | `n64emu_usf.so` |
+
+The Windows aliases select both the architecture and matching MinGW C/C++ tools.
+They use MSYS2's `/mingw32/bin` or `/mingw64/bin` when installed; otherwise the
+`i686-w64-mingw32-` or `x86_64-w64-mingw32-` tools must be on `PATH`.
+Explicit `CC`, `CXX` and `CROSS_COMPILE` overrides remain supported.
+`platform=win ARCH=x86` and `platform=win ARCH=x86_64` remain available.
+The Linux aliases use the host compiler with `-m64` or `-m32`; the existing
+`platform=unix ARCH=x86_64` and `platform=unix ARCH=i686` forms also work.

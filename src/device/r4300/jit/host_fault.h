@@ -20,7 +20,7 @@ struct host_fault_domain {
     volatile sig_atomic_t faults;
     volatile sig_atomic_t pending_segment, pending_site;
 };
-#if defined(__linux__)
+#if defined(__linux__) && defined(__GLIBC__)
 /* No lazy TLS allocation in a signal handler, including foreign threads. */
 static __thread host_fault_domain* active_fault_domain __attribute__((tls_model("initial-exec")));
 #else
@@ -84,7 +84,9 @@ static void host_fault_handler(int sig, siginfo_t* info, void* context)
 
 static host_fault_domain* host_fault_create(void* code, size_t bytes, size_t segment_bytes, size_t page)
 {
-#if defined(_WIN32) || defined(__linux__)
+/* musl cannot dlopen a module requiring initial-exec TLS. Keep its normal
+ * explicit JIT guards instead of installing a handler using dynamic TLS. */
+#if defined(_WIN32) || (defined(__linux__) && defined(__GLIBC__))
     const char* enabled = getenv("N64EMU_CPU_HOST_FAULTS");
     if (!enabled || strcmp(enabled, "1")) return NULL;
     host_fault_domain* d = (host_fault_domain*)calloc(1, sizeof(*d));

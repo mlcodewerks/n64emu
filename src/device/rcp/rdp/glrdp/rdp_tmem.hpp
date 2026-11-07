@@ -5,11 +5,11 @@
 #include <cstring>
 #include <algorithm>
 #include <numeric>
-#include <span>
+#include "rdp_span.hpp"
 #include <vector>
 class RDPMemoryView {
   public:
-    RDPMemoryView(std::span<const std::uint8_t> bytes = {}) : bytes_(bytes) {
+    RDPMemoryView(RDPSpan<const std::uint8_t> bytes = {}) : bytes_(bytes) {
     }
     RDPMemoryView(const N64Memory *memory) : memory_(memory) {
     }
@@ -39,7 +39,7 @@ class RDPMemoryView {
     }
 
   private:
-    std::span<const std::uint8_t> bytes_;
+    RDPSpan<const std::uint8_t> bytes_;
     const N64Memory *memory_ = nullptr;
 };
 struct DecodedTexture {
