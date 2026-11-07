@@ -325,7 +325,7 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
         }
     }
     retire_counters(dp, dp->mi->r4300->cp0.count_clock * 4);
-    unprotect_framebuffers(&dp->fb);
+    framebuffer_prepare_gpu(&dp->fb);
     renderer_process_commands();
     protect_framebuffers(&dp->fb);
     dp->dpc_regs[DPC_STATUS_REG] |= DPC_STATUS_CBUF_READY;

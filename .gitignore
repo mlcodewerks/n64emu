@@ -220,6 +220,7 @@ benchmarks/accurate-perf/*
 !benchmarks/accurate-perf/retroarch_bench.py
 !benchmarks/accurate-perf/jit_game_sweep.py
 !benchmarks/accurate-perf/win_jit_sample.cpp
+!benchmarks/accurate-perf/win_threads_sample.cpp
 !benchmarks/accurate-perf/README.md
 !benchmarks/accurate-perf/validation.json
 
@@ -257,3 +258,19 @@ benchmarks/hle-calibration/*
 !benchmarks/gpu_optimization.py
 !benchmarks/GPU_OPTIMIZATION.md
 !benchmarks/gpu-optimization-validation.json
+!benchmarks/fb_notification_checks.c
+!benchmarks/GPU_FOLLOWUP.md
+!benchmarks/SOFTRDP_SPIKES.md
+!benchmarks/build-platform-validation.json
+!benchmarks/gpu-followup-validation.json
+!benchmarks/gpu_romset_runner.cpp
+!benchmarks/gpu_romset_sweep.py
+!benchmarks/gpu_romset_report.py
+!benchmarks/softrdp_performance.py
+!benchmarks/softrdp_spike_report.py
+!benchmarks/softrdp_compare.py
+!benchmarks/softrdp_scanline_checks.c
+!benchmarks/softrdp_fill_ownership_checks.c
+!benchmarks/softrdp_copy_ownership_checks.c
+!benchmarks/softrdp_checks.mk
+!benchmarks/gl_shader_pool.hpp

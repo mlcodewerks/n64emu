@@ -4,6 +4,7 @@
 
 #include "rdp_commands.h"
 #include "raster.h"
+#include "copy_partition.h"
 #include "rdp_memory.h"
 #include "rdp_state.h"
 #include "sr_threads.h"
@@ -28,6 +29,8 @@ typedef struct sr_state_snapshot {
 
 #define DP_STATUS_XBUS_DMA 0x001u
 #define DP_INTERRUPT 0x20u
+
+static inline uint32_t image_bytes_per_pixel(rdp_texture_size size);
 
 static uint32_t read_reg(uint32_t *const *regs, uint32_t index)
 {
@@ -87,6 +90,18 @@ sr_result sr_load_state(sr_context *ctx, const void *data, size_t size)
     tmem_palette_refresh(&ctx->tmem);
     ctx->fb_z_update = ctx->rdp.other_modes.z_update;
     ctx->fb_z_compare = ctx->rdp.other_modes.z_compare;
+    ctx->fb_addr = ctx->rdp.color_image.address;
+    ctx->fb_width = ctx->rdp.color_image.width;
+    ctx->fb_bpp = image_bytes_per_pixel(ctx->rdp.color_image.size);
+    ctx->fb_depth_addr = ctx->rdp.depth_image_address;
+    ctx->tex_addr = ctx->rdp.texture_image.address;
+    ctx->fb_height = 0u;
+    ctx->fb_color_write_pending = ctx->fb_depth_write_pending = false;
+    ctx->fb_depth_access_pending = ctx->serial_replay_pending = false;
+    ctx->fb_cycle_type = ctx->rdp.other_modes.cycle_type;
+    ctx->scissor_xhi = ctx->rdp.scissor_x1;
+    ctx->scissor_xlo = ctx->rdp.scissor_x0;
+    ctx->scissor_yhi = ctx->rdp.scissor_y1;
     ctx->workers_seeded = false;
     primitive_cache_reset();
     return SR_OK;
@@ -396,7 +411,7 @@ static void execute_batch(void *opaque)
     job.result[0] = SR_OK;
 
     sr_threads_init(replay_worker_count(ctx));
-    const uint32_t workers = sr_threads_count();
+    const uint32_t workers = batch->serial_replay ? 1u : sr_threads_count();
 
     /* Seed the helper replicas once. Every worker then replays every command of
      * every batch from the same state, so they stay identical on their own.
@@ -417,7 +432,15 @@ static void execute_batch(void *opaque)
 
     /* Collapses to a direct call on the caller when the pool is one wide, so
      * this costs no events and no waits in the serial configurations. */
-    sr_threads_run(replay_run, &job);
+    if (batch->serial_replay) {
+        replay_run(&job, 0u, 1u);
+        /* The helpers did not consume this command. Refresh their material
+         * caches and register/TMEM replicas before the next parallel segment. */
+        ctx->workers_seeded = false;
+        primitive_cache_reset();
+    } else {
+        sr_threads_run(replay_run, &job);
+    }
 
     /* replay_run leaves worker 0's split on the canonical state; restore the
      * whole-frame stride for anything reading rdp outside a replay. */
@@ -452,6 +475,7 @@ static command_batch pending_segment(sr_context *ctx)
     segment.count = ctx->cmd_buffer_words - ctx->segment_start;
     segment.color_addr = ctx->fb_addr;
     segment.depth_addr = ctx->fb_depth_addr;
+    segment.serial_replay = ctx->serial_replay_pending;
 #if SOFTRDP_SCALE > 1
     if (ctx->fb_color_write_pending)
         fb_extent(ctx, &segment.color_bytes, &segment.depth_bytes);
@@ -465,6 +489,7 @@ static void clear_segment_writes(sr_context *ctx)
     ctx->fb_color_write_pending = false;
     ctx->fb_depth_write_pending = false;
     ctx->fb_depth_access_pending = false;
+    ctx->serial_replay_pending = false;
 }
 
 /* A worker barrier is a segment inside a job, not a producer queue dispatch. */
@@ -565,6 +590,44 @@ static bool hazard_needs_flush(const sr_context *ctx, const rdp_command *cmd)
     }
 }
 
+/* Scanline partitioning assumes a draw stays inside its image row. Copy and
+ * fill can include the column at image width, aliasing the next row. A fill
+ * rectangle routes constant stores to their physical owner; textured copies
+ * and triangles retain command order in a separate serial segment. */
+static bool command_crosses_rows(const sr_context *ctx, const rdp_command *cmd)
+{
+    if (ctx->worker_count <= 1u || ctx->fb_bpp < 2u || !ctx->fb_width ||
+        ctx->scissor_xhi < ctx->fb_width * 4u)
+        return false;
+    switch (cmd->id) {
+    case RDP_CMD_TEXTURE_RECTANGLE:
+    case RDP_CMD_TEXTURE_RECTANGLE_FLIP:
+    case RDP_CMD_FILL_RECTANGLE:
+        if (ctx->fb_cycle_type == RDP_CYCLE_COPY &&
+            cmd->decoded.rect.x1 >= ctx->fb_width) {
+            const uint32_t first = cmd->decoded.rect.x0 > (ctx->scissor_xlo >> 2)
+                ? cmd->decoded.rect.x0 : ctx->scissor_xlo >> 2;
+            const rdp_texture_size size = ctx->fb_bpp == 2u
+                ? RDP_SIZE_16BPP : RDP_SIZE_32BPP;
+            return !sr_copy_rows_partitionable(ctx->fb_width, first, size);
+        }
+        return false;
+    case RDP_CMD_FILL_TRIANGLE:
+    case RDP_CMD_FILL_ZBUFFER_TRIANGLE:
+    case RDP_CMD_TEXTURE_TRIANGLE:
+    case RDP_CMD_TEXTURE_ZBUFFER_TRIANGLE:
+    case RDP_CMD_SHADE_TRIANGLE:
+    case RDP_CMD_SHADE_ZBUFFER_TRIANGLE:
+    case RDP_CMD_SHADE_TEXTURE_TRIANGLE:
+    case RDP_CMD_SHADE_TEXTURE_ZBUFFER_TRIANGLE:
+        return ctx->fb_cycle_type == RDP_CYCLE_COPY ||
+            ctx->fb_cycle_type == RDP_CYCLE_FILL ||
+            ctx->scissor_xhi > ctx->fb_width * 4u;
+    default:
+        return false;
+    }
+}
+
 /* Applied after any flush the command triggered, so the new state belongs to
  * the batch that follows it. */
 static bool hazard_track(sr_context *ctx, const rdp_command *cmd)
@@ -594,8 +657,11 @@ static bool hazard_track(sr_context *ctx, const rdp_command *cmd)
     }
     case RDP_CMD_SET_SCISSOR:
         ctx->scissor_yhi = cmd->decoded.set_scissor.y1;
+        ctx->scissor_xhi = cmd->decoded.set_scissor.x1;
+        ctx->scissor_xlo = cmd->decoded.set_scissor.x0;
         return false;
     case RDP_CMD_SET_OTHER_MODES:
+        ctx->fb_cycle_type = cmd->decoded.set_other_modes.cycle_type;
         ctx->fb_z_update = cmd->decoded.set_other_modes.z_update;
         ctx->fb_z_compare = cmd->decoded.set_other_modes.z_compare;
         return false;
@@ -636,7 +702,10 @@ static void rdp_state_init(rdp_state *state)
 
     state->color_image.format = RDP_FORMAT_RGBA;
     state->color_image.size = RDP_SIZE_16BPP;
-    state->color_image.width = 320;
+    /* No render target exists until SetColorImage. In particular, early HLE
+     * triangles must not turn the zero-initialized address into a framebuffer
+     * over the CPU's exception vectors. Decoded image widths are always >= 1. */
+    state->color_image.width = 0;
 
     state->texture_image.format = RDP_FORMAT_RGBA;
     state->texture_image.size = RDP_SIZE_16BPP;
@@ -737,6 +806,9 @@ sr_context *sr_create(const sr_host_interface *host)
     tmem_init(&ctx->tmem);
     vi_init(&ctx->vi);
     ctx->scissor_yhi = 480u << 2;  /* matches rdp_state_init's scissor default */
+    ctx->scissor_xhi = ctx->rdp.scissor_x1;
+    ctx->scissor_xlo = ctx->rdp.scissor_x0;
+    ctx->fb_cycle_type = ctx->rdp.other_modes.cycle_type;
     primitive_cache_reset();
     g_live_contexts++;
     if (ctx->worker_count > 1u) ctx->executor = sr_async_create();
@@ -912,8 +984,10 @@ static sr_result sr_process_rdp_list_internal(sr_context *ctx)
         probe.id = id;
         probe.word_count = (uint8_t)ctx->cmd_word_count;
         memcpy(probe.words, ctx->cmd_words, ctx->cmd_word_count * sizeof(uint32_t));
+        bool serial_command = false;
         if (rdp_decode_command(&probe) == SR_OK) {
-            if (hazard_needs_flush(ctx, &probe)) {
+            serial_command = command_crosses_rows(ctx, &probe);
+            if (serial_command || hazard_needs_flush(ctx, &probe)) {
                 if (!ctx->executor || !cmdbuf_cut(ctx)) cmdbuf_flush(ctx);
             }
             hazard_track(ctx, &probe);
@@ -930,6 +1004,10 @@ static sr_result sr_process_rdp_list_internal(sr_context *ctx)
                 finish_rdp_list(ctx);
                 return SR_ERROR_INVALID_ARGUMENT;
             }
+        }
+        if (serial_command) {
+            ctx->serial_replay_pending = true;
+            if (!ctx->executor || !cmdbuf_cut(ctx)) cmdbuf_flush(ctx);
         }
         ctx->epoch_words += ctx->cmd_word_count;
         ctx->cmd_words_loaded = 0;

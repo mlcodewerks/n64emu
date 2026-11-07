@@ -23,6 +23,7 @@ typedef struct command_batch {
     uint32_t *words;
     uint32_t count, first;
     uint32_t color_addr, depth_addr, color_bytes, depth_bytes;
+    bool serial_replay;
 } command_batch;
 
 struct sr_context {
@@ -61,6 +62,9 @@ struct sr_context {
     uint32_t fb_depth_addr;
     uint32_t tex_addr;
     uint32_t scissor_yhi;
+    uint32_t scissor_xhi;
+    uint32_t scissor_xlo;
+    rdp_cycle_type fb_cycle_type;
     /*
      * How far down the bound colour image primitives have actually reached,
      * in hardware rows. A colour image states no height, and the scissor is
@@ -72,6 +76,7 @@ struct sr_context {
     bool fb_color_write_pending;
     bool fb_depth_write_pending;
     bool fb_depth_access_pending;
+    bool serial_replay_pending;
     bool fb_z_update;
     bool fb_z_compare;
 

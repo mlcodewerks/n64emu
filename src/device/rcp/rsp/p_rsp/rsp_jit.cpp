@@ -662,13 +662,38 @@ void CPU::jit_handle_delay_slot(Emitter *_jit, const InstructionInfo &last_info,
 	}
 	regs.flush_register_window(_jit);
 
+	// A local loop can enter an instruction which is also the preceding
+	// branch's physical delay slot. Its entry guard is skipped for normal
+	// fallthrough, so check the budget after this branch's completed delay
+	// slot when taking that edge. Otherwise CP0 polls can wait forever for
+	// CPU-owned DMA/DPC progress without returning to the scheduler.
+	const bool local_target = !last_info.indirect && last_info.branch_target >= base_pc &&
+	                          last_info.branch_target < end_pc;
+	const bool target_in_delay_slot = cycle_timing && local_target && last_info.branch_target > base_pc &&
+	    RSPTimingDecoder::decoderEXECUTE(state.imem[(last_info.branch_target >> 2) - 1]).branch();
+	auto guard_local_target = [&] {
+		_jit->ldxi_ui(JIT_REGISTER_MODE, JIT_REGISTER_STATE, offsetof(CPUState, cycles));
+		_jit->ldxi_ui(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, cycle_limit));
+		auto *keep_running = _jit->bltr_u(JIT_REGISTER_MODE, JIT_REGISTER_NEXT_PC);
+		_jit->movi(JIT_REGISTER_MODE, MODE_TIMESLICE);
+		_jit->movi(JIT_REGISTER_NEXT_PC, last_info.branch_target);
+		_jit->jump_absolute(thunks.return_thunk);
+		_jit->patch(keep_running);
+	};
+
 	if (last_info.conditional)
 	{
 		if (!last_info.indirect && last_info.branch_target >= base_pc && last_info.branch_target < end_pc)
 		{
 			// Patch this up later.
 			unsigned local_index = (last_info.branch_target - base_pc) >> 2;
-			local_branches.push_back({ _jit->bnei(scratch_cond_reg, 0), local_index });
+			if (target_in_delay_slot) {
+				auto *not_taken = _jit->beqi(scratch_cond_reg, 0);
+				guard_local_target();
+				local_branches.push_back({ _jit->jmpi(), local_index });
+				_jit->patch(not_taken);
+			} else
+				local_branches.push_back({ _jit->bnei(scratch_cond_reg, 0), local_index });
 		}
 		else
 		{
@@ -687,6 +712,7 @@ void CPU::jit_handle_delay_slot(Emitter *_jit, const InstructionInfo &last_info,
 		{
 			// Patch this up later.
 			unsigned local_index = (last_info.branch_target - base_pc) >> 2;
+			if (target_in_delay_slot) guard_local_target();
 			local_branches.push_back({ _jit->jmpi(), local_index });
 		}
 		else

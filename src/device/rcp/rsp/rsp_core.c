@@ -336,7 +336,7 @@ static void do_SP_Task_at(struct rsp_core* sp, int64_t start_clock, uint32_t ove
 
     if (sp->mem[0xfc0/4] == 1)
     {
-        unprotect_framebuffers(&sp->dp->fb);
+        framebuffer_prepare_gpu(&sp->dp->fb);
 
         //renderer_process_display_list();
         sp->regs2[SP_PC_REG] &= 0xfff;

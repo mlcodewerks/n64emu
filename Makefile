@@ -65,6 +65,35 @@ else ifneq ($(findstring MSYS,$(shell uname -a)),)
    system_platform = win
 endif
 
+# Platform aliases select the architecture before compiler/backend detection.
+# Prefer an installed MSYS2 toolchain, with the usual cross prefix elsewhere.
+# Explicit compiler and CROSS_COMPILE overrides retain their normal precedence.
+ifeq ($(platform),win32)
+override platform := win
+override ARCH := x86
+CROSS_COMPILE ?= $(if $(wildcard /mingw32/bin/gcc.exe),/mingw32/bin/,i686-w64-mingw32-)
+WINDOWS_TOOLCHAIN_BIN := $(dir $(CROSS_COMPILE))
+else ifeq ($(platform),win64)
+override platform := win
+override ARCH := x86_64
+CROSS_COMPILE ?= $(if $(wildcard /mingw64/bin/gcc.exe),/mingw64/bin/,x86_64-w64-mingw32-)
+WINDOWS_TOOLCHAIN_BIN := $(dir $(CROSS_COMPILE))
+else ifeq ($(platform),linux-i686)
+override platform := unix
+override ARCH := x86
+else ifeq ($(platform),linux-x86_64)
+override platform := unix
+override ARCH := x86_64
+CPUFLAGS += -m64
+endif
+
+# GCC's helper executables also need the matching MinGW runtime DLLs.
+ifneq (,$(WINDOWS_TOOLCHAIN_BIN))
+ifneq ($(WINDOWS_TOOLCHAIN_BIN),./)
+export PATH := $(WINDOWS_TOOLCHAIN_BIN):$(PATH)
+endif
+endif
+
 # Cross compile ?
 
 # Pi 4/5 target 64-bit Raspberry Pi OS, including when cross compiling.
@@ -216,7 +245,7 @@ else ifeq ($(platform),win)
    COREFLAGS += -DOS_WINDOWS -DMINGW -DUNICODE
    CXXFLAGS += -fpermissive
 else
-$(error Unsupported platform "$(platform)"; use win, unix, rpi4 or rpi5)
+$(error Unsupported platform "$(platform)"; use win32, win64, win, unix, linux-i686, linux-x86_64, rpi4 or rpi5)
 endif
 
 ifeq ($(STATIC_LINKING), 1)
@@ -300,7 +329,7 @@ endif
 # CPU and renderer objects. Header dependencies cover the walker layouts.
 HLE_SIMD_CONFIG := $(CORE_DIR)/.hle-simd-config
 HLE_SIMD_CONFIG_VALUE := arch=$(ARCH):cc=$(CC):simd=$(HLE_SIMD):sse2-neon-v2
-ifneq ($(strip $(file <$(HLE_SIMD_CONFIG))),$(HLE_SIMD_CONFIG_VALUE))
+ifneq ($(strip $(shell cat "$(HLE_SIMD_CONFIG)" 2>/dev/null)),$(HLE_SIMD_CONFIG_VALUE))
 $(file >$(HLE_SIMD_CONFIG),$(HLE_SIMD_CONFIG_VALUE))
 endif
 $(patsubst %.c,%.o,$(wildcard $(CORE_DIR)/src/device/rcp/rsp/hle/*.c)): $(HLE_SIMD_CONFIG)
@@ -332,7 +361,7 @@ SKIP_CPU_CONFIG := 1
 endif
 endif
 ifneq ($(SKIP_CPU_CONFIG),1)
-ifneq ($(strip $(file <$(CPU_JIT_CONFIG))),$(CPU_JIT_CONFIG_VALUE))
+ifneq ($(strip $(shell cat "$(CPU_JIT_CONFIG)" 2>/dev/null)),$(CPU_JIT_CONFIG_VALUE))
 $(file >$(CPU_JIT_CONFIG),$(CPU_JIT_CONFIG_VALUE))
 endif
 endif

@@ -24,6 +24,54 @@ static osal_inline void framebuffer_guard_changed(struct fb* fb, uint32_t addres
         r4300_fastmem_notification_changed(fb->mem, address, bytes);
 }
 
+/* Internal ownership bit: timing-only regions also need mapped store handlers.
+ * Fast-page queries still check the live proof, so a CPU store can release it
+ * immediately even before the next GPU protection update. */
+enum { FB_PAGE_TIMING = 8 };
+static void framebuffer_timing_pages(const struct fb* fb, unsigned char* pages)
+{
+    if (!fb->timing) return;
+    for (unsigned i = 0; i < 8; ++i) {
+        const struct rdp_uniform_depth* u = &fb->timing->uniform[i];
+        const uint64_t bytes = (uint64_t)u->width * u->height * 2;
+        if (u->valid && bytes && (uint64_t)u->address + bytes <= fb->rdram->dram_size)
+            core_framebuffer_mark_pages(pages, FB_DIRTY_PAGES_COUNT, u->address, bytes, FB_PAGE_TIMING);
+    }
+}
+
+static void framebuffer_read_completed(struct fb* fb, unsigned read_page)
+{
+    fb->native_refresh_pending = 1;
+    unsigned char pages[FB_DIRTY_PAGES_COUNT];
+    memset(pages, 0, sizeof(pages));
+    if (!renderer_framebuffer_pages(pages, FB_DIRTY_PAGES_COUNT)) {
+        fb->dirty_page[read_page] = 0;
+        framebuffer_guard_changed(fb, read_page << CORE_FB_PAGE_SHIFT, 1u << CORE_FB_PAGE_SHIFT);
+        return;
+    }
+    framebuffer_timing_pages(fb, pages);
+    unsigned run = FB_DIRTY_PAGES_COUNT;
+    for (unsigned page = 0; page < FB_DIRTY_PAGES_COUNT; ++page) {
+        const unsigned old_dirty = fb->dirty_page[page];
+        const unsigned old_flags = fb->native_pages[page];
+        fb->native_pages[page] = pages[page];
+        // A callback can materialize an entire color/depth owner. Release all
+        // of its clean pages, not just the first CPU address that triggered it.
+        // Do not rearm already-read pages until the next GPU protection epoch.
+        if (!(pages[page] & CORE_FB_PAGE_READ) || page == read_page)
+            fb->dirty_page[page] = 0;
+        if (old_dirty != fb->dirty_page[page] || old_flags != pages[page]) {
+            if (run == FB_DIRTY_PAGES_COUNT) run = page;
+        } else if (run != FB_DIRTY_PAGES_COUNT) {
+            framebuffer_guard_changed(fb, run << CORE_FB_PAGE_SHIFT, (page - run) << CORE_FB_PAGE_SHIFT);
+            run = FB_DIRTY_PAGES_COUNT;
+        }
+    }
+    if (run != FB_DIRTY_PAGES_COUNT)
+        framebuffer_guard_changed(fb, run << CORE_FB_PAGE_SHIFT,
+            (FB_DIRTY_PAGES_COUNT - run) << CORE_FB_PAGE_SHIFT);
+}
+
 /* Only pure RAM pages may bypass a notification handler. Active GPU ownership
  * and depth timing proofs stay guarded; the shared physical slots cover all
  * KSEG/TLB aliases on both Windows VEH and Linux SIGSEGV paths. */
@@ -68,8 +116,7 @@ void pre_framebuffer_read(struct fb* fb, uint32_t address)
             // Resolve every image/depth owner on this page before clearing it.
             // A second image sharing the page must not lose its notification.
             renderer_framebuffer_read_range(page << CORE_FB_PAGE_SHIFT, 1u << CORE_FB_PAGE_SHIFT);
-            fb->dirty_page[page] = 0;
-            framebuffer_guard_changed(fb, page << CORE_FB_PAGE_SHIFT, 1u << CORE_FB_PAGE_SHIFT);
+            framebuffer_read_completed(fb, page);
         }
         return;
     }
@@ -137,6 +184,15 @@ static void framebuffer_write_notification(struct fb* fb, uint32_t address, uint
         if (end > limit) end = limit;
         if (!length || address >= end) return;
         const unsigned first = address >> CORE_FB_PAGE_SHIFT, last = (unsigned)((end - 1) >> CORE_FB_PAGE_SHIFT);
+        unsigned touched = 0;
+        for (unsigned page = first; page <= last; ++page) {
+            touched |= fb->native_pages[page];
+            if (fb->native_pages[page] & FB_PAGE_TIMING)
+                fb->native_refresh_regions[page >> 4] = 1;
+        }
+        // Unrelated RAM DMA leaves the cached GPU guards unchanged.
+        if (touched & (CORE_FB_PAGE_WRITE | CORE_FB_PAGE_INVALIDATE | FB_PAGE_TIMING))
+            fb->native_refresh_pending = 1;
         for (unsigned page = first; page <= last; ++page)
             if (fb->native_pages[page] & CORE_FB_PAGE_WRITE) {
                 renderer_framebuffer_write(address, (uint32_t)(end - address));
@@ -206,6 +262,8 @@ void poweron_fb(struct fb* fb)
 {
     memset(fb->native_pages, 0, sizeof(fb->native_pages));
     memset(fb->native_regions, 0, sizeof(fb->native_regions));
+    memset(fb->native_refresh_regions, 0, sizeof(fb->native_refresh_regions));
+    fb->native_refresh_pending = 0;
     fb->native_notifications = 0;
     memset(fb->dirty_page, 0, FB_DIRTY_PAGES_COUNT*sizeof(fb->dirty_page[0]));
     memset(fb->infos, 0, FB_INFOS_COUNT*sizeof(fb->infos[0]));
@@ -312,10 +370,22 @@ void protect_framebuffers(struct fb* fb)
     size_t i, j;
     struct mem_mapping fb_mapping = { 0, 0, CORE_MEMORY_RDRAM, { fb, RW(rdram_fb) } };
 
-    unprotect_timing_ranges(fb);
-    memset(fb->native_pages, 0, sizeof(fb->native_pages));
-    fb->native_notifications = renderer_framebuffer_pages(fb->native_pages, FB_DIRTY_PAGES_COUNT);
-    if (fb->native_notifications) {
+    unsigned char pages[FB_DIRTY_PAGES_COUNT] = {0};
+    const int native = renderer_framebuffer_pages(pages, FB_DIRTY_PAGES_COUNT);
+    if (native) {
+        unsigned char previous_pages[FB_DIRTY_PAGES_COUNT], previous_dirty[FB_DIRTY_PAGES_COUNT];
+        if (!fb->native_notifications) unprotect_framebuffers(fb);
+        framebuffer_timing_pages(fb, pages);
+        // Most FIFO fragments leave ownership unchanged. CPU reads, stores
+        // and explicit unprotect mark the cached guards for another update.
+        if (fb->native_notifications && !fb->native_refresh_pending &&
+            !memcmp(pages, fb->native_pages, sizeof(pages)))
+            return;
+        memcpy(previous_pages, fb->native_pages, sizeof(previous_pages));
+        memcpy(previous_dirty, fb->dirty_page, sizeof(previous_dirty));
+        memcpy(fb->native_pages, pages, sizeof(pages));
+        fb->native_notifications = 1;
+        memset(fb->timing_bytes, 0, sizeof(fb->timing_bytes));
         memset(fb->infos, 0, sizeof(fb->infos));
         for (unsigned page = 0; page < FB_DIRTY_PAGES_COUNT; ++page)
             fb->dirty_page[page] = (fb->native_pages[page] & CORE_FB_PAGE_READ) != 0;
@@ -324,17 +394,36 @@ void protect_framebuffers(struct fb* fb)
             unsigned flags = 0;
             for (unsigned page = region * 16; page < (region + 1) * 16; ++page)
                 flags |= fb->native_pages[page];
-            fb->native_regions[region] = flags != 0;
-            if (!flags) continue;
+            const int was_mapped = fb->native_regions[region] != 0;
+            const int mapped = flags != 0;
+            fb->native_regions[region] = mapped;
             fb_mapping.begin = region << 16;
             fb_mapping.end = fb_mapping.begin + 65535;
-            apply_mem_mapping(fb->mem, &fb_mapping);
-            if (fb->once) {
+            if (mapped != was_mapped) {
+                if (mapped) apply_mem_mapping(fb->mem, &fb_mapping);
+                else {
+                    const struct mem_mapping ram = {fb_mapping.begin, fb_mapping.end,
+                        CORE_MEMORY_RDRAM, {fb->rdram, RW(rdram_dram)}};
+                    apply_mem_mapping(fb->mem, &ram);
+                }
+            } else if (mapped &&
+                       (((flags & FB_PAGE_TIMING) && fb->native_refresh_regions[region]) ||
+                        memcmp(previous_pages + region * 16, fb->native_pages + region * 16, 16) ||
+                        memcmp(previous_dirty + region * 16, fb->dirty_page + region * 16, 16))) {
+                framebuffer_guard_changed(fb, fb_mapping.begin, 65536);
+            }
+            if (mapped && fb->once) {
                 fb->once = 0;
                 if (!fb->mem->cpu_fastmem) invalidate_r4300_cached_code(fb->r4300, 0, 0);
             }
         }
+        memset(fb->native_refresh_regions, 0, sizeof(fb->native_refresh_regions));
+        fb->native_refresh_pending = 0;
     } else {
+        if (fb->native_notifications) unprotect_framebuffers(fb);
+        fb->native_notifications = 0;
+        unprotect_timing_ranges(fb);
+        memset(fb->native_pages, 0, sizeof(fb->native_pages));
         if (renderer_framebuffer_info && renderer_framebuffer_read && renderer_framebuffer_write)
             renderer_framebuffer_info(fb->infos);
         else
@@ -370,7 +459,7 @@ void protect_framebuffers(struct fb* fb)
     /* Timing proofs need CPU store notifications even on backends without
      * FBInfo. Preserve the mapped ranges separately: a CPU store can discard
      * its proof before the following unprotect, and must not strand a mapping. */
-    if (fb->timing) for (unsigned n = 0; n < 8; ++n) {
+    if (!fb->native_notifications && fb->timing) for (unsigned n = 0; n < 8; ++n) {
         const struct rdp_uniform_depth *u = &fb->timing->uniform[n];
         uint64_t bytes = (uint64_t)u->width * u->height * 2;
         if (!u->valid || !bytes || (uint64_t)u->address + bytes > fb->rdram->dram_size) continue;
@@ -395,6 +484,8 @@ void unprotect_framebuffers(struct fb* fb)
     unprotect_timing_ranges(fb);
 
     if (fb->native_notifications) {
+        fb->native_refresh_pending = 1;
+        memset(fb->native_refresh_regions, 0, sizeof(fb->native_refresh_regions));
         for (unsigned region = 0; region < sizeof(fb->native_regions); ++region) {
             if (!fb->native_regions[region]) continue;
             ram_mapping.begin = region << 16;

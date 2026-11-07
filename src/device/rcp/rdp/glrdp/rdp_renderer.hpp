@@ -29,6 +29,12 @@ class RDPRenderer {
     void set_internal_resolution_scale(int scale);
     void set_rendering_config(GLRDPConfig config);
     void flush();
+    void set_streamed_commands(bool enabled) {
+        if (streamed_commands_ != enabled) {
+            flush();
+            streamed_commands_ = enabled;
+        }
+    }
     struct SubmissionStats {
         std::uint64_t primitives = 0, draws = 0, batches = 0, batched_primitives = 0;
         std::uint64_t atlas_hits = 0, atlas_uploads = 0, atlas_resets = 0, standalone_uploads = 0;
@@ -95,6 +101,7 @@ class RDPRenderer {
     GPUDepthBuffer::Surface *batch_depth_ = nullptr;
     GLuint batch_program_ = 0;
     bool batch_interlock_ = false;
+    bool streamed_commands_ = false;
     bool batch_writes_z_ = false, batch_reads_color_ = false;
     SubmissionStats stats_;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> cpu_writes_;

@@ -128,6 +128,15 @@ void apply_rdp_scissor(const RDPState &s, int native_height, int scale) {
 bool RDPRenderer::initialize(N64Memory *m) {
     memory_ = m;
     fb_.set_memory(m);
+    fb_.set_depth_page_provider([this](std::uint8_t *pages, unsigned count) {
+        gpu_depth_.framebuffer_pages(pages, count);
+        // Queued Z writes own their bytes before submission marks the
+        // retained depth surface dirty.
+        if (batch_depth_ && batch_writes_z_)
+            core_framebuffer_mark_pages(pages, count, batch_depth_->address,
+                std::uint64_t(batch_depth_->width) * batch_depth_->height * 2,
+                CORE_FB_PAGE_READ | CORE_FB_PAGE_WRITE);
+    });
     fb_.set_readback_callback([this](std::uint32_t address, std::uint32_t size) {
         gpu_depth_.flush_cpu_write(address, size, *memory_, true);
         gpu_depth_.invalidate_range(address, size);
@@ -2979,6 +2988,7 @@ void RDPRenderer::draw_vertices(const std::vector<GLVertex> &v, bool textured, c
     if (rdp_h_ <= 1)
         rdp_h_ = 240;
     rdp_h_ = fb_.drawing_height(s.color_image, rdp_h_);
+    if (!rdp_h_) return;
 
     // A different format at the same address is a separate alias, not a
     // resize. bind_color_image synchronizes that alias only when switching
@@ -3172,7 +3182,7 @@ void RDPRenderer::draw_vertices(const std::vector<GLVertex> &v, bool textured, c
     // address equality alone must not force one submission per rectangle.
     const bool can_batch = !standalone_tiles_ && !fill_writes_z_image &&
         (!needs_depth || combined);
-    const bool ordered = glrdp_fragment_interlock && can_batch && target.internal_scale == 1;
+    const bool ordered = glrdp_fragment_interlock && can_batch && target.internal_scale == 1 && !streamed_commands_;
     if (glrdp_fragment_interlock) program_ = select_draw_program(ordered);
     if (!can_batch) {
         stats_.immediate_raw_z += fill_writes_z_image;
@@ -3189,7 +3199,7 @@ void RDPRenderer::draw_vertices(const std::vector<GLVertex> &v, bool textured, c
         if (batch_target_ && (batch_target_ != &target || batch_depth_ != depth_surface ||
                               batch_program_ != program_ || batch_interlock_ != ordered)) {
             ++stats_.state_flushes; flush();
-        } else if (batch_bounds_.size() >= PrimitiveScheduler::max_queued) {
+        } else if (batch_bounds_.size() >= (streamed_commands_ ? primitive_uniforms_.capacity : PrimitiveScheduler::max_queued)) {
             ++stats_.queue_flushes; flush();
         }
         configure_rdp_program(program_, target, s, textured, texture_is_framebuffer, cycle_type,
@@ -3832,22 +3842,7 @@ void RDPRenderer::fb_read_range(std::uint32_t address, std::uint32_t size) {
 }
 
 void RDPRenderer::framebuffer_pages(std::uint8_t *pages, unsigned count) const {
-    std::fill_n(pages, count, std::uint8_t(0));
-    if (!memory_) return;
-    for (const auto &[_, f] : fb_.buffers()) {
-        const auto bytes = (std::uint64_t(f.native_width) * f.native_height * (4u << unsigned(f.size)) + 7) / 8;
-        if (f.fbo && f.color && std::uint64_t(f.address) + bytes <= memory_->size())
-            core_framebuffer_mark_pages(pages, count, f.address, bytes,
-                f.gpu_dirty && !f.raw_z ? CORE_FB_PAGE_READ | CORE_FB_PAGE_WRITE : CORE_FB_PAGE_INVALIDATE);
-    }
-    const auto ram_pages = std::min<std::size_t>(count, memory_->size() >> CORE_FB_PAGE_SHIFT);
-    gpu_depth_.framebuffer_pages(pages, ram_pages);
-    // Queued Z writes already own their physical bytes, even before the
-    // first batch submission marks the depth surface GPU-dirty.
-    if (batch_depth_ && batch_writes_z_)
-        core_framebuffer_mark_pages(pages, ram_pages, batch_depth_->address,
-            std::uint64_t(batch_depth_->width) * batch_depth_->height * 2,
-            CORE_FB_PAGE_READ | CORE_FB_PAGE_WRITE);
+    fb_.framebuffer_pages(pages, count);
 }
 
 void RDPRenderer::fb_write(std::uint32_t address, std::uint32_t size) {

@@ -27,6 +27,7 @@ N64Memory rdram_memory;
 std::unique_ptr<RDPCommandParser> parser;
 std::unique_ptr<RDPRenderer> renderer;
 std::unique_ptr<GLStateGuard> frame_guard;
+PFNGLFLUSHPROC submit_gpu_commands = nullptr;
 bool ready = false, opened = false, gles3 = false;
 std::vector<uint8_t> command_bytes;
 using ContextGuard = GLStateGuard;
@@ -53,6 +54,7 @@ bool glrdp_context_reset(const retro_hw_render_callback *callback) {
     gles3 = hw.context_type == RETRO_HW_CONTEXT_OPENGLES3 ||
           hw.context_type == RETRO_HW_CONTEXT_OPENGLES_VERSION;
     ready = load_gl33(hw.get_proc_address, gles3);
+    submit_gpu_commands = reinterpret_cast<PFNGLFLUSHPROC>(hw.get_proc_address("glFlush"));
     if (!ready) {
         error("context", "required GL 3.3 / GLES3 entry points unavailable");
         return false;
@@ -114,6 +116,7 @@ void glrdp_context_destroy() {
         renderer.reset();
     }
     ready = false;
+    submit_gpu_commands = nullptr;
 #ifdef HAVE_D3D11
     if (glrdp_dx11) glrdp_dx11_shutdown();
 #endif
@@ -180,9 +183,15 @@ void glrdp_process_commands() {
         return;
     try {
         ContextGuard guard;
+        const uint32_t *hle = rdp_hle_command_buffer(start);
+        bool stream = glrdp_image_load_store && frame_guard != nullptr && submit_gpu_commands && !hle;
+#ifdef HAVE_D3D11
+        stream = stream && !glrdp_dx11;
+#endif
+        const auto previous_draws = renderer->submission_stats().draws;
+        renderer->set_streamed_commands(stream);
         renderer->synchronize_cpu_writes();
         command_bytes.resize(length);
-        const uint32_t *hle = rdp_hle_command_buffer(start);
         if (hle) {
             for (uint32_t i = 0; i < length; ++i)
                 command_bytes[i] = uint8_t(hle[i / 4] >> ((3 - (i & 3)) * 8));
@@ -193,7 +202,12 @@ void glrdp_process_commands() {
             rdram_memory.copy_be(start, command_bytes.data(), length);
         }
         parser->feed(command_bytes);
-        if (renderer) renderer->flush();
+        // Stream tiny native FIFO fragments into one UBO-sized queue. The
+        // dependency scheduler preserves pixel order without interlock, and
+        // explicit submission lets the GPU overlap subsequent CPU/RSP work.
+        // HLE already supplies complete buffers; preserve its boundary flush.
+        if (!stream) renderer->flush();
+        else if (renderer->submission_stats().draws != previous_draws) submit_gpu_commands();
     } catch (const std::exception &e) {
         error("command list", e.what());
         parser->discard_pending();
@@ -293,7 +307,7 @@ void glrdp_fb_info(void *data) {
             rdram_memory.size())
             continue;
         info[index++] = {f->address, size, unsigned(f->native_width), unsigned(f->native_height)};
-        if (index == FramebufferManager::cpu_color_slots)
+        if (index == FramebufferManager::legacy_color_slots)
             break;
     }
     const auto &state = parser->state();

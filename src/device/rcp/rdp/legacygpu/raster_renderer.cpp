@@ -5,6 +5,7 @@
 #include "../glrdp/rdp_combiner_usage.hpp"
 #include "../glrdp/texture_decode_cache.hpp"
 #include "../glrdp/triangle_geometry.hpp"
+#include "core/framebuffer_notifications.h"
 #include "renderer_options.h"
 #include "tc_reciprocal.hpp"
 #include <algorithm>
@@ -31,6 +32,11 @@ RasterRenderer::RasterRenderer(Device &d, N64Memory &m, int scale)
     : device_(d), memory_(m), scale_(std::clamp(scale, 1, 4)) {
     fb_.set_storage(&d);
     fb_.set_memory(&m);
+    fb_.set_page_notifications(true);
+    fb_.set_depth_page_provider([this](std::uint8_t *pages, unsigned count) {
+        for (const auto &[_, z] : depth_)
+            core_framebuffer_mark_pages(pages, count, z.address, z.snapshot.size(), CORE_FB_PAGE_READ);
+    });
     atlas_.size = std::min(2048, device_.maximum_texture_size());
     unsigned atlas_fbo = 0;
     device_.allocate(atlas_texture_, atlas_fbo, atlas_.size, atlas_.size);
@@ -840,17 +846,7 @@ void RasterRenderer::write(std::uint32_t address, std::uint32_t bytes) {
             z.cpu_dirty = true;
 }
 void RasterRenderer::pages(std::uint8_t *pages, unsigned count) const {
-    auto mark = [&](std::uint32_t a, std::uint64_t bytes) {
-        unsigned first = a >> 12, last = unsigned(std::min<std::uint64_t>(std::uint64_t(a) + bytes + 4095,
-                                                                          std::uint64_t(count) * 4096) >>
-                                                  12);
-        for (unsigned i = first; i < last; i++)
-            pages[i] = 1;
-    };
-    for (auto &[_, f] : fb_.buffers())
-        mark(f.address, (std::uint64_t(f.native_width) * f.native_height * (4u << unsigned(f.size)) + 7) / 8);
-    for (auto &[_, z] : depth_)
-        mark(z.address, z.snapshot.size());
+    fb_.framebuffer_pages(pages, count);
 }
 void RasterRenderer::flush() {
     drain();

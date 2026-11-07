@@ -183,10 +183,7 @@ sr_result framebuffer_fill_rect(sr_memory *memory, const rdp_framebuffer_state *
      * next scanline. No clamp to the width; the RDRAM bound still holds. */
     if (x1 < x0 || y1 < y0 || x0 >= raster_width) return SR_OK;
 
-#if SOFTRDP_SCALE > 1
-    return fill_rect_samples(memory, state, x0, y0, x1, y1, worker_offset,
-                             worker_stride);
-#else
+#if SOFTRDP_SCALE == 1
     const uint32_t bytes_per_pixel = 1u << (state->color_image.size - 1u);
     const uint64_t first_pixel = (uint64_t)y0 * state->color_image.width + x0;
     const uint64_t last_pixel = (uint64_t)y1 * state->color_image.width + x1;
@@ -195,6 +192,33 @@ sr_result framebuffer_fill_rect(sr_memory *memory, const rdp_framebuffer_state *
                                   last_pixel * bytes_per_pixel + bytes_per_pixel - 1u;
     if (first_address >= memory->rdram_size || last_address >= memory->rdram_size)
         return SR_OK;
+#endif
+
+    /* A fill can spill into the following image row. Assign that spill to the
+     * worker owning its destination, otherwise a lagging worker can overwrite
+     * the next row after its owner has already executed a later draw. Repeated
+     * fill stores are identical at each physical address, so splitting their
+     * overlap preserves serial output. Byte images retain their ordered latch
+     * path. At enhanced scales a native row advances by SOFTRDP_SCALE samples,
+     * preserving the original sample-plane selection. */
+    if (worker_stride > 1u && state->color_image.size >= RDP_SIZE_16BPP &&
+        x1 >= raster_width) {
+        uint32_t row_shift = 0u;
+        for (;;) {
+            const uint32_t end = x1 < raster_width ? x1 : raster_width - 1u;
+            const sr_result result = framebuffer_fill_rect(memory, state,
+                x0, y0 + row_shift, end, y1 + row_shift, worker_offset, worker_stride);
+            if (result != SR_OK || x1 < raster_width) return result;
+            x0 = 0u;
+            x1 -= raster_width;
+            row_shift += SOFTRDP_SCALE;
+        }
+    }
+
+#if SOFTRDP_SCALE > 1
+    return fill_rect_samples(memory, state, x0, y0, x1, y1, worker_offset,
+                             worker_stride);
+#else
 
     switch (state->color_image.size) {
     case RDP_SIZE_8BPP:

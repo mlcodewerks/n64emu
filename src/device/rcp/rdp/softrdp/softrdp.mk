@@ -15,7 +15,8 @@ SOURCES_C += $(SOFTRDP_DIR)/adapter.c $(SOFTRDP_DIR)/thread_bridge.c $(SOFTRDP_D
 SOFTRDP_OBJECTS := $(foreach scale,$(SOFTRDP_SCALES),$(addprefix $(SOFTRDP_BUILD)/s$(scale)/,$(addsuffix .o,$(SOFTRDP_SCALED) $(SOFTRDP_KERNELS))))
 SOFTRDP_PROFILE ?= 0
 SOFTRDP_CONFIG := $(SOFTRDP_DIR)/.build-config
-ifneq ($(strip $(file <$(SOFTRDP_CONFIG))),profile=$(SOFTRDP_PROFILE))
+# Older GNU Make releases support file writes but not the file-read operation.
+ifneq ($(strip $(shell cat "$(SOFTRDP_CONFIG)" 2>/dev/null)),profile=$(SOFTRDP_PROFILE))
 $(file >$(SOFTRDP_CONFIG),profile=$(SOFTRDP_PROFILE))
 endif
 $(SOFTRDP_OBJECTS): $(SOFTRDP_CONFIG)

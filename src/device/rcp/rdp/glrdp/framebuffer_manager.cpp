@@ -107,8 +107,23 @@ bool FramebufferManager::cpu_eligible(const GLFramebuffer &f) const {
                memory_->size();
 }
 
+void FramebufferManager::framebuffer_pages(std::uint8_t *pages, unsigned count) const {
+    std::fill_n(pages, count, std::uint8_t(0));
+    if (!memory_) return;
+    const auto ram_pages = unsigned(std::min<std::size_t>(count, memory_->size() >> CORE_FB_PAGE_SHIFT));
+    for (const auto &[_, f] : buffers_) {
+        const auto bytes = framebuffer_byte_count(f.native_width, f.native_height, f.size);
+        if (!f.fbo || !f.color || std::uint64_t(f.address) + bytes > memory_->size()) continue;
+        const auto flags = native_notifications_ ?
+            (f.gpu_dirty && !f.raw_z ? CORE_FB_PAGE_READ | CORE_FB_PAGE_WRITE : CORE_FB_PAGE_INVALIDATE) :
+            CORE_FB_PAGE_READ;
+        core_framebuffer_mark_pages(pages, ram_pages, f.address, bytes, std::uint8_t(flags));
+    }
+    if (depth_page_provider_) depth_page_provider_(pages, ram_pages);
+}
+
 void FramebufferManager::synchronize_cpu_tracking(GLFramebuffer &active) {
-    if (native_notifications_) {
+    if (native_notifications_ || page_notifications_) {
         active.cpu_untracked = false; last_bound_ = &active;
         last_bound_eligible_ = cpu_eligible(active); return;
     }
@@ -128,7 +143,7 @@ void FramebufferManager::synchronize_cpu_tracking(GLFramebuffer &active) {
         return;
     last_bound_ = &active;
     last_bound_eligible_ = eligible;
-    if (buffers_.size() <= cpu_color_slots)
+    if (buffers_.size() <= legacy_color_slots)
         return;
     std::vector<GLFramebuffer *> candidates;
     for (auto &[_, f] : buffers_)
@@ -138,7 +153,7 @@ void FramebufferManager::synchronize_cpu_tracking(GLFramebuffer &active) {
               [](auto a, auto b) { return a->serial > b->serial; });
     GLint binding = 0, pack = 0;
     bool saved = false;
-    for (size_t i = cpu_color_slots; i < candidates.size(); ++i) {
+    for (size_t i = legacy_color_slots; i < candidates.size(); ++i) {
         auto &f = *candidates[i];
         f.cpu_untracked = true;
         // Raw-Z color targets are mirrors; the depth owner commits them when
@@ -208,8 +223,17 @@ int FramebufferManager::drawing_height(const RDPImage &image, int scissor_height
     // rather than permission to discard rows outside a later smaller clip.
     // Match the complete image layout so unrelated aliases do not set its size.
     auto existing = buffers_.find(image_key(image));
-    return existing == buffers_.end() ? scissor_height
-                                      : std::max(scissor_height, existing->second.native_height);
+    int height = existing == buffers_.end() ? scissor_height
+                                            : std::max(scissor_height, existing->second.native_height);
+    if (memory_) {
+        if (image.address >= memory_->size()) return 0;
+        const auto row_bits = std::uint64_t(std::max<unsigned>(image.width, 1)) * (4u << unsigned(image.size));
+        // A scissor is not proof that all of those rows exist in RDRAM.
+        // Keep packed odd-width 4-bit rows contiguous, like upload/readback.
+        const auto available = (std::uint64_t(memory_->size() - image.address) * 8) / row_bits;
+        height = int(std::min<std::uint64_t>(std::max(height, 0), available));
+    }
+    return height;
 }
 
 GLFramebuffer &FramebufferManager::bind_color_image(const RDPImage &image, int requested_height,
@@ -1780,33 +1804,47 @@ void GPUDepthBuffer::store_rows(Surface &target, N64Memory &memory, int first, i
     const std::size_t pixels = std::size_t(surface->width) * std::size_t(surface->height);
     if (std::uint64_t(base_address) + std::uint64_t(pixels) * 2u > memory.size())
         return;
+    int x0 = 0, x1 = surface->width;
+    int y0 = surface->height - first - count, y1 = surface->height - first;
+    // Image stores touch only the submitted native bounds. Ping-pong GL3
+    // retains its full readback because its bounds also track copy catch-up.
+    if (glrdp_image_load_store && surface->changed_w > 0 && surface->changed_h > 0 &&
+        surface->changed_x >= 0 && surface->changed_y >= 0 &&
+        surface->changed_x + surface->changed_w <= surface->width &&
+        surface->changed_y + surface->changed_h <= surface->height) {
+        x0 = surface->changed_x; x1 = x0 + surface->changed_w;
+        y0 = std::max(y0, surface->changed_y);
+        y1 = std::min(y1, surface->changed_y + surface->changed_h);
+    }
+    if (y1 <= y0) return;
+    const int read_width = x1 - x0, read_height = y1 - y0;
     GLRDP_PROFILE_EVENT(surface->uniform_clear ? "depth_clear_commit" : "depth_read",
-                         base_address, surface->width, count);
+                         base_address, read_width, read_height);
 
     std::vector<std::uint32_t> states;
     if (!surface->uniform_clear) {
-        states.assign(std::size_t(surface->width) * count, kDefaultState);
+        states.assign(std::size_t(read_width) * read_height, kDefaultState);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, surface->fbo[surface->active]);
         glReadBuffer(glrdp_depth_attachment());
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         if (glrdp_gles3) {
             // RGBA_INTEGER/UNSIGNED_INT is the portable ES3 integer readback pair.
             std::vector<std::uint32_t> rgba(states.size() * 4);
-            glReadPixels(0, surface->height - first - count, surface->width, count, GL_RGBA_INTEGER, GL_UNSIGNED_INT, rgba.data());
+            glReadPixels(x0, y0, read_width, read_height, GL_RGBA_INTEGER, GL_UNSIGNED_INT, rgba.data());
             for (std::size_t i = 0; i < states.size(); ++i) states[i] = rgba[i * 4];
         } else {
-            glReadPixels(0, surface->height - first - count, surface->width, count, GL_RED_INTEGER, GL_UNSIGNED_INT, states.data());
+            glReadPixels(x0, y0, read_width, read_height, GL_RED_INTEGER, GL_UNSIGNED_INT, states.data());
         }
     }
 
-    for (int y = first; y < first + count; ++y) {
+    for (int y = surface->height - y1; y < surface->height - y0; ++y) {
         const int gl_y = surface->height - 1 - y;
-        for (int x = 0; x < surface->width; ++x) {
+        for (int x = x0; x < x1; ++x) {
             const std::size_t gl_pixel = std::size_t(gl_y) * surface->width + x;
             const std::size_t n64_pixel = std::size_t(y) * surface->width + x;
             const std::uint32_t state = surface->uniform_clear
                 ? surface->clear_state[n64_pixel & 1u]
-                : states[std::size_t(first + count - 1 - y) * surface->width + x];
+                : states[std::size_t(gl_y - y0) * read_width + x - x0];
             // Re-encoding untouched arbitrary RAM as Z can corrupt texture assets
             // sharing this allocation. Write only Z/DZ that the GPU actually changed.
             if (((state ^ surface->visible_state[gl_pixel]) & 0x3fffffu) == 0)
@@ -1839,7 +1877,11 @@ void GPUDepthBuffer::store_rows(Surface &target, N64Memory &memory, int first, i
             surface->visible_words[n64_pixel] = visible;
         }
     }
-    if (first == 0 && count == surface->height) surface->gpu_dirty = false;
+    if (first == 0 && count == surface->height) {
+        surface->gpu_dirty = false;
+        if (glrdp_image_load_store)
+            surface->changed_x = surface->changed_y = surface->changed_w = surface->changed_h = 0;
+    }
     for (auto &[other_address, other] : surfaces_)
         if (&other != surface && !other.gpu_dirty &&
             base_address < std::uint64_t(other_address) + surface_bytes(other) &&

@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "framebuffer.h"
+#include "copy_partition.h"
 
 #include <stdint.h>
 
@@ -225,14 +226,15 @@ static void raster_edge_cursor_init(raster_edge_cursor *cursor,
     }
 }
 
-static inline void raster_edge_cursor_advance(raster_edge_cursor *cursor,
-                                              const raster_triangle_setup *setup)
+static inline void raster_edge_cursor_advance_rows(raster_edge_cursor *cursor,
+                                                   const raster_triangle_setup *setup,
+                                                   uint32_t rows)
 {
-    /* One scanline is four sub-scanline steps of the truncated slope, not one
-     * step of the untruncated one. */
-    const int64_t step_major = 4 * (int64_t)edge_step(setup->dxhdy);
-    const int64_t step_upper = 4 * (int64_t)edge_step(setup->dxmdy);
-    const int64_t step_lower = 4 * (int64_t)edge_step(setup->dxldy);
+    /* Each scanline adds four sub-scanline steps of the truncated slope,
+     * preserving the accumulator when jumping directly between owned rows. */
+    const int64_t step_major = 4 * (int64_t)edge_step(setup->dxhdy) * rows;
+    const int64_t step_upper = 4 * (int64_t)edge_step(setup->dxmdy) * rows;
+    const int64_t step_lower = 4 * (int64_t)edge_step(setup->dxldy) * rows;
     for (int row = 0; row < 4; row++) {
         cursor->major[row] += step_major;
         cursor->upper[row] += step_upper;
@@ -648,6 +650,7 @@ sr_result raster_submit_triangle(sr_memory *memory,
     if (!cmd) {
         return SR_ERROR_INVALID_ARGUMENT;
     }
+    if (!state->color_image.width) return SR_OK;
     raster_decoded_triangle decoded = cmd->decoded.triangle;
     if (softrdp_dps_armed) {
         const raster_triangle_setup *p=&decoded.position;
@@ -719,35 +722,43 @@ static inline __attribute__((always_inline)) sr_result triangle_rows(
     const raster_decoded_triangle *decoded, int yh, int yl, int terminal_y,
     bool fill_span, uint32_t stride, uint32_t offset, const bool peek)
 {
+    if (state->scissor_x1 <= state->scissor_x0 ||
+        state->scissor_y1 <= state->scissor_y0 || offset >= stride)
+        return SR_OK;
+    const int first_y = (int)(scale_scissor(state->scissor_y0) >> 2);
+    const int last_y = (int)((scale_scissor(state->scissor_y1) + 3u) >> 2);
+    if (yh < first_y) yh = first_y;
+    if (yl > last_y) yl = last_y;
+    /* Absolute scanline ownership must stay identical across primitives. The
+     * scissor makes yh nonnegative, so this reaches the first owned row without
+     * changing the unsigned modulo rule used by the worker dispatcher. */
+    yh += (int)((offset + stride - (uint32_t)yh % stride) % stride);
     raster_edge_cursor edge_cursor;
     raster_edge_cursor_init(&edge_cursor, &decoded->position, yh);
 
-    for (int y = yh; y < yl; y++) {
+    for (int y = yh; y < yl; y += (int)stride) {
         raster_span span;
-        const bool has_span = fill_span
+        const bool field_live = scissor_accepts_raster_y(state, (uint32_t)y);
+        const bool has_span = field_live && (fill_span
             ? fill_triangle_span_for_y(&decoded->position, state, &edge_cursor, y, &span)
-            : triangle_span_for_y(&decoded->position, state, &edge_cursor, y, &span);
-        raster_edge_cursor_advance(&edge_cursor, &decoded->position);
+            : triangle_span_for_y(&decoded->position, state, &edge_cursor, y, &span));
+        /* TEXEL1 observes the next hardware row, including when another worker
+         * owns it. Its cursor must advance by one rather than by our stride. */
+        raster_edge_cursor next_cursor;
+        if (peek && has_span) {
+            next_cursor = edge_cursor;
+            raster_edge_cursor_advance_rows(&next_cursor, &decoded->position, 1u);
+        }
+        raster_edge_cursor_advance_rows(&edge_cursor, &decoded->position, stride);
         if (!has_span) {
             continue;
         }
-        if (!scissor_accepts_raster_y(state, (uint32_t)y)) {
-            continue;
-        }
-        /* Ownership must key on the ABSOLUTE scanline, not one relative to this
-         * primitive's start. A relative key flips parity with each primitive's
-         * yh, so two workers can write the same screen line concurrently - there
-         * is no barrier between commands. */
-        if (((uint32_t)y % stride) != offset) {
-            continue;
-        }
-
         rdp_span work;
         raster_setup_triangle_span(primitive, span.x0, span.x1, y, &work);
         work.copy_primitive_terminal = y == terminal_y;
         work.coverage = span.coverage;
         if (peek)
-            raster_setup_texel1_peek(primitive, state, &edge_cursor, y, yl, &work);
+            raster_setup_texel1_peek(primitive, state, &next_cursor, y, yl, &work);
         const sr_result result = kernel_render_span(memory, primitive, &work);
         if (result != SR_OK) {
             return result;
@@ -935,11 +946,16 @@ static sr_result submit_texture_rectangle(sr_memory *memory,
         : (state->worker_stride ? state->worker_stride : 1u);
     const uint32_t offset = ordered_hidden ? 0u : state->worker_offset;
 
+    const uint32_t raster_width = state->color_image.width * SOFTRDP_SCALE;
+    const bool split_copy = copy && stride > 1u && rect.x1 >= raster_width &&
+        sr_copy_rows_partitionable(state->color_image.width,
+            rect.x0 / SOFTRDP_SCALE, state->color_image.size);
+
     for (uint32_t y = rect.y0; y <= rect.y1; y++) {
         if (!scissor_accepts_raster_y(state, y)) {
             continue;
         }
-        if ((y % stride) != offset) {
+        if (!split_copy && (y % stride) != offset) {
             continue;
         }
         /* dx and dy count raster steps into a derivative expressed per hardware
@@ -991,6 +1007,29 @@ static sr_result submit_texture_rectangle(sr_memory *memory,
             work.dtdx_fixed = dtdx;
             work.texture_step_shift = (uint8_t)SR_SCALE_LOG2;
         }
+        if (split_copy) {
+            const uint32_t group = (state->color_image.size == RDP_SIZE_16BPP
+                ? 4u : 2u) * SOFTRDP_SCALE;
+            for (uint32_t begin = rect.x0; begin <= rect.x1;) {
+                const uint32_t row = begin / raster_width;
+                const uint32_t boundary = (row + 1u) * raster_width - 1u;
+                const uint32_t end = rect.x1 < boundary ? rect.x1 : boundary;
+                if ((y + row * SOFTRDP_SCALE) % stride == offset) {
+                    rdp_span part = work;
+                    const uint32_t groups = (begin - rect.x0) / group;
+                    part.x_begin = (int)begin;
+                    part.x_end = (int)end;
+                    part.s_fixed = (int32_t)((uint32_t)work.s_fixed +
+                        groups * (uint32_t)work.dsdx_fixed);
+                    part.t_fixed = (int32_t)((uint32_t)work.t_fixed +
+                        groups * (uint32_t)work.dtdx_fixed);
+                    const sr_result result = kernel_render_span(memory, &primitive, &part);
+                    if (result != SR_OK) return result;
+                }
+                begin = end + 1u;
+            }
+            continue;
+        }
         sr_result result = kernel_render_span(memory, &primitive, &work);
         if (result != SR_OK) {
             return result;
@@ -1005,6 +1044,7 @@ static sr_result raster_submit_rectangle_internal(sr_memory *memory,
                                                   const rdp_state *state,
                                                   const rdp_command *cmd)
 {
+    if (!state->color_image.width) return SR_OK;
     raster_rect rect;
 
     /* Fill_Rect in copy mode runs the copy pipe with all-zero texture
@@ -1164,6 +1204,7 @@ static uint32_t rect_stale_footprint(const sr_memory *memory, const rdp_state *s
 sr_result raster_submit_fill_rectangle(sr_memory *memory, tmem_state *tmem,
                                        rdp_state *state, const rdp_command *cmd)
 {
+    if (!state->color_image.width) return SR_OK;
     rdp_rect_stale *stale = &state->rect_stale;
     uint32_t slots[RDP_RECT_STALE_MAX], samples[RDP_RECT_STALE_MAX];
     const uint32_t count = memory

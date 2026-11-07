@@ -191,7 +191,8 @@ class GPUTMEM {
 class FramebufferManager {
   public:
     void set_storage(FramebufferStorage *storage) { storage_ = storage; }
-    static constexpr unsigned cpu_color_slots = 5;
+    // Capacity of the compatibility FBInfo image list, not the native page map.
+    static constexpr unsigned legacy_color_slots = 5;
     ~FramebufferManager();
     GLFramebuffer &bind_color_image(const RDPImage &, int, std::uint32_t z_address,
                                     int internal_scale, bool bind_gl = true);
@@ -220,6 +221,15 @@ class FramebufferManager {
         last_bound_ = nullptr;
     }
     void set_native_notifications(bool enabled) { native_notifications_ = enabled; }
+    // All retained views are covered by the core's RDRAM page map. This is
+    // independent of native GPU alias-transfer support.
+    void set_page_notifications(bool enabled) { page_notifications_ = enabled; }
+    void set_depth_page_provider(std::function<void(std::uint8_t *, unsigned)> provider) {
+        depth_page_provider_ = std::move(provider);
+    }
+    // Enumerate every retained color and registered depth/Z owner, with no
+    // dependency on the compatibility FBInfo image-list capacity.
+    void framebuffer_pages(std::uint8_t *pages, unsigned count) const;
     bool native_notifications() const { return native_notifications_; }
     void initialize_aliases() { aliases_.initialize(); }
     void shutdown_aliases() { aliases_.clear(); }
@@ -235,12 +245,14 @@ class FramebufferManager {
     int max_texture_size_ = 0;
     bool es2_ = false;
     bool native_notifications_ = false;
+    bool page_notifications_ = false;
     FramebufferAlias aliases_;
     bool committing_aliases_ = false;
     N64Memory *memory_ = nullptr;
     GLFramebuffer *last_bound_ = nullptr;
     bool last_bound_eligible_ = false;
     std::function<void(std::uint32_t, std::uint32_t)> readback_callback_;
+    std::function<void(std::uint8_t *, unsigned)> depth_page_provider_;
     std::vector<std::uint8_t> readback_pixels_;
     GLuint depth_export_program_ = 0, depth_export_vao_ = 0, depth_export_base_ = 0;
     int depth_export_width_ = 0, depth_export_height_ = 0;
