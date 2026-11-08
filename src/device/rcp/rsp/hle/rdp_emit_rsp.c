@@ -5158,3 +5158,21 @@ void rsp_emit_state_load(const void *p)
         s_vtx_f3d_lo = -4090; s_vtx_f3d_hi = 4090;
     }
 }
+
+/* Original 0x830..0x848 sequence: rounded square, rounded cube,
+ * unbroken VMULF/VMACF accumulator, then saturated VADD of 0x4000. */
+void rsp_classic_texgen_linear(const int32_t n[3],const int32_t l0[3],const int32_t l1[3],
+    const int16_t coeff[3],int32_t *s_out,int32_t *t_out)
+{
+    int32_t value[2],k;
+    value[0]=rsp_texgen_dot(n,l0)>>1;value[1]=rsp_texgen_dot(n,l1)>>1;
+    for(k=0;k<2;k++) {
+        int32_t x=value[k];
+        int32_t square=(int16_t)acc_read_signed((RspAcc)0x8000+2*(RspAcc)x*x);
+        int32_t cube=(int16_t)acc_read_signed((RspAcc)0x8000+2*(RspAcc)square*x);
+        RspAcc acc=(RspAcc)0x8000+2*(RspAcc)cube*coeff[0];
+        acc+=2*(RspAcc)cube*coeff[2];acc+=2*(RspAcc)x*coeff[1];
+        value[k]=clamp_s16((int16_t)acc_read_signed(acc)+0x4000);
+    }
+    *s_out=value[0];*t_out=value[1];
+}

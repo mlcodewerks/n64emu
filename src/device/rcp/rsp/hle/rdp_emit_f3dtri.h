@@ -12,6 +12,12 @@ enum
     F3D_TRI_REV_B = 2   /* GoldenEye / Perfect Dark */
 };
 
+enum {
+    F3D_FLAT_NONE = 0,
+    F3D_FLAT_RGBA = 1,
+    F3D_FLAT_RGB = 2 /* native VCC=8 keeps each vertex's alpha */
+};
+
 typedef struct F3dTriState
 {
     int      rev;
@@ -20,7 +26,7 @@ typedef struct F3dTriState
     uint32_t persp_norm;
     int      tile, level;
     int      zclamp;        /* G_TEXTURE w0 bits 16..23 (revision B) */
-    int      flat_select;   /* build takes flat colour from flat_vtx */
+    int      flat_select;   /* F3D_FLAT_* build behavior */
     int      flat_vtx;      /* 0..2: command-order vertex */
     int      tex_scale_a;   /* revision A texture normalizer scale */
     /* clipper and vertex write */

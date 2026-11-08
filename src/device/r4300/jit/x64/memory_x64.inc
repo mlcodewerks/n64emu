@@ -294,6 +294,17 @@ static void emit_pipeline_history(uint32_t instruction)
         return;
     }
     emit_pipeline_clear();
+    if (fp_delay_zero_opcode(instruction)) {
+        unsigned fd=(instruction>>6)&31;
+        emit_movimm64(UINT64_C(1)<<(32+(fd&~1u)),RAX);
+        if(fd&1) {
+            emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
+            auto *paired=emit_jump(4);
+            emit_movimm64(UINT64_C(1)<<(32+fd),RAX);patch_jump(paired,out);
+        }
+        emit_mem(0x89,1,RAX,R12,-1,0,offsetof(r4300_core,pipeline_fpu_result_mask));
+        return;
+    }
     if (!native_ram_opcode(r4300_get_idec(instruction)->opcode)) return;
     unsigned rt = (instruction >> 16) & 31;
     unsigned major = instruction >> 26;

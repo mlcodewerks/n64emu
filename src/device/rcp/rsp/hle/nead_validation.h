@@ -37,7 +37,10 @@ static inline int nead_load_hle_supported(const uint32_t task[16],
             }
             continue;
         }
-        if (!((command >> 12) & 0xff0u) || (command & 0x1000u)) return 0;
+        /* Mario Kart adds its 0x450 audio-buffer base before SP_MEM_ADDR
+         * selects DMEM/IMEM. A carry across 0x1000 changes the bank. */
+        if (!((command >> 12) & 0xff0u) ||
+            (((command & 0xffffu) + (signature == 0x11181350u ? 0x450u : 0u)) & 0x1000u)) return 0;
     }
     return 1;
 }

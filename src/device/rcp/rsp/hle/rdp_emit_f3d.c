@@ -473,6 +473,16 @@ unsigned int f3d_xlate_geom(unsigned int m)
     return o;
 }
 
+static unsigned int f3d_frontend_geom(const GSPState *s)
+{
+    unsigned int m = s_geom;
+    if (s->viewport.f3d_flat_select == F3D_FLAT_RGB)
+        /* This original writer tests raw smooth=0x200 and cull=0x3000.
+         * Reserved GBI1 bits must not alias the remapped frontend bits. */
+        m &= ~(0x200000u | 0x000400u);
+    return f3d_xlate_geom(m);
+}
+
 /* G_TEXTURE_PERSP (other-modes high bit 19) selects whether the microcode
  * runs its per-vertex perspective normalizer over the texture attributes.
  * With the bit clear the resident writer stores the texel shorts and a
@@ -519,7 +529,7 @@ void f3d_restore_yield(GSPState *s,const unsigned char *dm,unsigned int vertex_b
     s->clip_ratio=(int16_t)*(const uint16_t *)(dm+(0x76u^2u));
     for(i=0;i<16;i++)s_seg[i]=rd32(dm,0x160u+i*4u);
     s_geom=rd32(dm,0x114u);
-    gsp_set_geometry_mode(s,f3d_xlate_geom(s_geom));
+    gsp_set_geometry_mode(s,f3d_frontend_geom(s));
     s_textured=(s_geom&2u)!=0;s_zbuffered=(s_geom&1u)!=0;
     f3d_set_othermode_init(rd32(dm,0x118u),rd32(dm,0x11cu));
     gsp_set_texture(s,scale>>16,scale&0xffffu,(texture>>8)&7u,(texture>>11)&7u,0,0);
@@ -1604,13 +1614,13 @@ void f3d_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
         case F3D_SETGEOMETRYMODE:
             s_geom |= w1;
             s_textured = (int)((s_geom >> 1) & 1u);
-            gsp_set_geometry_mode(gsp, f3d_xlate_geom(s_geom));
+            gsp_set_geometry_mode(gsp, f3d_frontend_geom(gsp));
             break;
 
         case F3D_CLEARGEOMETRYMODE:
             s_geom &= ~w1;
             s_textured = (int)((s_geom >> 1) & 1u);
-            gsp_set_geometry_mode(gsp, f3d_xlate_geom(s_geom));
+            gsp_set_geometry_mode(gsp, f3d_frontend_geom(gsp));
             break;
 
         case F3D_TEXTURE:

@@ -2,6 +2,8 @@
 static int native_branch_opcode(enum r4300_opcode op)
 {
     switch (op) {
+    case R4300_OP_BC1F: case R4300_OP_BC1T:
+    case R4300_OP_BC1FL: case R4300_OP_BC1TL: return 1;
     case R4300_OP_BEQ: case R4300_OP_BNE: case R4300_OP_BLEZ: case R4300_OP_BGTZ:
     case R4300_OP_BLTZ: case R4300_OP_BGEZ:
     case R4300_OP_BEQL: case R4300_OP_BNEL: case R4300_OP_BLEZL: case R4300_OP_BGTZL:
@@ -17,7 +19,8 @@ static unsigned char* emit_branch_native(uint32_t instruction, uint32_t pc)
     enum r4300_opcode op = r4300_get_idec(instruction)->opcode;
     int likely = op == R4300_OP_BEQL || op == R4300_OP_BNEL || op == R4300_OP_BLEZL ||
         op == R4300_OP_BGTZL || op == R4300_OP_BLTZL || op == R4300_OP_BGEZL ||
-        op == R4300_OP_BLTZALL || op == R4300_OP_BGEZALL;
+        op == R4300_OP_BLTZALL || op == R4300_OP_BGEZALL ||
+        op == R4300_OP_BC1FL || op == R4300_OP_BC1TL;
     int regimm_link = op == R4300_OP_BLTZAL || op == R4300_OP_BGEZAL ||
         op == R4300_OP_BLTZALL || op == R4300_OP_BGEZALL;
     unsigned char* annul = NULL;
@@ -33,6 +36,13 @@ static unsigned char* emit_branch_native(uint32_t instruction, uint32_t pc)
     if (op == R4300_OP_J || op == R4300_OP_JAL)
         emit_movimm(((pc + 4) & UINT32_C(0xf0000000)) | ((instruction & UINT32_C(0x03ffffff)) << 2), R14);
     else if (op == R4300_OP_JR || op == R4300_OP_JALR) emit_state_load(gpr_offset(rs), R14);
+    else if ((instruction>>26)==17) {
+        emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31),0x800000);
+        emit_movimm(pc+8,R14);
+        unsigned char *not_taken=emit_jump((rt&1)?4:5);
+        emit_movimm(pc+4+int32_t(int16_t(instruction))*4,R14);
+        if(likely)annul=not_taken;else patch_jump(not_taken,out);
+    }
     else if(bool taken=false; folded_branch(op,rs,rt,taken)) {
         emit_movimm(taken?pc+4+int32_t(int16_t(instruction))*4:pc+8,R14);
         if(likely && !taken)annul=emit_b();

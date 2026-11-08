@@ -440,6 +440,7 @@ static void guest_ring_config(RdpFifo *fifo, unsigned int text, int resume,
     gsp_set_clip_spill(0);
     gsp_set_vertex_spill(0);
     gsp_set_legacy_lighting(0);
+    gsp_classic_texgen_memory(0);
     gsp_set_vertex_cache(0);
     s_ring_vertex_table=0;
     rsp_vertex_spill_reset();
@@ -768,6 +769,24 @@ static void guest_ring_config(RdpFifo *fifo, unsigned int text, int resume,
         s_zb_ring_live = (int)(mode | flags);
         if(mode==RING_GBI2 && (read_dmem_u32(dm,0xfc4u)&1u))
             s_zb_ring_pos=read_dmem_u32(dm,0xf0u)&0x7fffffu;
+    }
+    /* Original paired texgen path: LPV scale, LDV polynomial coefficients,
+     * VMADN dot, conditional five-op polynomial, then VADD of v31[4].
+     * Bind the current DMEM after task reload, including resume/load-ucode.
+     * Other programs retain their existing coordinate order and polynomial. */
+    if (size-text >= 0x1800u &&
+        (read_dmem_u32(dm,0x30u)>>16) == 0u &&
+        (read_dmem_u32(dm,0x38u)>>16) == 0x4000u) {
+        static const unsigned int sequence[12] = {
+            0xcba73012u,0xc8061814u,0x4a943d0eu,0x11000006u,
+            0x4b1ffc8du,0x4a1291c0u,0x4a1239c0u,0x4b263d00u,
+            0x4b663d08u,0x4b469488u,0x09000526u,0x4b9f9490u
+        };
+        for (at=0;at+sizeof(sequence)<=0x1800u;at+=4u)
+            if (!memcmp(ram+text+at,sequence,sizeof(sequence))) {
+                gsp_classic_texgen_memory(dm);
+                break;
+            }
     }
     rdp_fifo_decode_commands(fifo,ram,size,text);
     if (((unsigned int)s_zb_ring_live & RING_KIND) == mode) {
@@ -1215,6 +1234,15 @@ void gsp_detect_ucode_params(GSPState *st, const unsigned char *rdram,
         static const uint32_t sig_sort_a[3] =
             { 0x90e30360u, 0x90e20367u, 0x90e1036eu };
         static const uint32_t sig_flat[1] = { 0xc8993802u };
+        /* Original Last Legion Fast3D writer: choose RGB from a0, keep
+         * vertex alpha with VCC=8. Admit the complete native branch and
+         * merge sequence, including its delay slot, rather than one LUV. */
+        static const uint32_t sig_flat_rgb[16] = {
+            0x31a70200u, 0x4bbe3610u, 0x14e0000du, 0x4bbe3710u,
+            0x4a162c63u, 0xc88b3802u, 0x4a1d54a7u, 0xc82f3802u,
+            0x20070008u, 0xc8573802u, 0x48c70800u, 0xc8793802u,
+            0x4a0b7be7u, 0x4a0bbde7u, 0x0900072cu, 0x4a0bce67u
+        };
         int rev = F3D_TRI_NONE;
         int flat = 0;
         if (ut != 0 && ut + 0x1000 <= rdram_size
@@ -1244,6 +1272,16 @@ void gsp_detect_ucode_params(GSPState *st, const unsigned char *rdram,
             }
             flat = text_has_words(rdram, ut, 0x1000, sig_flat, 1);
         }
+        /* This build swaps the edge-product destination registers and
+         * remains on the existing generic writer. Its RGB selection is
+         * independently identified; do not admit the different Rev A port. */
+        if (rev == F3D_TRI_NONE && ut != 0 && ut + 0x1000 <= rdram_size
+            && text_has_words(rdram, ut, 0x1000, sig_flat_rgb, 16)
+            && text_has_words(rdram, ut, 0x1000, sig_rev_a, 1)
+            && text_has_words(rdram, ut, 0x1000, sig_sort_a, 1)
+            && text_has_words(rdram, ut, 0x1000, sig_sort_a + 1, 1)
+            && text_has_words(rdram, ut, 0x1000, sig_sort_a + 2, 1))
+            flat = F3D_FLAT_RGB;
         st->viewport.f3d_tri_rev = rev;
         st->viewport.f3d_flat_select = flat;
         st->viewport.f3d_flat_vtx = 0;

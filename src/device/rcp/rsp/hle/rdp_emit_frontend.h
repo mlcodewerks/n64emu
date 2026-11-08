@@ -65,6 +65,9 @@ typedef struct GSPVertex
 void gsp_set_clip_spill(void (*spill)(const GSPVertex *, const GSPVertex *));
 void gsp_set_vertex_spill(void (*spill)(int));
 void gsp_set_legacy_lighting(int on);
+/* Derived per task/load/resume from the original instruction sequence.
+ * The pointer is rebound after DMEM reload and is never serialized. */
+void gsp_classic_texgen_memory(const unsigned char *memory);
 void gsp_set_vertex_cache(int (*cache)(int,unsigned int,int32_t[4]));
 struct GSPState;
 void gsp_restore_vertex_records(struct GSPState *s, const unsigned char *dmem,

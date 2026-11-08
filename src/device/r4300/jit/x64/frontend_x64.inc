@@ -191,6 +191,20 @@ static void emit_shift(unsigned kind,unsigned amount,int variable,int wide)
 }
 static void emit_sign_extend_word() { JIT(movsxd(Xbyak::Reg64(RAX),Xbyak::Reg32(RAX))); }
 
+
+/* Only ADD.D in an integer branch's final slot. The runtime guard admits
+ * zero + normal or zero + zero. This is an exact integer-bit operation in
+ * every guest rounding mode, without touching the host FP environment. */
+static bool fp_delay_zero_opcode(uint32_t instruction)
+{
+#ifdef N64EMU_USF
+    // The ripper's issue envelope differs even with compatibility off.
+    (void)instruction;return false;
+#else
+    return instruction>>26==17 && ((instruction>>21)&31)==17 && (instruction&63)==0;
+#endif
+}
+
 static int native_opcode(enum r4300_opcode op)
 {
     switch (op) {
@@ -221,6 +235,13 @@ static void emit_native(uint32_t instruction, enum r4300_opcode op)
     unsigned destination = rd;
     int word = 0;
     if (op == R4300_OP_NOP || op == R4300_OP_SYNC) return;
+    if (fp_delay_zero_opcode(instruction)) {
+        unsigned fd=(instruction>>6)&31;
+        emit_mem(0x8b,1,RDX,RSP,-1,0,40);
+        emit_mem_imm(0x81,0,4,R12,-1,0,offsetof(r4300_core,cp1.fcr31),~UINT32_C(0x3f000));
+        emit_state_store_raw(offsetof(r4300_core,cp1.regs)+fd*sizeof(cp1_reg),RDX);
+        return;
+    }
     if ((instruction >> 26) == 0 && (instruction & 63) >= 24 && (instruction & 63) <= 31) {
         emit_muldiv(instruction, op); return;
     }
@@ -423,7 +444,91 @@ static void emit_transfer_commit(void* block, unsigned index,
     patch_jump(done, out);
 }
 
-#include "../fpu_sequence.inc"
+
+/* The enclosing COP1-only region has checked mode, CU1, translation and the
+ * complete event budget. Transfers cannot change mappings, timing mode or
+ * FCR31. Preserve false LDI dependencies and the MTC1/DMTC1 load history. */
+static void emit_prefetched_transfer(uint32_t instruction,unsigned index,unsigned start,
+    const struct n64emujit_config *config)
+{
+    enum r4300_opcode op=r4300_get_idec(instruction)->opcode;
+    unsigned fs=(instruction>>11)&31,rt=(instruction>>16)&31;
+    emit_state_imm(offsetof(struct r4300_core,instruction_pc.addr),config->virtual_pc+index*4,0);
+    emit_movimm(0,R13);
+    bool line=index==start || ((config->virtual_pc+index*4)>>5)!=((config->virtual_pc+(index-1)*4)>>5);
+    emit_fetch_native(config,index,start,0,line,true,fpu_fetch_flag);
+    emit_pending_clocks(config,0,1,fpu_fetch_flag);
+    emit_reg_op(0x85,R13,R13,0);auto *free_fetch=emit_jump(4);
+    emit_mem_imm(0xc7,0,0,RSP,-1,0,8,0);
+    emit_region_commit_native(config,index,0,0);patch_jump(free_fetch,out);
+    emit_movimm(1,R13);
+    emit_mem(0x8b,1,RAX,R12,-1,0,offsetof(struct r4300_core,pipeline_load_mask));
+    emit_mov64(RAX,RDX);emit_shift_reg(RDX,5,32,1);
+    emit_reg_op(0x85,RDX,RDX,0);auto *fpr_history=emit_jump(5);
+    emit_imm_op(4,RAX,rt?(UINT32_C(1)<<rt):0,0);auto *selected=emit_b();
+    patch_jump(fpr_history,out);
+    emit_movimm64(UINT64_C(1)<<(32+(fs&~1u)),RDX);
+    if(fs&1) {
+        emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
+        auto *paired=emit_jump(4);emit_movimm64(UINT64_C(1)<<(32+fs),RDX);patch_jump(paired,out);
+    }
+    emit_reg_op(0x21,RDX,RAX,1);patch_jump(selected,out);
+    emit_reg_op(0x85,RAX,RAX,1);auto *no_ldi=emit_jump(4);
+    emit_addimm(R13,1,R13);patch_jump(no_ldi,out);
+    emit_pipeline_clear();
+    if(op==R4300_OP_MTC1 || op==R4300_OP_DMTC1) {
+        emit_movimm64(UINT64_C(1)<<(32+(fs&~1u)),RAX);
+        if(fs&1) {
+            emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
+            auto *paired=emit_jump(4);emit_movimm64(UINT64_C(1)<<(32+fs),RAX);patch_jump(paired,out);
+        }
+        emit_mem(0x89,1,RAX,R12,-1,0,offsetof(struct r4300_core,pipeline_load_mask));
+    }
+    emit_fpu_transfer(instruction,op);
+    emit_mem_imm(0xc7,0,0,RSP,-1,0,8,0);
+    emit_region_commit_native(config,index,1,0);
+}
+
+#include "fpu_sequence_x64.inc"
+
+static void emit_fp_delay_zero_guard(uint32_t instruction, memory_exit *failure)
+{
+    unsigned fs=(instruction>>11)&31,ft=(instruction>>16)&31;
+    /* FS uses the FR-selected pair; FT deliberately follows the shared
+     * arithmetic model's raw register index. Neither source is overwritten. */
+    emit_state_load_raw(offsetof(r4300_core,cp1.regs_double)+fs*sizeof(void*),RAX);
+    emit_mem(0x8b,1,R8,RAX,-1,0,0);
+    emit_state_load_raw(offsetof(r4300_core,cp1.regs)+ft*sizeof(cp1_reg),R9);
+    JIT(mov(Xbyak::Reg64(RAX),Xbyak::Reg64(R8)));
+    JIT(shl(Xbyak::Reg64(RAX),1));auto *a_zero=emit_jump(4);
+    JIT(mov(Xbyak::Reg64(RAX),Xbyak::Reg64(R9)));
+    JIT(shl(Xbyak::Reg64(RAX),1));auto *neither_zero=emit_jump(5);
+    // B is zero; A must be normal. The zero-A path selects B instead.
+    JIT(mov(Xbyak::Reg64(RDX),Xbyak::Reg64(R8)));auto *normal=emit_b();
+    patch_jump(a_zero,out);
+    JIT(mov(Xbyak::Reg64(RDX),Xbyak::Reg64(R9)));
+    JIT(mov(Xbyak::Reg64(RAX),Xbyak::Reg64(R9)));
+    JIT(shl(Xbyak::Reg64(RAX),1));auto *both_zero=emit_jump(4);
+    patch_jump(normal,out);
+    JIT(mov(Xbyak::Reg64(RAX),Xbyak::Reg64(RDX)));
+    JIT(shr(Xbyak::Reg64(RAX),52));JIT(and_(Xbyak::Reg32(RAX),2047));
+    JIT(sub(Xbyak::Reg32(RAX),1));JIT(cmp(Xbyak::Reg32(RAX),2045));
+    auto *non_normal=emit_jump(7);auto *ready=emit_b();
+    patch_jump(both_zero,out);
+    emit_state_load_raw(offsetof(r4300_core,cp1.fcr31),RAX);
+    JIT(and_(Xbyak::Reg32(RAX),3));JIT(cmp(Xbyak::Reg32(RAX),3));
+    auto *down=emit_jump(4);
+    JIT(and_(Xbyak::Reg64(RDX),Xbyak::Reg64(R8)));auto *signed_zero=emit_b();
+    patch_jump(down,out);JIT(or_(Xbyak::Reg64(RDX),Xbyak::Reg64(R8)));
+    patch_jump(signed_zero,out);patch_jump(ready,out);
+    // Stack offset 40 lies above the ABI shadow space; no helper call occurs
+    // between this admission and the store. Prefetch/fetch use separate slots.
+    emit_mem(0x89,1,RDX,RSP,-1,0,40);auto *admitted=emit_b();
+    patch_jump(neither_zero,out);patch_jump(non_normal,out);
+    assert(failure->guard_count<16);failure->guards[failure->guard_count++]=emit_b();
+    patch_jump(admitted,out);
+}
+
 #ifndef N64EMUJIT_X64_GUARDED_ADDI
 #define N64EMUJIT_X64_GUARDED_ADDI 1
 #endif
@@ -434,11 +539,17 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     if (!s || !ops || !step || !count || count > MAX_INSTRUCTIONS) return NULL;
     uint32_t extended_ops[MAX_INSTRUCTIONS];
     unsigned branch_index = MAX_INSTRUCTIONS;
-    bool ram_delay=false;
+    bool ram_delay=false,fpu_zero_delay=false;
     if (optimized && config && config->has_delay && !config->idle_end && count < MAX_INSTRUCTIONS &&
         native_branch_opcode(r4300_get_idec(ops[count - 1])->opcode) &&
+        !((ops[count-1]>>26)==17 && ((((ops[count-1]>>21)&31)!=8) ||
+            (((ops[count-1]>>16)&31)>=4) ||
+            ((config->virtual_pc+(count-1)*4)&4095)==4092)) &&
         (native_opcode(r4300_get_idec(config->delay_op)->opcode) ||
-         (ram_delay=native_ram_delay(ops[count-1],config->delay_op,config->virtual_pc+(count-1)*4)))) {
+         (ram_delay=native_ram_delay(ops[count-1],config->delay_op,config->virtual_pc+(count-1)*4)) ||
+         (fpu_zero_delay=config->cache_timing==1 && !config->compat_issue_clock &&
+            config->fpu_prepare==r4300_ops_jit_fpu_prepare && (ops[count-1]>>26)!=17 &&
+            ((config->virtual_pc+(count-1)*4)&4095)!=4092 && fp_delay_zero_opcode(config->delay_op)))) {
         memcpy(extended_ops, ops, count * sizeof(*ops));
         branch_index = count - 1; extended_ops[count++] = config->delay_op; ops = extended_ops;
     }
@@ -526,25 +637,28 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
             if (optimized) {
                 int memory_region = native_ram_opcode(op);
                 while (end < count) {
-                    if(ram_delay && end==branch_index)break;
+                    if((ram_delay || fpu_zero_delay) && end==branch_index)break;
                     enum r4300_opcode next = r4300_get_idec(ops[end])->opcode;
                     if (!native_opcode(next) && end != branch_index && !(config && native_ram_opcode(next)) &&
+                        !(fpu_zero_delay && end==branch_index+1) &&
                         !(N64EMUJIT_X64_GUARDED_ADDI && next==R4300_OP_ADDI)) break;
                     memory_region |= native_ram_opcode(next); ++end;
                 }
                 unsigned base = 0, memory_count = 0, memory_flags = 0;
                 bool trapping_region=false;
                 for (unsigned j = i; j < end; ++j) {
-                    base += r4300_base_cycles(ops[j], 0);
+                    base += (fpu_zero_delay && j==branch_index+1 ? 2 : r4300_base_cycles(ops[j], 0));
                     memory_count += native_ram_opcode(r4300_get_idec(ops[j])->opcode) != 0;
                     memory_flags |= native_memory_flags(ops[j]);
+                    if(j==branch_index && (ops[j]>>26)==17)memory_flags|=2;
+                    if(fpu_zero_delay && j==branch_index+1)memory_flags|=2;
                     trapping_region |= r4300_get_idec(ops[j])->opcode==R4300_OP_ADDI &&
                         ((ops[j]>>21)&31) && (int16_t)ops[j];
                 }
                 int branch_region = branch_index >= i && branch_index < end;
                 unsigned branch_major = branch_region ? ops[branch_index] >> 26 : 0;
                 int likely_region = branch_region && ((branch_major >= 20 && branch_major <= 23) ||
-                    (branch_major == 1 && ((ops[branch_index] >> 16) & 2)));
+                    ((branch_major == 1 || branch_major == 17) && ((ops[branch_index] >> 16) & 2)));
                 unsigned char* annul = NULL;
                 unsigned char* branch_prefetch_miss = NULL;
                 struct regcache_state annul_registers;
@@ -563,6 +677,11 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                     addi_overflow=emit_jump(0);
                 }
                 emit_region_guard(config, i, end - i, base, memory_count, &prepare, memory_flags);
+                if(branch_region && branch_major==17) {
+                    emit_mem_imm(0x83,1,7,R12,-1,0,offsetof(struct r4300_core,pc_extension),0);
+                    memory_guard(&prepare,5);
+                }
+                if(fpu_zero_delay && i==branch_index)emit_fp_delay_zero_guard(ops[branch_index+1],&prepare);
                 unsigned char* admitted=out;
 
                 if(ram_delay&&i==branch_index&&config->cache_timing&&!config->compat_issue_clock) {
@@ -626,11 +745,16 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                         pipeline_live = 1;
                         exit->resume = out; exit->resume_registers = regcache;
                     } else {
-                        pending_cycles+=r4300_base_cycles(ops[j],0)+r4300_issue_reservation(config->compat_issue_clock);
+                        pending_cycles+=(fpu_zero_delay && j==branch_index+1 ? 2 : r4300_base_cycles(ops[j],0))+r4300_issue_reservation(config->compat_issue_clock);
                         ++pending_fetches;
-                        emit_fetch_native(config, j, i, r4300_base_cycles(ops[j], 0), check_line,true);
+                        emit_fetch_native(config, j, i, (fpu_zero_delay && j==branch_index+1 ? 2 : r4300_base_cycles(ops[j], 0)), check_line,true);
                         unsigned reservation = r4300_issue_reservation(config->compat_issue_clock);
                         if (config->cache_timing && !reservation && pipeline_live) {
+                            if(j==branch_index && j==i && branch_major==17) {
+                                if(pending_cycles||pending_fetches) {emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
+                                emit_mem_imm(0x83,0,7,R12,-1,0,offsetof(struct r4300_core,pipeline_fpu_cc),0);
+                                auto *no_cc=emit_jump(4);emit_addimm(R13,1,R13);patch_jump(no_cc,out);
+                            }
                             emit_ldi_native(ops[j], 0, j == i ? 0 : ops[j - 1], j != i);
                             if (!deferred_pipeline(config)) emit_pipeline_clear();
                             pipeline_live = 0;
@@ -643,7 +767,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                             annul_registers = regcache;
                             if(ram_delay)emit_mem(0x89,0,R14,RSP,-1,0,16);
                         }
-                        else if (!regcache_optimize(ops[j])) emit_native(ops[j], instruction_op);
+                        else if ((fpu_zero_delay && j==branch_index+1) || !regcache_optimize(ops[j])) emit_native(ops[j], instruction_op);
                         if ((!config->cache_timing || reservation) &&
                             (j + 1 == end || native_ram_opcode(r4300_get_idec(ops[j + 1])->opcode))) emit_pipeline_clear();
                     }
@@ -696,6 +820,10 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
             s->native += end - i;
             i = end;
         } else if (optimized && native_fpu_transfer(op)) {
+            if(config && config->fpu_prepare && config->fpu_finish) {
+                unsigned end=emit_fpu_sequence(block,ops,i,count,config,step,exits,&exit_count);
+                if(end>i){s->native+=end-i;i=end;continue;}
+            }
             exits[exit_count++] = emit_step(block,i,11,step);
             emit_fpu_transfer(ops[i],op);
             emit_transfer_commit(block,i,config,step,exits,&exit_count);
@@ -739,7 +867,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
             }
             unsigned base = 0, memory_count = 0, memory_flags = 0;
             for (unsigned j = exit->index + 1; j < exit->end; ++j) {
-                base += r4300_base_cycles(ops[j], 0);
+                base += (fpu_zero_delay && j==branch_index+1 ? 2 : r4300_base_cycles(ops[j], 0));
                 memory_count += native_ram_opcode(r4300_get_idec(ops[j])->opcode) != 0;
                 memory_flags |= native_memory_flags(ops[j]);
             }

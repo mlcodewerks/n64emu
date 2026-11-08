@@ -110,7 +110,7 @@ static int nead_wave_valid;
 static uint32_t nead_dma_list_clocks;
 
 /* Independent native handler/dispatch spans, including startup and final
- * return. Only bounded LOAD/SAVE lists whose complete original data image
+ * return. Only bounded SETBUFF/CLEAR/LOAD/SAVE lists whose complete original data image
  * is unchanged qualify. This does not replace other lists' coarse costs. */
 static void nead_dma_list_begin(struct hle_t* hle)
 {
@@ -154,6 +154,40 @@ static void nead_dma_list_begin(struct hle_t* hle)
         uint32_t address = (w2 & 0xffffffu) & ~7u;
         uint32_t at = w1 & 0xff8u, span;
         int early = (profile == 3u || profile == 6u) && !count;
+        /* All seven original handlers execute the same five straight-line
+         * instructions and one redirect; parameter flags add no branch. */
+        if (opcode == 8u) { clocks += 6u; continue; }
+        if (opcode == 2u) {
+            uint32_t clear_count = w2 & 0xffffu;
+            uint32_t clear_at = w1 & 0xffffu;
+            uint32_t rounded_count = (clear_count + 15u) & ~15u;
+            /* Preserve code, dispatch, parameters and staged commands.
+             * SDV stores whole eight-byte halves even at an unaligned base. */
+            if (clear_count && (clear_at < 0x400u ||
+                clear_at + rounded_count > 0xf90u)) return;
+            clocks += clear_count ? 9u + 6u * (rounded_count / 16u) : 4u;
+            continue;
+        }
+        if (opcode == 0x0au) {
+            uint32_t move_count = w2 & 0xffffu;
+            uint32_t from = w1 & 0xffffu, to = w2 >> 16;
+            uint32_t blocks = move_count / 16u, tail = move_count & 15u;
+            int short_tail = profile == 2u || profile == 3u || profile == 6u;
+            uint32_t extent;
+            if (short_tail) {
+                extent = (move_count + 1u) & ~1u;
+                if (!extent && profile != 3u) extent = 2u;
+            } else extent = (move_count + 15u) & ~15u;
+            if (extent && (from < 0x400u || from + extent > 0xf90u ||
+                to < 0x400u || to + extent > 0xf90u)) return;
+            if (!short_tail) clocks += move_count ? 6u + 9u * (extent / 16u) : 4u;
+            else if (profile == 3u && !move_count) clocks += 5u;
+            else if (!blocks) clocks += 8u + (profile == 3u) +
+                8u * (tail ? (tail + 1u) / 2u : 1u);
+            else clocks += (tail ? 7u + 8u * ((tail + 1u) / 2u) : 10u) +
+                (profile == 3u) + 10u * blocks;
+            continue;
+        }
         if (opcode != 0x14u && opcode != 0x15u) return;
         if (early) { clocks += 9u; continue; }
         if (opcode == 0x14u) {
@@ -518,11 +552,34 @@ static void DMEMMOVE(struct hle_t* hle, uint32_t w1, uint32_t w2)
     uint16_t dmemo = (w2 >> 16) + nead_dmem_base;
     uint16_t count = w2;
 
-    if (count == 0)
+    uint32_t profile = nead_timing_profile;
+    uint32_t remaining = count;
+    if (profile >= 1u && profile <= 7u) {
+        int short_tail = profile == 2u || profile == 3u || profile == 6u;
+        uint32_t rows;
+        /* MM/debug enter the two-byte do/while tail even at count zero.
+         * AC has a separate early zero branch; the older handlers copy
+         * complete 16-byte rows. Both LDVs precede either SDV. */
+        if (!remaining && (!short_tail || profile == 3u)) return;
+        if (short_tail) {
+            remaining = (remaining + 1u) & ~1u;
+            if (!remaining) remaining = 2u;
+        } else remaining = (remaining + 15u) & ~15u;
+        rows = short_tail ? count / 16u : remaining / 16u;
+        hle_timing_add(HLE_WORK_COPY, (remaining + 15u) / 16u);
+        while (remaining) {
+            uint8_t row[16];
+            unsigned i, n = rows ? 16u : 2u;
+            for (i = 0; i < n; ++i) row[i] = hle->alist_buffer[((dmemi + i) & 0xfffu) ^ S8];
+            for (i = 0; i < n; ++i) hle->alist_buffer[((dmemo + i) & 0xfffu) ^ S8] = row[i];
+            dmemi += n;
+            dmemo += n;
+            remaining -= n;
+            if (rows) --rows;
+        }
         return;
-
-    /* the move loop copies whole 16-byte rows, so the extent rounds up
-     * to 0x10 rather than to a word */
+    }
+    if (count == 0) return;
     alist_move(hle, dmemo, dmemi, (count + 0xf) & ~0xf);
 }
 

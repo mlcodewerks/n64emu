@@ -40,6 +40,9 @@ static void guest_operands(uint32_t instruction, unsigned* source1, unsigned* so
     unsigned rs = (instruction >> 21) & 31, rt = (instruction >> 16) & 31;
     *source1 = rs; *source2 = rt; *dest = (instruction >> 11) & 31;
     switch (op) {
+    case R4300_OP_BC1F: case R4300_OP_BC1T:
+    case R4300_OP_BC1FL: case R4300_OP_BC1TL: *source1 = *source2 = *dest = 0; break;
+    case R4300_OP_CP1_ADD:
     case R4300_OP_NOP: case R4300_OP_SYNC: *source1 = *source2 = *dest = 0; break;
     case R4300_OP_LUI: *source1 = *source2 = 0; *dest = rt; break;
     case R4300_OP_ADDI: case R4300_OP_ADDIU: case R4300_OP_DADDIU: case R4300_OP_ANDI:

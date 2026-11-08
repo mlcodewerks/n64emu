@@ -669,6 +669,9 @@ void gsp_set_lookat(GSPState *s, const unsigned char *rdram,
  * on the RSP, while light vector magnitudes are normalized away. The pass
  * runs at most once per matrix/light change (lightsValid). */
 static int s_legacy_lighting;
+static const unsigned char *s_classic_texgen_memory;
+void gsp_classic_texgen_memory(const unsigned char *memory)
+{ s_classic_texgen_memory = memory; }
 static void gsp_light_dir_xfrm(GSPState *s)
 {
     int32_t (*M)[4] = s->modelview[s->modelview_top];
@@ -712,6 +715,7 @@ void gsp_set_rsp_screen_model(GSPState *s, int on)
 void gsp_task_reset(GSPState *s)
 {
     s_sdk_memory=0;
+    s_classic_texgen_memory=0;
     rsp_sdk_triangle_xl(0);
     gsp_set_legacy_lighting(0);
     gsp_set_vertex_spill(0);
@@ -1290,9 +1294,17 @@ static void gsp_vertex_internal(GSPState *s, const unsigned char *rdram, unsigne
                 int linear = (s->geometry_mode & 0x00080000u) ? 1 : 0;
                 int32_t nrm[3], gs, gt;
                 nrm[0] = nxb; nrm[1] = nyb; nrm[2] = nzb;
-                rsp_texgen(nrm, s->lookat[0], s->lookat[1], linear, &gs, &gt);
-                st_s = gs;
-                st_t = gt;
+                int classic = s_classic_texgen_memory != 0 &&
+                    s_legacy_lighting == 2 && s->viewport.f3d_tri_rev == F3D_TRI_REV_A;
+                if (classic && linear) {
+                    int16_t coeff[3];
+                    coeff[0]=(int16_t)read_s16_be(s_classic_texgen_memory,0xa2u);
+                    coeff[1]=(int16_t)read_s16_be(s_classic_texgen_memory,0xa4u);
+                    coeff[2]=(int16_t)read_s16_be(s_classic_texgen_memory,0xa6u);
+                    rsp_classic_texgen_linear(nrm,s->lookat[0],s->lookat[1],coeff,&gs,&gt);
+                } else rsp_texgen(nrm, s->lookat[0], s->lookat[1], linear, &gs, &gt);
+                st_s = classic ? gt : gs;
+                st_t = classic ? gs : gt;
             }
             else if (s->no_texgen && s->reflect_valid
                      && (s->geometry_mode & 0x00040000u))
@@ -2837,6 +2849,13 @@ int gsp_triangle_with_texrecip(GSPState *s, int32_t *cmd, int i0, int i1, int i2
                 w->flat2d = g->flat2d;
             }
             gsp_fold_st(s, bv);
+            if (s->viewport.f3d_flat_select == F3D_FLAT_RGB
+                && !(s->geometry_mode & 0x00200000u))
+                for (k = 0; k < 3; ++k) {
+                    /* The original a0 survives clipping. CTC2 VCC=8
+                     * preserves the clipped vertices' alpha lanes. */
+                    bv[k].r = a->r; bv[k].g = a->g; bv[k].b = a->b;
+                }
             if (s->viewport.dkr_model && !(s->geometry_mode & 0x00200000u))
                 for (k = 0; k < 3; ++k) {
                     bv[k].r = a->r; bv[k].g = a->g;
@@ -2858,7 +2877,8 @@ int gsp_triangle_with_texrecip(GSPState *s, int32_t *cmd, int i0, int i1, int i2
                                      &s->viewport,
                                      textured, z_buffered,
                                      (s->geometry_mode & 0x00000004u) ? 1 : 0,
-                                     (s->geometry_mode & 0x00200000u) ? 1 : 0,
+                                     ((s->geometry_mode & 0x00200000u)
+                                      || s->viewport.f3d_flat_select == F3D_FLAT_RGB) ? 1 : 0,
                                      s->rs_clip_model
                                          ? 0
                                          : (int)((s->geometry_mode >> 9) & 3u),

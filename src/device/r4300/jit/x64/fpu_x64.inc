@@ -29,7 +29,36 @@ static void emit_fpu_transfer(uint32_t instruction, enum r4300_opcode op)
         if (rt) emit_state_store_raw(gpr_offset(rt),RAX);
     }
 }
+
+/* All guest operations still configure rounding and read their own flags.
+ * Only saving/restoring the surrounding host state is shared. Keep the saved
+ * value outside the Windows call-home area and restore before every helper
+ * or generated-frame exit. A code-generation failure also resets the scope. */
+static bool fpu_mxcsr_envelope;
+struct fpu_mxcsr_scope {
+    bool previous;
+    explicit fpu_mxcsr_scope(bool active):previous(fpu_mxcsr_envelope) {
+        assert(!previous);fpu_mxcsr_envelope=active;
+    }
+    void finish(){fpu_mxcsr_envelope=previous;}
+    ~fpu_mxcsr_scope(){finish();}
+};
+static void emit_fpu_restore_host()
+{
+    if(!fpu_mxcsr_envelope)return;
+    emit_mem_imm(0x83,0,7,RSP,-1,0,80,0);auto *not_saved=emit_jump(4);
+    JIT(ldmxcsr(host_mem(32,RSP,-1,0,60)));patch_jump(not_saved,out);
+}
+
 static void emit_mxcsr(unsigned ext,size_t offset) {
+    if(fpu_mxcsr_envelope && offset==16) {
+        if(ext==2)return;
+        assert(ext==3);
+        emit_mem_imm(0x83,0,7,RSP,-1,0,80,0);auto *saved=emit_jump(5);
+        JIT(stmxcsr(host_mem(32,RSP,-1,0,60)));
+        emit_mem_imm(0xc7,0,0,RSP,-1,0,80,1);patch_jump(saved,out);
+        return;
+    }
     const auto memory=host_mem(32,RSP,-1,0,offset);
     if(ext==3) JIT(stmxcsr(memory)); else { assert(ext==2); JIT(ldmxcsr(memory)); }
 }
@@ -163,13 +192,14 @@ static unsigned char* emit_fpu_resident_prepare(uint32_t instruction, unsigned i
     unsigned fmt=(instruction>>21)&31,fn=instruction&63;
     bool word_conversion=fmt==20 && (fn==32 || fn==33);
     bool float_conversion=(fmt==16 && fn==33) || (fmt==17 && fn==32);
+    bool comparison=(fmt==16 || fmt==17) && fn>=48;
     uint32_t pc=config->virtual_pc+index*4;
     bool mapped=!prefetched && (pc&UINT32_C(0xc0000000))!=UINT32_C(0x80000000);
     if((!prefetched && (pc&UINT32_C(0xe0000000))==UINT32_C(0xa0000000)) ||
        (mapped && (!config->fetch_cache || !config->fetch_generation)))return NULL;
     if(config->cache_timing!=1 || config->compat_issue_clock ||
        config->fpu_prepare!=r4300_ops_jit_fpu_prepare ||
-       (!word_conversion && ((fmt!=16 && fmt!=17) || (fn>7 && !float_conversion)))) return NULL;
+       (!word_conversion && ((fmt!=16 && fmt!=17) || (fn>7 && !float_conversion && !comparison)))) return NULL;
     unsigned char* slow[24];unsigned slow_count=0;
     if(!prefetched) {
         if(mapped) {
@@ -205,6 +235,19 @@ static unsigned char* emit_fpu_resident_prepare(uint32_t instruction, unsigned i
          * shortcut ignores the upper word, matching the precise classifier. */
         emit_reg_op(0x85,R8,R8,0);auto *nonzero=emit_jump(5);
         emit_movimm(1,R10);patch_jump(nonzero,out);
+    } else if(comparison) {
+        // Compare accepts finite values, subnormals and infinities. NaN
+        // classification, sticky Invalid and enabled exceptions stay precise.
+        for(unsigned n=0;n<2;++n) {
+            emit_mov64(n?R9:R8,RAX);
+            if(fmt==16) {emit_imm_op(4,RAX,0x7f800000,0);emit_imm_op(7,RAX,0x7f800000,0);}
+            else {emit_shift_reg(RAX,5,52,1);emit_imm_op(4,RAX,2047,0);emit_imm_op(7,RAX,2047,0);}
+            auto *finite=emit_jump(5);
+            emit_mov64(n?R9:R8,RAX);
+            if(fmt==16)emit_imm_op(4,RAX,0x007fffff,0);else emit_shift_reg(RAX,4,12,1);
+            emit_reg_op(0x85,RAX,RAX,fmt!=16);slow[slow_count++]=emit_jump(5);
+            patch_jump(finite,out);
+        }
     } else if(fn!=6) {
         for(unsigned n=0;n<(fn<=3?2u:1u);++n) {
             emit_mov64(n?R9:R8,RAX);
@@ -234,14 +277,18 @@ static unsigned char* emit_fpu_resident_prepare(uint32_t instruction, unsigned i
         }
     }
     emit_mem(0x89,1,R8,RSP,-1,0,32);emit_mem(0x89,1,R9,RSP,-1,0,40);
-    emit_mem(0x8b,0,RAX,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31));
-    emit_imm_op(4,RAX,3,0);emit_mem(0x89,0,RAX,RSP,-1,0,48);
+    if(comparison)emit_movimm(0,RAX); // inputs[2] is unordered, not rounding.
+    else {
+        emit_mem(0x8b,0,RAX,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31));
+        emit_imm_op(4,RAX,3,0);
+    }
+    emit_mem(0x89,0,RAX,RSP,-1,0,48);
     emit_mem(0x89,0,R10,RSP,-1,0,52);
     // LDI gives FPR history priority over mixed restored GPR/FPR history.
     uint64_t ldi[2],reads[2],result[2];
     for(unsigned fr=0;fr<2;++fr) {
         auto mask=[fr](unsigned reg){return UINT64_C(1)<<(32+(fr?reg:reg&~1u));};
-        ldi[fr]=mask(fs)|(fn==3?0:mask(ft));reads[fr]=mask(fs)|mask(ft);result[fr]=mask(fd);
+        ldi[fr]=mask(fs)|(fn==3?0:mask(ft));reads[fr]=mask(fs)|mask(ft);result[fr]=comparison?0:mask(fd);
     }
     emit_movimm64(ldi[0],R8);emit_movimm64(reads[0],R9);emit_movimm64(result[0],R10);
     if(ldi[0]!=ldi[1]||reads[0]!=reads[1]||result[0]!=result[1]) {
@@ -264,7 +311,7 @@ static unsigned char* emit_fpu_resident_prepare(uint32_t instruction, unsigned i
     emit_addimm(R13,1,R13);patch_jump(no_fpu,out);
     emit_state_imm(offsetof(struct r4300_core,pipeline_load_mask),0,1);
     emit_mem(0x89,1,R10,R12,-1,0,offsetof(struct r4300_core,pipeline_fpu_result_mask));
-    emit_state_imm(offsetof(struct r4300_core,pipeline_fpu_cc),0,1);
+    emit_state_imm(offsetof(struct r4300_core,pipeline_fpu_cc),comparison?1:0,1);
     if(fn!=6)emit_mem_imm(0x81,0,4,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31),~UINT32_C(0x3f000));
     /* The following host arithmetic cannot observe CPU clocks. Combine issue
      * with completion on the fast path; flush it before any precise finish. */
@@ -275,6 +322,49 @@ static unsigned char* emit_fpu_resident_prepare(uint32_t instruction, unsigned i
     return done;
 #endif
 }
+
+/* Multiplication by a normal signed power of two is exact when its result
+ * remains normal (or is signed zero). All special/boundary cases retain the
+ * original controlled-MXCSR arithmetic. Operand preparation is unchanged. */
+static unsigned emit_exact_power_multiply(unsigned fmt,unsigned char **done)
+{
+    bool wide=fmt==17;
+    unsigned char *slow[8];unsigned nslow=0;
+    emit_mem(0x8b,wide,RAX,RSP,-1,0,32);emit_mem(0x8b,wide,RCX,RSP,-1,0,40);
+    emit_mov64(RAX,R8);emit_mov64(RCX,R9);
+    if(wide) {
+        emit_shift_reg(R8,4,12,1);emit_shift_reg(R8,5,12,1);
+        emit_shift_reg(R9,4,12,1);emit_shift_reg(R9,5,12,1);
+    } else {
+        emit_imm_op(4,R8,0x7fffff,0);emit_imm_op(4,R9,0x7fffff,0);
+    }
+    emit_mov64(RAX,RDX);emit_shift_reg(RDX,5,wide?52:23,wide);emit_imm_op(4,RDX,wide?2047:255,0);
+    emit_mov64(RCX,R10);emit_shift_reg(R10,5,wide?52:23,wide);emit_imm_op(4,R10,wide?2047:255,0);
+    for(unsigned i=0;i<2;++i) {
+        int exponent=i?R10:RDX,fraction=i?R9:R8;
+        emit_imm_op(7,exponent,wide?2047:255,0);slow[nslow++]=emit_jump(4);
+        emit_reg_op(0x85,exponent,exponent,0);auto *normal=emit_jump(5);
+        emit_reg_op(0x85,fraction,fraction,wide);slow[nslow++]=emit_jump(5);
+        patch_jump(normal,out);
+    }
+    emit_mov64(RAX,R11);emit_reg_op(0x31,RCX,R11,wide);
+    if(wide){emit_movimm64(UINT64_C(0x8000000000000000),R13);emit_reg_op(0x21,R13,R11,1);}
+    else emit_imm_op(4,R11,UINT32_C(0x80000000),0);
+    emit_reg_op(0x85,RDX,RDX,0);auto *zero_a=emit_jump(4);
+    emit_reg_op(0x85,R10,R10,0);auto *zero_b=emit_jump(4);
+    emit_reg_op(0x85,R8,R8,wide);auto *power_a=emit_jump(4);
+    emit_reg_op(0x85,R9,R9,wide);slow[nslow++]=emit_jump(5);patch_jump(power_a,out);
+    emit_reg_op(0x01,R10,RDX,0);emit_addimm(RDX,wide?-1024:-128,RDX);
+    emit_imm_op(7,RDX,wide?2045:253,0);slow[nslow++]=emit_jump(7);
+    emit_addimm(RDX,1,RDX);emit_shift_reg(RDX,4,wide?52:23,wide);
+    emit_reg_op(0x09,R9,R8,wide);emit_reg_op(0x09,RDX,R8,wide);emit_reg_op(0x09,R11,R8,wide);
+    emit_movimm(0,R9);done[0]=emit_b();
+    patch_jump(zero_a,out);patch_jump(zero_b,out);
+    emit_mov64(R11,R8);emit_movimm(0,R9);done[1]=emit_b();
+    for(unsigned i=0;i<nslow;++i)patch_jump(slow[i],out);
+    return 2;
+}
+
 static void emit_fpu_native(uint32_t instruction, unsigned index, const struct n64emujit_config* config,
     unsigned char** exits, unsigned* exit_count,bool prefetched=false,unsigned fetch_start=0)
 {
@@ -300,23 +390,50 @@ static void emit_fpu_native(uint32_t instruction, unsigned index, const struct n
     emit_movimm64((intptr_t)config->commits,ARG4_REG);
     auto prepare=config->fpu_prepare;
     if(prefetched)prepare=r4300_ops_jit_fpu_prepare_prefetched;
+    emit_fpu_restore_host();
     emit_helper_call((const void*)prepare);
     emit_reg_op(0x85, RAX, RAX, 0); exits[(*exit_count)++] = emit_jump(4);
     if(prepared)patch_jump(prepared,out);
+    unsigned char *exact_done[2];unsigned exact_count=0;
+    if(fn==2 && (fmt==16 || fmt==17))exact_count=emit_exact_power_multiply(fmt,exact_done);
     if (fn >= 48) {
-        emit_mem_imm(0x81,0,7,RSP,-1,0,48,0); unsigned char* unordered = emit_jump(5);
-        emit_mxcsr(3,16);
-        emit_mem_imm(0xc7,0,0,RSP,-1,0,20,0x1f80); emit_mxcsr(2,20);
-        emit_mem(0x8b,1,RAX,RSP,-1,0,32); emit_mem(0x8b,1,RCX,RSP,-1,0,40);
-        emit_xmm_bits(RAX,0,1); emit_xmm_bits(RCX,1,1);
-        emit_movimm(0,R8); emit_movimm(0,R9);
-        if(fmt==17) JIT(ucomisd(Xbyak::Xmm(0),Xbyak::Xmm(1)));
-        else JIT(ucomiss(Xbyak::Xmm(0),Xbyak::Xmm(1))); /* UCOMISS/SD */
-        if (fn & 2) emit_set_condition(R8,4);
-        if (fn & 4) emit_set_condition(R9,2);
-        emit_reg_op(0x09,R9,R8,0); emit_movimm(0,R9); emit_mxcsr(2,16);
-        unsigned char* done = emit_b();
-        patch_jump(unordered,out); emit_movimm(fn & 1,R8); emit_movimm(0,R9); patch_jump(done,out);
+        // IEEE ordered comparison using monotonic integer keys. Host DAZ,
+        // FTZ and rounding cannot change guest subnormal/zero comparisons.
+        // NaNs and enabled Invalid were handled by the original preparer.
+        emit_movimm(0,R8);emit_movimm(0,R9);
+        emit_mem_imm(0x81,0,7,RSP,-1,0,48,0);auto *unordered=emit_jump(5);
+        if (fn & 6) {
+            emit_mem(0x8b,fmt==17,RAX,RSP,-1,0,32);
+            emit_mem(0x8b,fmt==17,RCX,RSP,-1,0,40);
+            emit_mov64(RAX,RDX);emit_reg_op(0x09,RCX,RDX,fmt==17);
+            emit_shift_reg(RDX,4,1,fmt==17);
+            emit_reg_op(0x85,RDX,RDX,fmt==17);auto *both_zero=emit_jump(4);
+            if (fn & 2) {
+                emit_reg_op(0x39,RCX,RAX,fmt==17);emit_set_condition(R8,4);
+            }
+            if (fn & 4) {
+                if(fmt==17)emit_movimm64(UINT64_C(0x8000000000000000),R10);
+                for(unsigned n=0;n<2;++n) {
+                    int reg=n?RCX:RAX;
+                    emit_mov64(reg,RDX);emit_shift_reg(RDX,7,fmt==17?63:31,fmt==17);
+                    if(fmt==17)emit_reg_op(0x09,R10,RDX,1);
+                    else emit_imm_op(1,RDX,UINT32_C(0x80000000),0);
+                    emit_reg_op(0x31,RDX,reg,fmt==17);
+                }
+                emit_reg_op(0x39,RCX,RAX,fmt==17);emit_set_condition(R9,2);
+                emit_reg_op(0x09,R9,R8,0);
+            }
+            auto *ordered=emit_b();patch_jump(both_zero,out);
+            emit_movimm((fn&2)?1:0,R8);patch_jump(ordered,out);
+        }
+        auto *done=emit_b();patch_jump(unordered,out);emit_movimm(fn&1,R8);
+        patch_jump(done,out);emit_movimm(0,R9);
+    } else if (fmt==20 && fn==33) {
+        // Every signed 32-bit integer is exactly representable in binary64;
+        // this conversion cannot round or raise a host FP exception.
+        emit_mem(0x8b,0,RAX,RSP,-1,0,32);
+        JIT(cvtsi2sd(Xbyak::Xmm(0),Xbyak::Reg32(RAX)));
+        emit_xmm_bits(R8,0,0);emit_movimm(0,R9);
     } else if (fn >= 5 && fn <= 7) {
         emit_mem(0x8b, 1, R8, RSP, -1, 0, 32); emit_movimm(0, R9);
         if (fn != 6) {
@@ -367,10 +484,12 @@ static void emit_fpu_native(uint32_t instruction, unsigned index, const struct n
             patch_jump(word_ok,out); emit_mov(R8,R8);
         }
     }
+    for(unsigned i=0;i<exact_count;++i)patch_jump(exact_done[i],out);
     unsigned char* fast_done = emit_fpu_fast_finish(instruction,index,config,exits,exit_count,prepared!=NULL);
     if(prepared)emit_fpu_charge_issue();
     emit_mov64(R8,ARG3_REG); emit_mov(R9,ARG4_REG);
     emit_mov64(R12,ARG1_REG); emit_movimm(instruction,ARG2_REG);
+    emit_fpu_restore_host();
     emit_helper_call((const void*)config->fpu_finish);
     emit_reg_op(0x85,RAX,RAX,0); exits[(*exit_count)++] = emit_jump(4);
     patch_jump(fast_done,out);
