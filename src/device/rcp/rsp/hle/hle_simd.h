@@ -512,9 +512,10 @@ static inline void hle_jpeg_rgba8(uint16_t *out,const int16_t *y,const int16_t *
     b=_mm_adds_epi16(HLE_MULHI_SU(uu,50659),uu);
 #undef HLE_MULHI_SU
     r=_mm_adds_epi16(yy,r);g=_mm_subs_epi16(yy,g);b=_mm_adds_epi16(yy,b);
-    /* Above-range values keep 0xff0, including its low bits; the in-range
-     * mask is 0xf80. This distinction is observable in packed RGBA5551. */
-#define HLE_JPEG_CLAMP(c) hle_select(_mm_cmpgt_epi16((c),_mm_set1_epi16(0xff0)),_mm_set1_epi16(0xff0),_mm_and_si128(_mm_max_epi16((c),_mm_setzero_si128()),_mm_set1_epi16(0xf80)))
+    /* VGE/VLT clamp to 0..0xff0, then VMUDM by 0x200 truncates every
+     * component to five bits, including components clamped at the top.
+     * Retaining 0xff0's low bits here leaks into adjacent packed channels. */
+#define HLE_JPEG_CLAMP(c) _mm_and_si128(_mm_min_epi16(_mm_max_epi16((c),_mm_setzero_si128()),_mm_set1_epi16(0xff0)),_mm_set1_epi16(0xf80))
     r=HLE_JPEG_CLAMP(r);g=HLE_JPEG_CLAMP(g);b=HLE_JPEG_CLAMP(b);
 #undef HLE_JPEG_CLAMP
     _mm_storeu_si128((__m128i *)out,_mm_or_si128(_mm_set1_epi16(1),_mm_or_si128(_mm_slli_epi16(r,4),_mm_or_si128(_mm_srli_epi16(g,1),_mm_srli_epi16(b,6)))));
@@ -524,7 +525,7 @@ static inline void hle_jpeg_rgba8(uint16_t *out,const int16_t *y,const int16_t *
         int32_t r=hle_sat16(yy+hle_sat16(((int32_t)v[i]*26378>>16)+v[i]));
         int32_t g=hle_sat16(yy-hle_sat16(((int32_t)u[i]*22564>>16)+((int32_t)v[i]*46819>>16)));
         int32_t b=hle_sat16(yy+hle_sat16(((int32_t)u[i]*50659>>16)+u[i]));
-        r=r>0xff0?0xff0:r<0?0:r&0xf80;g=g>0xff0?0xff0:g<0?0:g&0xf80;b=b>0xff0?0xff0:b<0?0:b&0xf80;
+        r=r>0xff0?0xf80:r<0?0:r&0xf80;g=g>0xff0?0xf80:g<0?0:g&0xf80;b=b>0xff0?0xf80:b<0?0:b&0xf80;
         out[i]=(r<<4)|(g>>1)|(b>>6)|1;
     }
 #endif

@@ -85,6 +85,29 @@ static void emit_icache_prefetch_native(const struct n64emujit_config* config,un
     }else emit_state_imm(offsetof(struct r4300_core,icache_fill_index),index+1,0);
     JIT(pop(Xbyak::Reg64(RCX)));JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RAX)));
 }
+/* Native regions can batch resident instruction translations. A refill can
+ * overlap an older cache/bus transfer; let precise fetch establish its actual
+ * order before another region resumes. This guard reads state only. */
+static unsigned char* emit_itlb_miss_guard(uint32_t pc)
+{
+    if((pc&UINT32_C(0xc0000000))==UINT32_C(0x80000000))return nullptr;
+    emit_mem(0x8b,0,RAX,R12,-1,0,offsetof(struct r4300_core,cp0.tlb.LUT_r)+(pc>>12)*4);
+    emit_imm_op(4,RAX,UINT32_C(0xfffff000),0);
+    unsigned char* hits[2];
+    for(unsigned slot=0;slot<2;++slot) {
+        unsigned char* miss[3];
+        emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,pipeline_itlb_valid),1u<<slot);
+        miss[0]=emit_jump(4);
+        emit_mem(0x39,0,RAX,R12,-1,0,offsetof(struct r4300_core,pipeline_itlb_map)+slot*4);
+        miss[1]=emit_jump(5);
+        emit_mem_imm(0x81,0,7,R12,-1,0,offsetof(struct r4300_core,pipeline_itlb_vpn)+slot*4,pc>>12);
+        miss[2]=emit_jump(5);hits[slot]=emit_b();
+        for(auto* branch:miss)patch_jump(branch,out);
+    }
+    auto* miss=emit_b();
+    for(auto* branch:hits)patch_jump(branch,out);
+    return miss;
+}
 static void emit_itlb_native(uint32_t pc)
 {
     uint32_t vpn = pc >> 12;

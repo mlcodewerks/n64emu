@@ -5,13 +5,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "stdio_vfs.h"
 #if defined(_WIN32)
 #include <windows.h>
 #endif
 
 #define CORE_FUNCTIONS(X) X(init) X(deinit) X(set_environment) X(set_video_refresh) \
  X(set_audio_sample) X(set_audio_sample_batch) X(set_input_poll) X(set_input_state) \
- X(load_game) X(unload_game) X(run) X(get_memory_data) X(get_memory_size) \
+ X(load_game) X(unload_game) X(run) X(reset) X(get_memory_data) X(get_memory_size) \
  X(serialize_size) X(serialize) X(unserialize)
 struct core_api {
 #define DECLARE(name) __typeof__(retro_##name) *name;
@@ -21,17 +22,25 @@ struct core_api {
 static struct core_api core;
 static unsigned frames, pixel_format, frame_limit;
 static int done;
+static const char *stop_marker;
+static unsigned stop_marker_count=1,stop_markers_seen;
 static unsigned char *capture;
 static unsigned capture_width, capture_height;
 
 static void logger(enum retro_log_level level, const char *fmt, ...) {
  char text[4096]; va_list ap; va_start(ap, fmt); vsnprintf(text, sizeof(text), fmt, ap); va_end(ap);
  fprintf(stderr,"[core %u] %s",(unsigned)level,text);fflush(stderr);
+ if(stop_marker && strstr(text,stop_marker) && ++stop_markers_seen>=stop_marker_count)done=1;
  if(strstr(text,"Done!") || strstr(text,"Finished in "))done=1;
  if(strstr(text,"Exception storm detected") || strstr(text,"PANIC"))done=2;
 }
 static bool environment(unsigned command, void *data) {
  switch(command) {
+ case RETRO_ENVIRONMENT_GET_VFS_INTERFACE: {
+  struct retro_vfs_interface_info *info=data;
+  if(info->required_interface_version>1)return false;
+  info->iface=&stdio_vfs;return true;
+ }
  case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: ((struct retro_log_callback*)data)->log=logger;return true;
  case RETRO_ENVIRONMENT_GET_VARIABLE: {
   struct retro_variable *v=data;const char *key=v->key;
@@ -90,6 +99,10 @@ static size_t audio_batch(const int16_t *data,size_t count){(void)data;return co
 static void poll(void){}
 static int16_t input(unsigned port,unsigned device,unsigned index,unsigned id){(void)port;(void)device;(void)index;(void)id;return 0;}
 int main(int argc,char **argv) {
+ stop_marker=getenv("N64EMU_CONFORMANCE_STOP_MARKER");
+ const char *marker_count=getenv("N64EMU_CONFORMANCE_STOP_COUNT");
+ if(marker_count)stop_marker_count=strtoul(marker_count,NULL,10);
+ if(!stop_marker_count){fputs("STOP_COUNT must be positive\n",stderr);return 2;}
 #ifdef _WIN32
  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif
@@ -113,8 +126,13 @@ int main(int argc,char **argv) {
  struct retro_game_info game={path,rom,(size_t)length,NULL};if(!core.load_game(&game)){fputs("load_game failed\n",stderr);return 2;}
  const char *checkpoint=getenv("N64EMU_CONFORMANCE_ROUNDTRIP_FRAME");
  unsigned checkpoint_frame=checkpoint?strtoul(checkpoint,NULL,10):0;
+ const char *reset=getenv("N64EMU_CONFORMANCE_RESET_FRAME");
+ unsigned reset_frame=reset?strtoul(reset,NULL,10):0;
  while(frames<limit && !done){
   core.run();++frames;
+  if(frames==reset_frame){
+   core.reset();fprintf(stderr,"CONFORMANCE soft reset frame=%u\n",frames);
+  }
   if(frames==checkpoint_frame){
    size_t size=core.serialize_size();void *state=malloc(size);
    if(!state || !core.serialize(state,size) || !core.unserialize(state,size)){

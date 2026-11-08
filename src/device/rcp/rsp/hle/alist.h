@@ -146,7 +146,8 @@ void alist_envmix_nead(
         uint16_t *env_steps,
         const int16_t *xors,
         unsigned granule,
-        bool wet_bypass);
+        bool wet_bypass,
+        uint16_t *retained_lanes);
 
 void alist_mix(struct hle_t* hle, uint16_t dmemo, uint16_t dmemi, uint16_t count, int16_t gain);
 void alist_mix_audio(struct hle_t* hle, uint16_t dmemo, uint16_t dmemi, uint16_t count, int16_t gain);

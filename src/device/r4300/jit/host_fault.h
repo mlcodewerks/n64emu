@@ -9,6 +9,8 @@
 #include <signal.h>
 #if defined(__linux__)
 #include <ucontext.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 #endif
 
 struct host_fault_site { uintptr_t pc, resume; unsigned hits; };
@@ -19,25 +21,69 @@ struct host_fault_domain {
     host_fault_segment* segments;
     volatile sig_atomic_t faults;
     volatile sig_atomic_t pending_segment, pending_site;
+#if defined(__linux__)
+    unsigned registration;
+#endif
 };
-#if defined(__linux__) && defined(__GLIBC__)
-/* No lazy TLS allocation in a signal handler, including foreign threads. */
-static __thread host_fault_domain* active_fault_domain __attribute__((tls_model("initial-exec")));
+#if defined(__linux__) && defined(__GNUC__)
+/* Accessed only in ordinary execution. Requiring initial-exec here would
+ * force this entire DSO's large renderer TLS image into dlopen's small
+ * static surplus, even when fault recovery is disabled. */
+static __thread host_fault_domain* active_fault_domain __attribute__((tls_model("global-dynamic")));
 #else
 static thread_local host_fault_domain* active_fault_domain;
 #endif
 static std::mutex fault_handler_mutex;
-static unsigned fault_handler_users;
+static std::atomic<unsigned> fault_handler_users{0};
 #ifdef _WIN32
 static void* fault_handler_token;
 #elif defined(__linux__)
 static struct sigaction previous_fault_action;
 static std::atomic_flag previous_fault_consumed = ATOMIC_FLAG_INIT;
+/* Published outside signal context. A slot belongs to a live domain; if all
+ * slots are occupied, creation fails and the normal explicit guards remain.
+ * The handler never accesses TLS, including on uninitialized foreign threads. */
+struct host_fault_registration {
+    std::atomic<host_fault_domain*> domain{nullptr};
+    std::atomic<unsigned> owner{0};
+};
+static host_fault_registration fault_registrations[64];
+static_assert(std::atomic<host_fault_domain*>::is_always_lock_free &&
+              std::atomic<unsigned>::is_always_lock_free,
+              "Signal fault registry must use lock-free atomics");
+static unsigned host_fault_thread_id(void)
+{
+    long id = syscall(SYS_gettid);
+    return id > 0 ? (unsigned)id : 0;
+}
 #endif
+
+static void host_fault_activate(host_fault_domain* next)
+{
+#if defined(__linux__)
+    host_fault_domain* old = active_fault_domain;
+    if (old == next) return;
+    if (old) fault_registrations[old->registration].owner.store(0, std::memory_order_release);
+    if (next) fault_registrations[next->registration].owner.store(host_fault_thread_id(), std::memory_order_release);
+#endif
+    active_fault_domain = next;
+}
 
 static uintptr_t host_fault_resume(uintptr_t pc, uintptr_t address)
 {
+#if defined(__linux__)
+    host_fault_domain* d = nullptr;
+    unsigned owner = host_fault_thread_id();
+    if (!owner) return 0;
+    for (auto& slot : fault_registrations) {
+        if (slot.owner.load(std::memory_order_acquire) != owner) continue;
+        host_fault_domain* candidate = slot.domain.load(std::memory_order_acquire);
+        if (candidate && address - candidate->guard < candidate->page_size &&
+            pc - candidate->code < candidate->code_size) { d = candidate; break; }
+    }
+#else
     host_fault_domain* d = active_fault_domain;
+#endif
     if (!d || address - d->guard >= d->page_size || pc - d->code >= d->code_size) return 0;
     const host_fault_segment* s = &d->segments[(pc - d->code) / d->segment_size];
     size_t low = 0, high = s->count;
@@ -66,9 +112,14 @@ static LONG CALLBACK host_fault_handler(EXCEPTION_POINTERS* e)
 static void host_fault_handler(int sig, siginfo_t* info, void* context)
 {
     ucontext_t* uc = (ucontext_t*)context;
+#if defined(__i386__)
+    const int pc_register = REG_EIP;
+#else
+    const int pc_register = REG_RIP;
+#endif
     uintptr_t resume = info->si_code > 0 ? host_fault_resume(
-        (uintptr_t)uc->uc_mcontext.gregs[REG_RIP], (uintptr_t)info->si_addr) : 0;
-    if (resume) { uc->uc_mcontext.gregs[REG_RIP] = (greg_t)resume; return; }
+        (uintptr_t)uc->uc_mcontext.gregs[pc_register], (uintptr_t)info->si_addr) : 0;
+    if (resume) { uc->uc_mcontext.gregs[pc_register] = (greg_t)resume; return; }
     struct sigaction prior = previous_fault_action;
     if ((prior.sa_flags & SA_RESETHAND) && previous_fault_consumed.test_and_set(std::memory_order_relaxed))
         prior.sa_handler = SIG_DFL;
@@ -84,13 +135,19 @@ static void host_fault_handler(int sig, siginfo_t* info, void* context)
 
 static host_fault_domain* host_fault_create(void* code, size_t bytes, size_t segment_bytes, size_t page)
 {
-/* musl cannot dlopen a module requiring initial-exec TLS. Keep its normal
- * explicit JIT guards instead of installing a handler using dynamic TLS. */
+/* Keep the existing platform admission. The Linux signal handler uses the
+ * registry rather than a dynamic TLS accessor; TLS is ordinary-context only. */
 #if defined(_WIN32) || (defined(__linux__) && defined(__GLIBC__))
     const char* enabled = getenv("N64EMU_CPU_HOST_FAULTS");
     if (!enabled || strcmp(enabled, "1")) return NULL;
     host_fault_domain* d = (host_fault_domain*)calloc(1, sizeof(*d));
     if (!d) return NULL;
+#if defined(__linux__)
+    d->registration = (unsigned)-1;
+    /* Resolve syscall's PLT entry before installing a handler, even when a
+     * frontend used RTLD_LAZY and the first signal is on a foreign thread. */
+    if (!host_fault_thread_id()) { free(d); return NULL; }
+#endif
     d->code = (uintptr_t)code; d->code_size = bytes; d->segment_size = segment_bytes;
     d->segment_count = bytes / segment_bytes; d->page_size = page;
     d->segments = (host_fault_segment*)calloc(d->segment_count, sizeof(*d->segments));
@@ -102,8 +159,20 @@ static host_fault_domain* host_fault_create(void* code, size_t bytes, size_t seg
 #endif
     if (d->segments && d->guard) {
         std::lock_guard<std::mutex> lock(fault_handler_mutex);
-        bool installed = fault_handler_users != 0;
-        if (!installed) {
+        bool available = true;
+#if defined(__linux__)
+        available = false;
+        for (unsigned i = 0; i < sizeof(fault_registrations) / sizeof(fault_registrations[0]); ++i) {
+            if (fault_registrations[i].domain.load(std::memory_order_relaxed)) continue;
+            d->registration = i;
+            fault_registrations[i].owner.store(0, std::memory_order_relaxed);
+            fault_registrations[i].domain.store(d, std::memory_order_release);
+            available = true;
+            break;
+        }
+#endif
+        bool installed = available && fault_handler_users != 0;
+        if (available && !installed) {
 #ifdef _WIN32
             fault_handler_token = AddVectoredExceptionHandler(1, host_fault_handler);
             installed = fault_handler_token != NULL;
@@ -119,6 +188,9 @@ static host_fault_domain* host_fault_create(void* code, size_t bytes, size_t seg
 #endif
         }
         if (installed) { ++fault_handler_users; return d; }
+#if defined(__linux__)
+        if (available) fault_registrations[d->registration].domain.store(nullptr, std::memory_order_release);
+#endif
     }
 #ifdef _WIN32
     if (d->guard) VirtualFree((void*)d->guard, 0, MEM_RELEASE);
@@ -132,9 +204,13 @@ static host_fault_domain* host_fault_create(void* code, size_t bytes, size_t seg
 static void host_fault_destroy(host_fault_domain* d)
 {
     if (!d) return;
-    if (active_fault_domain == d) active_fault_domain = NULL;
+    if (active_fault_domain == d) host_fault_activate(NULL);
     {
         std::lock_guard<std::mutex> lock(fault_handler_mutex);
+#if defined(__linux__)
+        fault_registrations[d->registration].owner.store(0, std::memory_order_release);
+        fault_registrations[d->registration].domain.store(nullptr, std::memory_order_release);
+#endif
         if (--fault_handler_users == 0) {
 #ifdef _WIN32
             RemoveVectoredExceptionHandler(fault_handler_token);

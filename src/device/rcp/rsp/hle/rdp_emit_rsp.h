@@ -74,6 +74,7 @@ void rsp_set_vtx_f3d(int on, int32_t clamp_lo, int32_t clamp_hi);
 void rsp_set_vtx_y_round(int on);
 void rsp_set_vtx_x_round(int on);
 void rsp_set_vtx_z_quant(int on);
+void rsp_set_vtx_rej_project(int enabled, int rejected, unsigned int pn);
 void rsp_set_keep_degenerate(int on);
 void rsp_set_affine_tex(int on);
 void rsp_set_persp_skip(int on);

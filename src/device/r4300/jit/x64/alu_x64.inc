@@ -40,7 +40,7 @@ static int regcache_direct(uint32_t instruction)
     int word = 0, immediate = 0, compare = 0;
     unsigned opcode = 0, extension = 0;
     switch (op) {
-    case R4300_OP_ADDIU: case R4300_OP_DADDIU: immediate = 1; extension = 0; word = op == R4300_OP_ADDIU; break;
+    case R4300_OP_ADDI: case R4300_OP_ADDIU: case R4300_OP_DADDIU: immediate = 1; extension = 0; word = op != R4300_OP_DADDIU; break;
     case R4300_OP_ANDI: immediate = 1; extension = 4; break;
     case R4300_OP_ORI: immediate = 1; extension = 1; break;
     case R4300_OP_XORI: immediate = 1; extension = 6; break;
@@ -80,7 +80,7 @@ static int regcache_direct(uint32_t instruction)
     }
     if (left != dest) emit_mov64(left,dest);
     if (immediate) {
-        uint32_t imm = immediate==2?uint32_t(constant):op == R4300_OP_ADDIU || op == R4300_OP_DADDIU ? (uint32_t)(int32_t)(int16_t)instruction : (uint16_t)instruction;
+        uint32_t imm = immediate==2?uint32_t(constant):op == R4300_OP_ADDI || op == R4300_OP_ADDIU || op == R4300_OP_DADDIU ? (uint32_t)(int32_t)(int16_t)instruction : (uint16_t)instruction;
         if (imm || extension==4) emit_imm_op(extension,dest,imm,!word && op != R4300_OP_ANDI && !narrow_and);
     } else emit_reg_op(opcode,right,dest,!word);
     if (op == R4300_OP_NOR) { JIT(not_(Xbyak::Reg64(dest))); }

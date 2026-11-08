@@ -81,6 +81,7 @@ static inline int rdp_timing_adapter_after_load(struct rdp_timing_adapter *a,
     rdp_timing_adapter_callbacks(a, callbacks);
     rdp_timing_adapter_set_vi(a, NULL, 0, 0);
     a->timing.vi_elapsed = 0;
+    a->timing.span_fraction = 0;
     a->timing.validate_uniform_ram = 0;
     for (i = 0; i < 8; ++i) {
         struct rdp_uniform_depth *u = &a->timing.uniform[i];

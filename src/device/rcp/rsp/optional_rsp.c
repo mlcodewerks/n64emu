@@ -21,6 +21,7 @@
 #include "hle/hle.h"
 #include "device/rcp/rsp/hle/rdp_emit_state.h"
 #include "hle/musyx_validation.h"
+#include "hle/nead_validation.h"
 #include "hle/hle_external.h"
 #include "hle/hle_timing.h"
 #include "p_rsp/dpc_bridge.h"
@@ -245,6 +246,8 @@ static int audio_supported_memory(const uint32_t *task, unsigned char *ram)
      * takes precedence over the v2 signature; v1 is in the non-ABI1 branch.
      * Validate every task, even when the dispatcher has cached its ucode. */
     if (data[0] == 1) {
+        if (data[12] != 0xf0000f00 &&
+            !nead_load_hle_supported(task, ram, 0x800000u, data[4])) return 0;
         if (data[12] != 0xf0000f00 && data[4] == 0x00010010)
             return musyx_v2_supported(ram, task[12], task[13]);
     } else if (data[4] == 1)
@@ -388,6 +391,11 @@ unsigned int optional_rsp_execute(unsigned int cycles)
         uint16_t latches[32][8];parallelRSPGetGraphicsLatches(latches);rsp_factor5_seed(latches);
         naboo_set_packet_cursor(parallelRSPGetPacketCursor());
     }
+    hle.rsp_nead_env_written = 0;
+    if (kind == HLE_TASK_AUDIO) {
+        uint16_t latches[32][8]; parallelRSPGetGraphicsLatches(latches);
+        memcpy(hle.rsp_nead_env, latches[1], sizeof(hle.rsp_nead_env));
+    }
     if (kind == HLE_TASK_GRAPHICS) graphics_capture_begin(task);
     if ((*(const uint32_t*)hle.imem & 0xfc000000u) == 0x08000000u) {
         uint32_t state[PARALLEL_RSP_STATE_WORDS];parallelRSPSaveState(state);
@@ -400,6 +408,11 @@ unsigned int optional_rsp_execute(unsigned int cycles)
     else hle_execute(&hle);
     if (strict_hle_failed) return 0;
     if(hle.rsp_vco_written)parallelRSPSetVCO(hle.rsp_vco);
+    if (hle.rsp_nead_env_written) {
+        uint16_t latches[32][8];
+        memcpy(latches[1], hle.rsp_nead_env, sizeof(hle.rsp_nead_env));
+        parallelRSPSetGraphicsLatches(latches, 1u << 1);
+    }
     {
         if(kind==HLE_TASK_GRAPHICS)hle.rsp_t6_written=naboo_get_phase(&hle.rsp_t6);
         if(hle.rsp_t6_written)parallelRSPSetT6(hle.rsp_t6);
@@ -638,6 +651,7 @@ unsigned int optional_rsp_timing_replay(const char *path, char *family,
             naboo_set_packet_cursor(state[21]);
         }else naboo_set_packet_cursor(0);
         rsp_factor5_seed(latches);
+        memcpy(probe.rsp_nead_env, latches[1], sizeof(probe.rsp_nead_env));
     }
     timing_probe_active = 1; timing_probe_failed = 0;
     /* Audio state slabs overlap OSTask in native DMEM. Completion may

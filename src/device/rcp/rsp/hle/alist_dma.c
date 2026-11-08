@@ -16,10 +16,13 @@ void alist_dmem_dma(struct hle_t* hle, uint32_t dmem, uint32_t address,
     hle_timing_add(HLE_WORK_DMA, length / 8u * rows);
     for (row = 0; row < rows; ++row) {
         for (byte = 0; byte < length; ++byte) {
-            uint32_t d = (da + byte) & 0xfffu, r = (ra + byte) & 0x7fffffu;
-            if (write) hle->dram[r ^ S8] = bank[d ^ S8];
+            uint32_t d = (da + byte) & 0xfffu, r = (ra + byte) & 0xffffffu;
+            /* SP_DRAM_ADDR is 24 bits. The native DMA path returns zero
+             * outside installed RDRAM and drops writes there; bit 23 does
+             * not mirror an absent bank into the first eight MiB. */
+            if (write) { if (r < 0x800000u) hle->dram[r ^ S8] = bank[d ^ S8]; }
             else {
-                bank[d ^ S8] = hle->dram[r ^ S8];
+                bank[d ^ S8] = r < 0x800000u ? hle->dram[r ^ S8] : 0;
                 if (!(dmem & 0x1000u)) hle->dmem[d ^ S8] = bank[d ^ S8];
             }
         }

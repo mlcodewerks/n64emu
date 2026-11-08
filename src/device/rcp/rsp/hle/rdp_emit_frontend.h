@@ -24,6 +24,7 @@ extern "C" {
  * mech's feet -- was silently dropped at the index bound). */
 #define GSP_MAX_VERTICES 256
 #define GSP_MTX_STACK    16
+#define GSP_REJ_PROJECT  4u /* stored in clip_reject; preserves snapshot layout */
 #define GSP_MAX_LIGHTS   16   /* stock needs 8 directional + ambient; Conker's
                                * CBFD build loads up to 11 lights plus the
                                * ambient, so the array must hold at least 13 */
@@ -156,7 +157,8 @@ typedef struct GSPState
     int clip_fan_first;
     int rs_clip_model;      /* Rogue Squadron: use the clip overlay's own
                                intersection arithmetic and 5-plane walk */
-    int clip_reject;  /* F3DLX.Rej/F3DZEX.Rej: whole-tri reject, no clipper */
+    int clip_reject;  /* low bits: 1 = F3DEX Rej, 2 = compact F3D;
+                      * GSP_REJ_PROJECT identifies the verified projector. */
     int no_texgen;    /* F3DFLX.Rej: texgen drives reflection alpha, not S/T */
     int reflect_valid;            /* F3DFLX: reflection LUT captured this task */
     unsigned char reflect_lut[256]; /* 1D reflection ramp DMA'd to DMEM by the
@@ -258,6 +260,7 @@ void gsp_matrix_pop(GSPState *s, const unsigned char *rdram);
 void gsp_set_matrix_stack(GSPState *s, unsigned char *rdram,
                           unsigned int base, unsigned int size);
 int gsp_culldl_test(const GSPState *s, int v0, int vn);
+int gsp_culldl_rej_count(const GSPState *s, int v0, int vn, unsigned int *visited);
 /* DKR (F3DDKR) indexed matrix load + active-slot select. */
 void gsp_matrix_dkr(GSPState *s, const unsigned char *rdram, unsigned int addr,
                     int index, int multiply, int source);

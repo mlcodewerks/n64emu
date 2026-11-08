@@ -1,12 +1,14 @@
 RDP_TIMING.H: MODEL, FINDINGS, AND RESEARCH METHODOLOGY
 ====================================================
 
-This document describes the current source, the evidence behind its timing
+Sections 1-18 describe the earlier model, the evidence behind its timing
 terms, the research methods used, and the limits of the available evidence.
 Writing this document did not change the emulator's timing model.
 The accompanying portability work adds a standalone adapter, independently
 optional observation hooks and a shared packet-length helper. Its timing
-calculations match the original snapshot in the differential checks below.
+calculations matched the original snapshot in the differential checks below.
+Section 19 records the subsequent hardware-envelope calibration; where its
+terms differ, section 19 and benchmarks/RDP_HARDWARE_TIMING.md take precedence.
 
 
 1. PURPOSE AND SCOPE
@@ -1245,9 +1247,10 @@ Minimal host-side pseudocode using the supplied adapter:
 example.c contains a real standalone implementation of the callback and native
 packet feed. It submits SetColorImage, SetScissor, SetOtherModes, a full-screen
 one-cycle rectangle and FullSync, with VI disabled. Three setup delivery clocks
-plus 80,401 rectangle clocks plus one FullSync clock equal 80,405 RCP clocks:
+plus 80,513 rectangle clocks plus one FullSync clock equal 80,517 RCP clocks
+with the buffered RGBA16 calibration described in section 19:
 
-  ceil(80,405*3/4) = 60,304 COUNT ticks.
+  ceil(80,517*3/4) = 60,388 COUNT ticks.
 
 Its callback prints that fence deadline and the program checks the result.
 Copy only the example and two headers into another directory to compile it;
@@ -1258,3 +1261,33 @@ no files from src/, deps/, a renderer, or a built emulator are linked.
 
 The same headers can be included in an emulator adapter translation unit while
 the host keeps its existing command renderer and scheduler implementation.
+
+
+19. BUFFERED RGBA16 HARDWARE-ENVELOPE CALIBRATION (2026-11-08)
+----------------------------------------------------------
+
+The acceptance criterion is all 200 buffer/pipe means within Thar0's original
+hardware min/max ranges, using all 100 cases and 1,000 samples per counter
+with upstream percentile trimming. The full-console ROM improves from 16/200
+to 200/200. No test expectations, repetition counts or hardware ranges change.
+
+RGBA16 spans use calibrated Q8 service per eight-pixel buffer and same-bank
+row handoff. Actual partial-word transfers, geometry and live interfaces
+remain inputs. Q12 exposed VI grants account for color/depth bank topology,
+source width/stride/scaling, halfline and field phase. Fractional grants carry
+across service windows, including overcommitted schedules. Buffer retirement
+precedes pipe retirement by an effective 16 RCP clocks for memory primitives.
+The existing special no-memory rejection counter behavior is retained.
+
+These are effective aggregate rates calibrated on the acceptance dataset,
+not a cycle-exact reconstruction or independent validation of arbitrary
+workloads. Other sizes and bank-crossing spans retain the previous estimate;
+unmeasured interface mixes borrow neighboring VI schedules. Horizontal burst
+phase and concurrent non-VI RCP memory clients remain unmodeled.
+
+See benchmarks/RDP_HARDWARE_TIMING.md for details and reproduction, and
+benchmarks/rdp-hardware-validation.json for final ROM, source and suite hashes.
+The portable tests also cover alignment, bank boundaries, 1,323 row proofs,
+VI phase periodicity and saturated grants, in strict C99 and C++11 builds.
+Their 8,192-command differential now compares the standalone header with the
+current production header, rather than asserting equality to the old model.

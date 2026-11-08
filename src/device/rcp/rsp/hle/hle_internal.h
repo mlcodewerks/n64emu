@@ -99,6 +99,10 @@ struct hle_t
      * Refreshed from the native register snapshot at every HLE entry. */
     uint32_t rsp_f5[7];
     uint32_t rsp_f5_written;
+    /* Transient V1 envelope lanes; the native RSP register snapshot persists
+     * them. Keep this outside the legacy audio snapshot layout. */
+    uint16_t rsp_nead_env[8];
+    int rsp_nead_env_written;
 };
 
 /* some mips interface interrupt flags */

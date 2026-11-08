@@ -30,6 +30,8 @@
 #include "rdp_emit_backend.h"
 #include "rdp_emit_state.h"
 #include "hle_timing.h"
+#include "hle_timing_rej.h"
+#include "hle_timing_s2dex.h"
 
 /* The active rasterizer backend (angrylion or parallel-rdp).  Installed via
  * rdp_emit_set_backend() at plugin connect time.  The display-list walk,
@@ -242,6 +244,8 @@ static void guest_ring_fetch_dl(unsigned int pc, unsigned int w0)
         unsigned int size = s_backend->get_rdram_size();
         unsigned int bytes = s_ring_dl_bytes;
         if (pc <= size && bytes <= size - pc) {
+            if(hle_timing_native_graphics_profile()==1)
+                hle_timing_add(HLE_WORK_DMA,(bytes+7u)/8u);
             memcpy(s_backend->get_dmem() + s_ring_dl_base,
                    s_backend->get_rdram() + (pc & ~7u), bytes);
             s_ring_dl_end = pc + bytes;
@@ -276,6 +280,8 @@ static void guest_ring_drain(void)
 #endif
     ram = s_backend->get_rdram();
     dm = s_backend->get_dmem();
+    hle_timing_graphics_flush(bytes,!(state&RING_OUTPUT_ONLY)
+        && s_zb_ring_pos+bytes>s_zb_ring_end);
     if (!(state & RING_OUTPUT_ONLY) && s_zb_ring_pos + bytes > s_zb_ring_end)
         s_zb_ring_pos = s_zb_ring_base;
     if (s_zb_ring_pos <= s_backend->get_rdram_size()
@@ -298,7 +304,11 @@ static void guest_ring_group(int begin)
 {
     unsigned int state = (unsigned int)s_zb_ring_live;
     if (begin) {
-        if((state&RING_KIND)==RING_GBI2) {
+        if((state&RING_KIND)==RING_GBI2 ||
+           ((state&RING_KIND)==RING_GBI1 && (state&RING_BUFFERED))) {
+            /* Buffered S2DEX 1.x checks its DMA threshold after the full
+             * background strip, just like the GBI2 writer. Draining its
+             * intermediate load/sync packets changes the guest ring wrap. */
             s_ring_group_active=2;
             return;
         }
@@ -894,9 +904,17 @@ void gsp_detect_ucode_params(GSPState *st, const unsigned char *rdram,
     int ut_is_task_start = gsp_params_at_task_start;
     unsigned int ud_task;
     if(ut_is_task_start) {
+        const unsigned char *dm=s_backend->get_dmem();
+        uint32_t profile=ut<=rdram_size && !(ut&3u) && 0x17e8u<=rdram_size-ut
+            && ud<=rdram_size && !(ud&3u) && 0x800u<=rdram_size-ud
+            && read_dmem_u32(dm,0xfdcu)==0x800u && !(read_dmem_u32(dm,0xfc4u)&1u)
+            ? hle_timing_s2dex_profile((const uint32_t *)(rdram+ut),(const uint32_t *)(rdram+ud)):0;
         int sdk=ut<=rdram_size && 24u<=rdram_size-ut &&
             read_dmem_u32(rdram,ut)==0x4a10802au &&
             read_dmem_u32(rdram,ut+20u)==0x4b1f0051u;
+        hle_timing_native_graphics(profile);
+        if(hle_timing_native_graphics_profile()==1)
+            hle_timing_add(HLE_WORK_DMA,(0xf80u+0x800u+0x138u)/8u);
         rsp_graphics_sdk_boot(sdk);
         if(sdk && (!rsp_graphics_sdk_one(5)||!rsp_graphics_sdk_one(7)) &&
            !(read_dmem_u32(s_backend->get_dmem(),0xfc4u)&1u)) {
@@ -909,6 +927,7 @@ void gsp_detect_ucode_params(GSPState *st, const unsigned char *rdram,
             memcpy(dm+0xf0u,&s_zb_ring_pos,4);
         }
     }
+    else hle_timing_native_graphics(0);
     if(ut_is_task_start && ut<=rdram_size && 0x1800u<=rdram_size-ut &&
        ud<=rdram_size && 0x400u<=rdram_size-ud) {
         unsigned int at;
@@ -923,8 +942,13 @@ void gsp_detect_ucode_params(GSPState *st, const unsigned char *rdram,
                     /* Boot DMA supplies two look-at records, the light
                      * array and its ambient entry even before a list
                      * issues its first lighting command. */
-                    gsp_set_lookat(st,rdram,ud+0x1b0u,0);
-                    gsp_set_lookat(st,rdram,ud+0x1d0u,1);
+                    static const uint32_t rev_b[] = { 0x4b32949du };
+                    int swapped = text_has_words(rdram,ut,0x1000u,rev_b,1);
+                    /* Revision B's lighting loop puts the last look-at
+                     * dot in the first generated texture lane. Revision A
+                     * retains the other slot order. */
+                    gsp_set_lookat(st,rdram,ud+0x1b0u,swapped ? 1 : 0);
+                    gsp_set_lookat(st,rdram,ud+0x1d0u,swapped ? 0 : 1);
                     for(k=0;k<GSP_MAX_LIGHTS;k++)
                         gsp_set_light(st,rdram,ud+0x1f0u+k*32u,(int)k);
                     gsp_set_num_lights(st,(int)((count&0xfffu)/32u)-1);
@@ -1283,6 +1307,27 @@ void gsp_detect_ucode_params(GSPState *st, const unsigned char *rdram,
         st->clip_reject = rej;
         if(rej)
             gsp_set_tri_scales(st,0x4000,8,0xffff,0x7fff);
+        if (rej && ut <= rdram_size && 0x1000u <= rdram_size-ut) {
+            static const uint32_t bias[] = { 0x4bff2f47u };
+            static const uint32_t viewport[] = { 0xc810181cu, 0xc8101c1cu };
+            static const uint32_t matrix[] = { 0x900801d9u };
+            int verified = text_has_words(rdram,ut,0x1000u,bias,1)
+                && text_has_words(rdram,ut,0x1000u,viewport,2)
+                && text_has_words(rdram,ut,0x1000u,matrix,1)
+                && hle_timing_rej_profile((const uint32_t *)(rdram+ut));
+            if (verified) st->clip_reject |= GSP_REJ_PROJECT;
+            if (verified && ut_is_task_start && ud != 0
+                    && ud <= rdram_size && 0x300u <= rdram_size-ud) {
+                unsigned int k;
+                const unsigned char *dm = s_backend->get_dmem();
+                gsp_seed_matrices(st,dm,0,64u);
+                for (k=0;k<4;k++)
+                    gsp_force_matrix_chunk(st,dm,0x80u+k*16u,k*16u);
+                st->combined_valid = dm[0x1d9u^3u] != 0;
+                gsp_set_viewport(st,dm,0xe0u);
+                gsp_set_persp_norm(st,((unsigned int)dm[0xdcu^3u]<<8)|dm[0xddu^3u]);
+            }
+        }
     }
 
     /* F3DFLX.Rej ("FLX" rejection build, used by F-Zero X's in-race racer

@@ -591,7 +591,9 @@ void rsp_s2dex_sprite_triangle(int32_t packet[24], const int16_t h[4],
         a+=p_udn(de[k].f,temp.i);base[k].f=acc_clamp_low(a);
         a+=p_udh(de[k].i,temp.i);base[k].i=acc_clamp_mid(a);
     }
-    packet[0]=(int32_t)(((0xa00u|(tile<<8)|(sign<<7))<<16)|(uint16_t)lv[6]);
+    /* The render tile occupies header bits 18:16. Shifting it by eight
+     * here merged it into the opcode before the final halfword shift. */
+    packet[0]=(int32_t)(((0xa00u|(tile&7u)|(sign<<7))<<16)|(uint16_t)lv[6]);
     packet[1]=(int32_t)(((uint32_t)(uint16_t)mv[6]<<16)|(uint16_t)hv[6]);
     packet[2]=(int32_t)((uint32_t)mv[2]<<14);
     packet[3]=r32(edge[2]);
@@ -1847,6 +1849,15 @@ static int s_fogz_ok;
 static int32_t s_fogz_cz, s_fogz_cw, s_fogz_pn;
 static Rsp32 s_fogz_p2;
 
+static int s_vtx_rej_project, s_vtx_rej_bias;
+static unsigned int s_vtx_rej_pn;
+void rsp_set_vtx_rej_project(int enabled, int rejected, unsigned int pn)
+{
+    s_vtx_rej_project = enabled;
+    s_vtx_rej_bias = rejected;
+    s_vtx_rej_pn = pn;
+}
+
 int rsp_vtx_screen(int32_t cx, int32_t cy, int32_t cz, int32_t cw,
                    int32_t pn,
                    int32_t vsx, int32_t vsy, int32_t vsz,
@@ -1863,8 +1874,10 @@ int rsp_vtx_screen(int32_t cx, int32_t cy, int32_t cz, int32_t cw,
 
     /* the Fast3D vertex write runs for every vertex, behind the eye
      * included, and its triangle path reads whatever it stored */
-    if (cw <= 0 && !s_vtx_f3d)
+    if (cw <= 0 && !s_vtx_f3d && !s_vtx_rej_project)
         return 0;
+    if (s_vtx_rej_project)
+        pn = (int32_t)s_vtx_rej_pn;
 
     pos[0] = mk32(cx);
     pos[1] = mk32(cy);
@@ -1989,6 +2002,8 @@ int rsp_vtx_screen(int32_t cx, int32_t cy, int32_t cz, int32_t cw,
         }
 
         acc = p_udh(vt, 1);
+        if (s_vtx_rej_bias)
+            acc += p_udh(0x7fff, 0x7fff);
         acc += p_udn(p2.f, vs);
         scr_f[lane] = acc_clamp_low(acc);
         acc += p_udh(p2.i, vs);

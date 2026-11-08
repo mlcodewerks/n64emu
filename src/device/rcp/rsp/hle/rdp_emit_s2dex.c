@@ -22,6 +22,7 @@
 #include "rdp_emit_recip.h"
 #include "rdp_emit_rsp.h"
 #include "rdp_emit_frontend.h"
+#include "hle_timing.h"
 
 /* S2DEX sprite quad uses four scratch vertex slots at the top of the RSP
  * vertex buffer so it never clobbers geometry a surrounding display list
@@ -390,6 +391,14 @@ static uint32_t bg_inv_scale(unsigned int scale)
     return acc;            /* {hi16:lo16} = (1<<16)/scale + 1 */
 }
 
+static uint32_t bg_loadtile_extent(uint32_t words,uint32_t rows)
+{
+    /* The overlay emits two SH instructions, not independent masked RDP
+     * fields. A zero-width seam load borrows from the tile field: its
+     * upper half is 0x06ff, rather than the OR-composed 0x07ff. */
+    return ((words+0x6ffu)<<16)|((rows*4u-1u)&0xffffu);
+}
+
 /* ---- G_BG_1CYC ---------------------------------------------------------- */
 
 void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
@@ -411,7 +420,7 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
     /* clipped frame rectangle (IMEM 0x784-0x7c4), 10.2 / pixel rows */
     unsigned int clip_ulx, clip_lrx;            /* DMEM 0x3d8 / 0x3da */
     unsigned int clip_uly_px, clip_h_px;        /* texrect row counters */
-    unsigned int clip_l_q, clip_t_q;            /* left/top clip, 10.2 */
+    unsigned int clip_l_q, clip_t_q;            /* source-side/top clip, 10.2 */
     unsigned int draw_w_q;                      /* drawn width, 10.2 */
 
     /* image-space start offsets and per-strip parameters */
@@ -438,9 +447,20 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
     uint32_t excess_w, excess_h;
     uint32_t v15v14, bound, line_in;
     int32_t  rows_rcp;
+    uint32_t timing_clocks=0,timing_rdp=0;
+    int timing_cold,group_open=0;
 
     if (bg_addr + 0x28u > rdram_bytes)
         return;
+
+    timing_cold=hle_timing_graphics_bg_enter();
+    if(timing_cold>=0) {
+        /* Original 1.07 dispatch/preamble, excluding the separately
+         * counted descriptor/overlay DMA beats. Branch regions below
+         * replace their own command/packet estimates at successful exit. */
+        timing_clocks=424u+(timing_cold?34u:0u);
+        timing_rdp=hle_timing_get().units[HLE_WORK_RDP];
+    }
 
     /* struct DMA, IMEM 0xb78-0x70c: 0x28 bytes to DMEM 0x3b0 */
     image_x    = bg_rd_u16(rdram, bg_addr + 0x00);
@@ -464,6 +484,7 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
 
     bilerp  = (s_obj_rendermode >> 3) & 1u;     /* IMEM 0x854-0x85c */
     flip_s  = image_flip & 1u;                  /* IMEM 0x748-0x754 */
+    if(timing_clocks && flip_s)timing_clocks+=12;
 
     if (image_fmt > 4u || image_siz > 3u)
         return;
@@ -521,7 +542,10 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
         clip_lrx    = (clip_ulx + (unsigned int)draw_w) & 0xfffu;
         clip_uly_px = ((unsigned int)(frame_y + clip_t) >> 2);
         clip_h_px   = (unsigned int)draw_h >> 2;
-        clip_l_q    = (unsigned int)clip_l;
+        /* The flipped path copies the right clip into the source-start
+         * lane (S2DEX 1.07 IMEM 0x338-0x340). The screen rectangle still
+         * uses the left clip above. */
+        clip_l_q    = (unsigned int)(flip_s ? clip_r : clip_l);
         clip_t_q    = (unsigned int)clip_t;
         draw_w_q    = (unsigned int)draw_w;
     }
@@ -583,6 +607,10 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
                  + (((prodl & 0xffffu) * 0x200u) >> 16) + (prodl >> 16) * 0x200u;
         starty32 = (uint32_t)image_y
                  + (((prodt & 0xffffu) * 0x200u) >> 16) + (prodt >> 16) * 0x200u;
+        /* MFC2 sign-extends each 16-bit source-start lane before the
+         * scalar wrap loops (S2DEX 1.07 IMEM 0x35c/0x364). */
+        startx32 = (uint32_t)(int32_t)(int16_t)startx32;
+        starty32 = (uint32_t)(int32_t)(int16_t)starty32;
         origin32 = (int32_t)bg_rd_u32(rdram, bg_addr + 0x20);   /* imageYorig */
         {
             uint32_t prodw = (uint32_t)scale_w * (uint32_t)draw_w_q;
@@ -590,14 +618,16 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
                            + (prodw >> 16) * 0x200u) & 0xffffu;
             drawnw32 = drawnw_fold + 0xbu;
         }
-        while (startx32 >= imagew32 && imagew32 != 0u)  /* IMEM 0x800-0x814 */
+        while ((int32_t)startx32 >= (int32_t)imagew32 && imagew32 != 0u)  /* IMEM 0x800-0x814 */
         {
+            if(timing_clocks)timing_clocks+=8; /* 1.07 0x370..0x388 */
             startx32 -= imagew32;
             starty32 += 0x20u;
             origin32 += 0x20;
         }
-        while (starty32 >= imageh32 && imageh32 != 0u)  /* IMEM 0x81c-0x830 */
+        while ((int32_t)starty32 >= (int32_t)imageh32 && imageh32 != 0u)  /* IMEM 0x81c-0x830 */
         {
+            if(timing_clocks)timing_clocks+=7; /* 1.07 0x38c..0x3a0 */
             starty32 -= imageh32;
             origin32 -= (int32_t)imageh32;
         }
@@ -638,18 +668,19 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
     {
         uint32_t phase = (starty32 - (uint32_t)origin32) << 5;  /* DMEM 0x3e4 */
         uint32_t il = inv_h & 0xffffu, ih = inv_h >> 16;
-        uint32_t lo = phase & 0xffffu, hi = phase >> 16;
+        uint32_t lo = phase & 0xffffu, hi = (uint32_t)(int32_t)(int16_t)(phase >> 16);
         uint32_t ph = ((lo * il) >> 16) + hi * il + lo * ih + ((hi * ih) << 16);
         uint32_t ph_masked = (ph & 0xffff0000u) | (ph & 0xfc00u);
         int32_t  rcp = rsp_recip_div((int32_t)rows_q);
         uint32_t rl = (uint32_t)rcp & 0xffffu, rh = ((uint32_t)rcp >> 16) & 0xffffu;
-        uint32_t pl = ph_masked & 0xffffu, phh = ph_masked >> 16;
+        uint32_t pl = ph_masked & 0xffffu;
+        uint32_t phh = (uint32_t)(int32_t)(int16_t)(ph_masked >> 16);
         uint32_t qf = (((pl * rl) >> 16) + phh * rl + pl * rh + ((phh * rh) << 16)) * 2u;
-        uint32_t q  = qf >> 16;
+        int32_t q = (int16_t)(qf >> 16);
         uint32_t prod, prodm, remainder, rem_scaled, rem_i, orows32;
         uint32_t rs_lo;
 
-        if (ph_masked >= rows_q * (q + 1u))     /* IMEM 0x950-0x960 */
+        if ((int32_t)ph_masked >= (int32_t)(rows_q * (uint32_t)(q + 1))) /* IMEM 0x950-0x960 */
             q += 1u;
         prod  = rows_q * q;
         prodm = (prod & 0xffff0000u) | (prod & 0xfc00u);    /* IMEM 0x96c */
@@ -698,6 +729,10 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
     cw[3] = (int32_t)(((image_pal & 0xfu) << 20) | S2DEX_SETTILE_W1);
     cw[4] = (int32_t)0x32000000u;
     cw[5] = 0;
+    /* The preamble is part of the first strip's threshold check. In a
+     * repeated background it can itself cross the DMA threshold. */
+    if(fifo->group)fifo->group(1);
+    group_open=1;
     s2dex_bg_append(fifo, cw, 6);
 
     /* ---- strip loop (IMEM 0xcbc-0xd90 head, 0xa18-0xb74 loads, 0xd98
@@ -728,6 +763,7 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
                 /* sub-row strip (large vertical scale): consume the
                  * source rows without drawing (IMEM 0xd04-0xd48). */
                 int rem = (int)v1 - (int)a0;
+                if(timing_clocks)timing_clocks+=3u+(rem<=0?27u:4u)+6u;
                 a1 += adv;
                 if (rem <= 0)
                 {
@@ -742,6 +778,7 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
                 continue;
             }
             tail = (int)t6 - (int)t5;                   /* IMEM 0xd4c */
+            if(timing_clocks)timing_clocks+=4u+(tail<0?23u:4u)+3u;
             t6   = (unsigned int)((tail < 0) ? 0 : tail);
             v0  &= 0x3ffu;                              /* IMEM 0xd54 (delay) */
             if (tail < 0)
@@ -755,32 +792,35 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
                 t5  = (unsigned int)((int)t5 + tail);
                 a0  = (unsigned int)((int)a0 + 1 + (int)over);
                 if (a0 > cap) a0 = cap;
-                if (t5 == 0u)
+                if (t5 == 0u) {
+                    timing_clocks=0; /* Native's degenerate path is not covered here. */
                     break;
+                }
             }
             t2 = t1 + t5;
 
             /* IMEM 0xa18: normal or final-strip load */
-            if(fifo->group)fifo->group(1);
+            if(!group_open && fifo->group)fifo->group(1);
+            group_open=1;
             t9 = a0 + bilerp;
             t8 = v1 - seam_flag;
             if ((int)(t8 - t9) >= 0)
             {
+                if(timing_clocks)timing_clocks+=30;
                 /* normal strip: SETTIMG/LOADSYNC/LOADTILE of t9 rows */
                 cw[0] = (int32_t)settimg_w0;
                 cw[1] = (int32_t)a1;
                 cw[2] = (int32_t)0x26000000u;
                 cw[3] = 0;
                 cw[4] = (int32_t)0xf4000000u;
-                cw[5] = (int32_t)((7u << 24) |
-                        ((((line_words - 1u) << 4) & 0xfffu) << 12) |
-                        ((t9 * 4u - 1u) & 0xfffu));
+                cw[5] = (int32_t)bg_loadtile_extent(line_words,t9);
                 s2dex_bg_append(fifo, cw, 6);
                 v1 -= a0;
                 a1 += adv;
             }
             else
             {
+                if(timing_clocks)timing_clocks+=9;
                 /* final image strip (IMEM 0xa4c-0xb74): the guard rows
                  * wrap to the image top and the line-gap words get their
                  * seam patches, each load prefixed by TILESYNC + SETTILE 7
@@ -793,6 +833,7 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
 
                 if ((int)pre > 0)
                 {
+                    if(timing_clocks)timing_clocks+=4u+((v1&1u)?9u:6u)+30u;
                     unsigned int rrow = v1, rsrc = base + x_ofs;
                     unsigned int rcnt = pre;
                     if (v1 & 1u)
@@ -811,13 +852,12 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
                     cw[2] = (int32_t)0x26000000u;
                     cw[3] = 0;
                     cw[4] = (int32_t)0xf4000000u;
-                    cw[5] = (int32_t)((7u << 24) |
-                            ((((line_words - 1u) << 4) & 0xfffu) << 12) |
-                            ((rcnt * 4u - 1u) & 0xfffu));
+                    cw[5] = (int32_t)bg_loadtile_extent(line_words,rcnt);
                     s2dex_bg_append(fifo, cw, 6);
-                }
+                } else if(timing_clocks)timing_clocks+=5;
                 if (seam_flag)
                 {
+                    if(timing_clocks)timing_clocks+=2u+((t8&1u)?23u:19u)+69u;
                     unsigned int t8e = t8, cnt = (t8 & 1u) + 1u;
                     unsigned int src2 = base, src3 = a1 + t8 * bpr;
                     if (t8 & 1u)
@@ -839,9 +879,7 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
                     cw[2] = (int32_t)0x26000000u;
                     cw[3] = 0;
                     cw[4] = (int32_t)0xf4000000u;
-                    cw[5] = (int32_t)((7u << 24) |
-                            ((((line_words - dw - 1u) << 4) & 0xfffu) << 12) |
-                            ((cnt * 4u - 1u) & 0xfffu));
+                    cw[5] = (int32_t)bg_loadtile_extent(line_words-dw,cnt);
                     s2dex_bg_append(fifo, cw, 6);
                     /* row patch: the row past the main load into TMEM
                      * row t8 */
@@ -856,15 +894,14 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
                     cw[2] = (int32_t)0x26000000u;
                     cw[3] = 0;
                     cw[4] = (int32_t)0xf4000000u;
-                    cw[5] = (int32_t)((7u << 24) |
-                            ((((dw - 1u) << 4) & 0xfffu) << 12) |
-                            ((cnt * 4u - 1u) & 0xfffu));
+                    cw[5] = (int32_t)bg_loadtile_extent(dw,cnt);
                     s2dex_bg_append(fifo, cw, 6);
-                }
+                } else if(timing_clocks)timing_clocks+=3;
                 /* main final load (TILESYNC + SETTILE at TMEM 0; the load
                  * itself only when rows remain) */
                 if ((int)t8 > 0)
                 {
+                    if(timing_clocks)timing_clocks+=29;
                     cw[0] = (int32_t)0x28000000u;
                     cw[1] = 0;
                     cw[2] = (int32_t)settile_w0;
@@ -875,13 +912,12 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
                     cw[2] = (int32_t)0x26000000u;
                     cw[3] = 0;
                     cw[4] = (int32_t)0xf4000000u;
-                    cw[5] = (int32_t)((7u << 24) |
-                            ((((line_words - 1u) << 4) & 0xfffu) << 12) |
-                            ((t8 * 4u - 1u) & 0xfffu));
+                    cw[5] = (int32_t)bg_loadtile_extent(line_words,t8);
                     s2dex_bg_append(fifo, cw, 6);
                 }
                 else
                 {
+                    if(timing_clocks)timing_clocks+=9;
                     cw[0] = (int32_t)settile_w0;        /* IMEM 0xb10 */
                     cw[1] = (int32_t)0x27000000u;
                     s2dex_bg_append(fifo, cw, 2);
@@ -891,11 +927,13 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
                     int rem = (int)v1 - (int)a0;
                     if (rem > 0)
                     {
+                        if(timing_clocks)timing_clocks+=3;
                         v1 = (unsigned int)rem;
                         a1 += adv;
                     }
                     else
                     {
+                        if(timing_clocks)timing_clocks+=21;
                         a1 = base + x_ofs + (unsigned int)(-rem) * bpr;
                         v1 = (unsigned int)rem + img_rows;
                     }
@@ -914,6 +952,10 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
             s2dex_bg_append(fifo, cw, 6);
 
             if(fifo->group)fifo->group(0);
+            group_open=0;
+            /* 0x904..0x93c includes the seven-clock no-flush call;
+             * actual FIFO transfers add only the extra path in the ring. */
+            if(timing_clocks)timing_clocks+=22u+((int)t6<=0?12u:8u);
             if ((int)t6 <= 0)                           /* IMEM 0xdd0 */
                 break;
             t1  = t2;
@@ -922,6 +964,12 @@ void s2dex_bg_1cyc(const unsigned char *rdram, unsigned int rdram_bytes,
             adv = strip_adv;                            /* DMEM 0x408 */
             tc  = 0;                                    /* IMEM 0xde8 */
         }
+    }
+    if(group_open && fifo->group)fifo->group(0);
+    if(timing_clocks) {
+        uint32_t emitted=hle_timing_get().units[HLE_WORK_RDP]-timing_rdp;
+        hle_timing_graphics_refine_command(timing_clocks,0);
+        if(emitted)hle_timing_refine(HLE_WORK_RDP,emitted,0);
     }
 }
 

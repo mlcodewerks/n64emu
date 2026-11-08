@@ -1,4 +1,5 @@
 #include "hle_timing.h"
+#include "hle_timing_s2dex.h"
 #include <string.h>
 #include <limits.h>
 
@@ -12,7 +13,78 @@ void hle_timing_begin(void)
 {
     memset(&work, 0, sizeof(work));
     work.family = "unknown";
+    work.native_packet_cost = -1;
     model_valid = 0;
+}
+void hle_timing_boot(const uint32_t *imem)
+{
+    work.sdk_boot = imem && hle_timing_word_fingerprint(imem,0xd0u/4u)
+        == UINT64_C(0x0f7c8dfaf9f62fc0);
+}
+void hle_timing_native_graphics(uint32_t profile)
+{
+    work.native_graphics_profile = work.sdk_boot ? profile : 0;
+    work.native_graphics_overlay = 0;
+    work.native_packet_cost = -1;
+}
+uint32_t hle_timing_native_graphics_profile(void) { return work.native_graphics_profile; }
+int hle_timing_graphics_bg_enter(void)
+{
+    int cold;
+    if(work.native_graphics_profile!=1)return -1;
+    cold=work.native_graphics_overlay==2 ? -1 : work.native_graphics_overlay==0;
+    work.native_graphics_overlay=1;
+    hle_timing_add(HLE_WORK_DMA,5u+(cold==1?230u:0u));
+    return cold;
+}
+uint32_t hle_timing_native_opcode(void) { return work.native_opcode; }
+void hle_timing_graphics_refine_command(uint32_t cycles,int32_t packet_cost)
+{
+    if(work.native_graphics_profile==1 && cycles &&
+       hle_timing_refine(HLE_WORK_COMMAND,1,cycles)) work.native_packet_cost=packet_cost;
+}
+void hle_timing_graphics_command(uint32_t w0)
+{
+    int32_t packet_cost;
+    uint32_t cycles;
+    hle_timing_command(w0>>24);
+    work.native_opcode=w0>>24;
+    work.native_packet_cost=-1;
+    if(work.native_graphics_profile!=1)return;
+    cycles=hle_timing_s2dex_command(w0,&packet_cost);
+    /* The sprite/select trampolines restore the resident main overlay.
+     * Uncovered handlers may change the overlay; don't assume a later
+     * background is either cold or warm without that evidence. */
+    if((w0>>24)==3 || (w0>>24)==4)work.native_graphics_overlay=0;
+    else if(!cycles && (w0>>24)!=0 && (w0>>24)!=1 && (w0>>24)!=2 &&
+            (w0>>24)!=5 && (w0>>24)!=6 && (w0>>24)!=0xb8 &&
+            (w0>>24)!=0xe4 && (w0>>24)!=0xe5 &&
+            (w0>>24)!=0xb3 && (w0>>24)!=0xb4)
+        work.native_graphics_overlay=2;
+    hle_timing_graphics_refine_command(cycles,packet_cost);
+}
+void hle_timing_graphics_rdp(uint32_t units)
+{
+    hle_timing_add(HLE_WORK_RDP,units);
+    if(work.native_graphics_profile==1 && work.native_packet_cost>=0) {
+        uint64_t clocks=(uint64_t)units*(uint32_t)work.native_packet_cost;
+        hle_timing_refine(HLE_WORK_RDP,units,clocks>INT_MAX?INT_MAX:(uint32_t)clocks);
+    }
+}
+void hle_timing_graphics_flush(uint32_t bytes,int wrapped)
+{
+    uint32_t extra;
+    if(work.native_graphics_profile!=1)return;
+    hle_timing_add(HLE_WORK_DMA,(bytes+7u)/8u);
+    /* 0xde8..return: 46 + bytes/8, plus ten clocks on ring wrap.
+     * BG's normal call already covers the seven-clock no-flush return;
+     * ordinary commands cover the four-clock 0xddc fast branch instead. */
+    extra=work.native_opcode==1 ? 39u : work.native_packet_cost>=0 ? 45u : 0;
+    if(extra) {
+        extra+=wrapped?10u:0u;
+        hle_timing_add(HLE_WORK_DMA_SETUP,1);
+        hle_timing_refine(HLE_WORK_DMA_SETUP,1,extra);
+    }
 }
 void hle_timing_family(const char *family)
 {
@@ -42,6 +114,19 @@ void hle_timing_command(unsigned int opcode)
     hle_timing_add(HLE_WORK_COMMAND, 1);
     if (opcode < 256 && work.commands[opcode] != UINT_MAX)
         ++work.commands[opcode];
+}
+int hle_timing_refine(enum hle_work_kind kind, uint32_t units, uint32_t cycles)
+{
+    uint32_t old;
+    if ((unsigned int)kind >= HLE_WORK_COUNT || !units || work.units[kind] == UINT_MAX ||
+        work.refined_units[kind] > work.units[kind] ||
+        units > work.units[kind] - work.refined_units[kind]) return 0;
+    work.refined_units[kind] += units;
+    work.refined_mask |= 1u << (unsigned int)kind;
+    old = work.refined_cycles[kind];
+    work.refined_cycles[kind] = old >= INT_MAX || cycles > (uint32_t)INT_MAX - old
+        ? INT_MAX : old + cycles;
+    return 1;
 }
 void hle_timing_path(enum hle_path_kind kind, uint32_t count)
 {
@@ -190,8 +275,24 @@ uint32_t hle_timing_cycles(void)
     if (!model_valid) select_model();
     model = selected;
     cycles = model->base;
+    if (!work.refined_mask) {
+        /* Most tasks still use only the coarse work model. Avoid probing
+         * two coverage arrays for each kind on that common path. */
+        for (i = 0; i < HLE_WORK_COUNT; i++) {
+            uint64_t cost = (uint64_t)model->cost[i] * work.units[i];
+            if (cycles >= INT_MAX || cost > INT_MAX - cycles) return INT_MAX;
+            cycles += cost;
+        }
+        return cycles ? (uint32_t)cycles : 1;
+    }
     for (i = 0; i < HLE_WORK_COUNT; i++) {
-        uint64_t cost = (uint64_t)model->cost[i] * work.units[i];
+        uint32_t units = work.units[i];
+        uint64_t cost;
+        if (work.refined_units[i] <= units) {
+            units -= work.refined_units[i];
+            cost = work.refined_cycles[i];
+        } else cost = 0;
+        cost += (uint64_t)model->cost[i] * units;
         if (cycles >= INT_MAX || cost > INT_MAX - cycles) return INT_MAX;
         cycles += cost;
     }

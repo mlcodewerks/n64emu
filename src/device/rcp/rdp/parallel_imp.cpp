@@ -14,6 +14,8 @@
 #include "renderer_options.h"
 extern "C" {
 #include "rdp_core.h"
+#include "core/file.h"
+#include "core/frontend.h"
 }
 #include "performance_cores.h"
 
@@ -41,6 +43,65 @@ unsigned width, height;
 
 bool skip_swap_clear;
 static bool vk_initialized;
+
+static std::string pipeline_cache_path;
+static constexpr int64_t pipeline_cache_limit = 64 * 1024 * 1024;
+
+static void load_frontend_pipeline_cache()
+{
+    pipeline_cache_path.clear();
+    const char *directory = nullptr;
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &directory) &&
+        directory && *directory)
+    {
+        const char digits[] = "0123456789abcdef";
+        char uuid[VK_UUID_SIZE * 2 + 1];
+        const auto &properties = device->get_gpu_properties();
+        for (unsigned i = 0; i < VK_UUID_SIZE; ++i)
+        {
+            uuid[2*i] = digits[properties.pipelineCacheUUID[i] >> 4];
+            uuid[2*i+1] = digits[properties.pipelineCacheUUID[i] & 15];
+        }
+        uuid[VK_UUID_SIZE * 2] = 0;
+        pipeline_cache_path = std::string(directory) + "/n64emu-parallel-rdp-v1-" + uuid + ".cache";
+    }
+    std::vector<uint8_t> bytes;
+    if (!pipeline_cache_path.empty())
+    {
+        core_file *file = core_file_open(pipeline_cache_path.c_str(), "rb");
+        if (file)
+        {
+            int64_t size = core_file_size(file);
+            if (size >= 24 && size <= pipeline_cache_limit)
+            {
+                bytes.resize(size_t(size));
+                if (!core_file_read_exact(file, bytes.data(), bytes.size())) bytes.clear();
+            }
+            core_file_close(file);
+        }
+    }
+    /* This standalone build has no Granite filesystem handles. Explicitly
+     * create a Vulkan cache even when no persistent file is available.
+     * Device validates its UUID and payload hash before giving data to Vulkan. */
+    if (!device->init_pipeline_cache(bytes.empty() ? nullptr : bytes.data(), bytes.size()))
+        device->init_pipeline_cache(nullptr, 0);
+}
+
+static void save_frontend_pipeline_cache()
+{
+    if (pipeline_cache_path.empty()) return;
+    size_t size = device->get_pipeline_cache_size();
+    if (!size || size > size_t(pipeline_cache_limit)) return;
+    std::vector<uint8_t> bytes(size);
+    if (!device->get_pipeline_cache_data(bytes.data(), bytes.size())) return;
+    core_file *file = core_file_open(pipeline_cache_path.c_str(), "wb");
+    if (file)
+    {
+        core_file_write_exact(file, bytes.data(), bytes.size());
+        core_file_close(file);
+    }
+}
+
 struct RenderAffinity
 {
     performance_affinity state;
@@ -361,6 +422,7 @@ void vk_destroy()
 		if (frontend)
 			frontend->idle();
 		device->wait_idle();
+		save_frontend_pipeline_cache();
 	}
 	retro_image_handles.clear();
 	retro_images.clear();
@@ -454,6 +516,7 @@ bool vk_init()
 
 	device.reset(new Device);
 	device->set_context(*context);
+	load_frontend_pipeline_cache();
 
 	sync_frames = vk_sync_frame_count();
 	slots = vk_sync_frame_slots();

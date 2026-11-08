@@ -31,6 +31,8 @@
 #include "hle_internal.h"
 #include "memory.h"
 #include "ucodes.h"
+#include "hle_timing.h"
+#include "hle_timing_mp3.h"
 
 enum { NAUDIO_COUNT = 0x170 }; /* ie 184 samples */
 enum {
@@ -52,10 +54,8 @@ enum {
 /* the mp3/cbfd builds place the whole buffer space 0x10 bytes higher */
 static uint16_t naudio_shift = 0;
 
-/* the two revisions that bank MP3 state through DRAM do it with
- * different windows, so the wrapper needs to know which one is running:
- * the Conker revision moves 0x440 bytes from DMEM 0x8a0, the
- * mp3/Banjo-Tooie revision moves 0x800 bytes from DMEM 0x800 */
+/* Both verified synthesis overlays restore/save 0x440 bytes at DMEM 0x8a0.
+ * The 0x800-byte resident audio data section is not the synthesis bank. */
 static uint16_t naudio_mp3_bank_dmem = 0;
 static uint16_t naudio_mp3_bank_size = 0;
 
@@ -546,11 +546,29 @@ static void MP3ADDY(struct hle_t* hle, uint32_t UNUSED(w1), uint32_t w2)
     *dmem_u32(hle, 0xff4) = (w2 & 0xffffff);
 }
 
+static uint32_t mp3_instruction_timing(struct hle_t *hle, uint32_t address, uint32_t state)
+{
+    uint32_t code = *dmem_u32(hle, TASK_UCODE);
+    uint32_t data = *dmem_u32(hle, TASK_UCODE_DATA);
+    uint32_t end = code + 0x1940u;
+    if ((code | data | address | state) & 7u ||
+        code > 0x800000u - 0x1940u || data > 0x800000u - 20u ||
+        address > 0x800000u - 0x488u || state > 0x800000u - 0x800u ||
+        *dmem_u32(hle, TASK_UCODE_DATA_SIZE) != 0x800u ||
+        *hle->sp_dma_full || *hle->sp_dma_busy || *hle->sp_semaphore) return 0;
+    /* Output must not overwrite executable bytes that the handler reloads. */
+    if ((address < end && address + 0x488u > code) ||
+        (state < end && state + 0x800u > code)) return 0;
+    return hle_timing_mp3_region(dram_u32(hle, code), dram_u32(hle, data),
+        (const uint32_t *)hle->alist_buffer, naudio_mp3_bank_size);
+}
+
 static void MP3(struct hle_t* hle, uint32_t w1, uint32_t w2)
 {
     unsigned index = (w1 & 0x1e);
     uint32_t address = (w2 & 0xffffff);
     uint32_t state = *dmem_u32(hle, 0xff4) & 0xffffff;
+    uint32_t clocks = mp3_instruction_timing(hle, address, state);
     uint8_t old_bank[0x440];
     unsigned k;
 
@@ -563,11 +581,9 @@ static void MP3(struct hle_t* hle, uint32_t w1, uint32_t w2)
      * call's 0x140-byte overlap tail back out.  mp3.c keeps the same
      * region at mp3_buffer 0x8a0 in host halfword order, so the copies
      * swap bytes per halfword. */
-    /* only the Conker revision's window is transcribed and verified so
-     * far; the mp3 revision moves a different one and is left alone
-     * until it can be checked against the interpreter */
     if (naudio_mp3_bank_size != 0x440 || naudio_mp3_bank_dmem != 0x8a0) {
         mp3_task(hle, index, address);
+        if (clocks) hle_timing_refine(HLE_WORK_MP3, 18u, clocks);
         return;
     }
 
@@ -580,6 +596,7 @@ static void MP3(struct hle_t* hle, uint32_t w1, uint32_t w2)
 
     for (k = 0; k < 0x440; ++k)
         hle->dram[(state + k) ^ S8] = hle->mp3_buffer[(0x8a0 + k) ^ 1];
+    if (clocks) hle_timing_refine(HLE_WORK_MP3, 18u, clocks);
 }
 
 static void OVERLOAD(struct hle_t* hle, uint32_t w1, uint32_t w2)
@@ -649,8 +666,8 @@ void alist_process_naudio_dk(struct hle_t* hle)
 void alist_process_naudio_mp3(struct hle_t* hle)
 {
     naudio_shift = 0x10;
-    naudio_mp3_bank_dmem = 0x800;
-    naudio_mp3_bank_size = 0x800;
+    naudio_mp3_bank_dmem = 0x8a0;
+    naudio_mp3_bank_size = 0x440;
     naudio_seed(hle);
     static const acmd_callback_t ABI[0x10] = {
         OVERLOAD,       ADPCM,          CLEARBUFF,      ENVMIXER,

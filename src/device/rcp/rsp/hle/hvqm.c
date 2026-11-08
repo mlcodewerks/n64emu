@@ -1,5 +1,6 @@
 #include "hle_timing.h"
 #include "hle_simd.h"
+#include "hle_timing_hvqm.h"
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
  *   Mupen64plus-rsp-hle - hvqm.c                                          *
  *   Mupen64Plus homepage: https://mupen64plus.org/                        *
@@ -242,13 +243,16 @@ static const int16_t constant[5][16] = {
 {0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0x0000,0x0000,0x0000,0x0000,0x0002,0x0002,0x0002,0x0002}
 };
 
-static int process_info(struct hle_t* hle, uint8_t* base, int16_t* out)
+static int process_info(struct hle_t* hle, uint8_t* base, int16_t* out,
+                        struct hle_hvqm_timing *timing)
 {
     struct HVQM2Block block;
     uint8_t nbase = *base;
 
     dram_load_u8(hle, (uint8_t*)&block, arg.info, sizeof(struct HVQM2Block));
     arg.info += 8;
+
+    hle_timing_hvqm_block(timing, block.nbase, nbase);
 
     *base = block.nbase & 0x7;
 
@@ -362,9 +366,12 @@ static int process_info(struct hle_t* hle, uint8_t* base, int16_t* out)
             block.nbase &= 8;
         }
 
-        assert(block.nbase == 0);
-        //if(block.nbase != 0)
-        //  LABEL6
+        if (block.nbase != 0) {
+            /* Native LABEL6 follows basis accumulation when bit 3 is set.
+             * LPV/VMUDM sign-extend each byte; VADD saturates the result. */
+            for (int i = 0; i < 16; ++i)
+                out[i] = hle_sat16((int32_t)out[i] + (int8_t)*dram_u8(hle, arg.info++));
+        }
     }
 
     return 1;
@@ -419,6 +426,18 @@ static void store_row4(struct hle_t *hle,store_pixel_t store_pixel,const int16_t
     for(unsigned lane=0;lane<4;lane++)store_pixel(hle,colors[lane],address);
 }
 
+static int hvqm_range(uint32_t address, uint64_t bytes)
+{
+    address &= 0xffffffu;
+    return address < 0x800000u && bytes <= 0x800000u - address;
+}
+
+static int hvqm_overlap(uint32_t a, uint64_t an, uint32_t b, uint64_t bn)
+{
+    return an && bn && (uint64_t)(a & 0xffffffu) < (b & 0xffffffu) + bn &&
+        (uint64_t)(b & 0xffffffu) < (a & 0xffffffu) + an;
+}
+
 static void hvqm2_decode(struct hle_t* hle, int is32)
 {
     //uint32_t uc_data_ptr = *dmem_u32(hle, TASK_UCODE_DATA);
@@ -443,6 +462,33 @@ static void hvqm2_decode(struct hle_t* hle, int is32)
     data_ptr += 2;
     arg.alpha = *dram_u8(hle, data_ptr);
     arg.nest = data_ptr + 1;
+
+    uint32_t code = *dmem_u32(hle, TASK_UCODE);
+    uint32_t data = *dmem_u32(hle, TASK_UCODE_DATA);
+    uint32_t parameters = *dmem_u32(hle, TASK_DATA_PTR);
+    uint32_t initial_info = arg.info, initial_buf = arg.buf;
+    uint32_t text = is32 ? 0x5e0u : 0x5d0u;
+    uint32_t pixel_bytes = is32 ? 4u : 2u;
+    uint64_t rows = (uint64_t)arg.vmcus * 4u * arg.chroma_step_v;
+    uint64_t output_bytes = rows ? (rows - 1u) * arg.buf_width * pixel_bytes +
+        (uint64_t)arg.hmcus * 8u * pixel_bytes : 0;
+    struct hle_hvqm_timing timing = hle_timing_hvqm_begin(
+        hvqm_range(code, text) ? dram_u32(hle, code) : NULL,
+        hvqm_range(data, 0x70u) ? dram_u32(hle, data) : NULL,
+        (const uint32_t *)hle->imem, *dmem_u32(hle, TASK_UCODE_SIZE),
+        *dmem_u32(hle, TASK_UCODE_DATA_SIZE), *dmem_u32(hle, TASK_UCODE_BOOT_SIZE),
+        *dmem_u32(hle, TASK_FLAGS), *hle->sp_status,
+        *hle->sp_dma_full | *hle->sp_dma_busy | *hle->sp_semaphore,
+        (code | data | parameters | arg.info | arg.buf) & 7u, arg.vmcus, is32);
+    if (!arg.hmcus || arg.chroma_step_h != 2u ||
+        (arg.chroma_step_v != 1u && arg.chroma_step_v != 2u) ||
+        (uint32_t)arg.hmcus * 8u > arg.buf_width || arg.buf_width > 320u ||
+        !hvqm_range(code, 0xf80u) ||
+        !hvqm_range(data, *dmem_u32(hle, TASK_UCODE_DATA_SIZE)) ||
+        !hvqm_range(parameters, 2677u) || !hvqm_range(arg.buf, output_bytes) ||
+        hvqm_overlap(arg.buf, output_bytes, code, 0xf80u) ||
+        hvqm_overlap(arg.buf, output_bytes, data, *dmem_u32(hle, TASK_UCODE_DATA_SIZE)) ||
+        hvqm_overlap(arg.buf, output_bytes, parameters, 2677u)) timing.valid = 0;
 
     assert(arg.chroma_step_h == 2);
     assert((arg.chroma_step_v == 1) || (arg.chroma_step_v == 2));
@@ -478,6 +524,7 @@ static void hvqm2_decode(struct hle_t* hle, int is32)
         {
             hle_timing_add(HLE_WORK_BLOCK, 6);
             uint8_t base = 0x80;
+            hle_timing_hvqm_mcu(&timing, arg.chroma_step_v, is32, 0);
             int16_t Cb[16], Cr[16], Y1[32], Y2[32];
             int16_t* pCb = Cb;
             int16_t* pCr = Cr;
@@ -486,23 +533,25 @@ static void hvqm2_decode(struct hle_t* hle, int is32)
 
             if (arg.chroma_step_v == 2)
             {
-                if (process_info(hle, &base, pY1) == 0)
+                if (process_info(hle, &base, pY1, &timing) == 0)
                     continue;
-                if (process_info(hle, &base, pY2) == 0)
+                if (process_info(hle, &base, pY2, &timing) == 0)
                     continue;
 
                 pY1 = &Y1[16];
                 pY2 = &Y2[16];
             }
 
-            if (process_info(hle, &base, pY1) == 0)
+            if (process_info(hle, &base, pY1, &timing) == 0)
                 continue;
-            if (process_info(hle, &base, pY2) == 0)
+            if (process_info(hle, &base, pY2, &timing) == 0)
                 continue;
-            if (process_info(hle, &base, Cr) == 0)
+            if (process_info(hle, &base, Cr, &timing) == 0)
                 continue;
-            if (process_info(hle, &base, Cb) == 0)
+            if (process_info(hle, &base, Cb, &timing) == 0)
                 continue;
+
+            hle_timing_hvqm_mcu(&timing, arg.chroma_step_v, is32, 1);
 
             pY1 = Y1;
             pY2 = Y2;
@@ -525,6 +574,9 @@ static void hvqm2_decode(struct hle_t* hle, int is32)
         }
         arg.buf += arg.buf_width;
     }
+    if (timing.valid && hvqm_range(initial_info, timing.consumed + 256u) &&
+        !hvqm_overlap(initial_buf, output_bytes, initial_info, timing.consumed + 256u))
+        hle_timing_override(timing.clocks);
     rsp_break(hle, SP_STATUS_TASKDONE);
 }
 

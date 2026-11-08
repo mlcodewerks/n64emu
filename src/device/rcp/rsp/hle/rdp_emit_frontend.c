@@ -552,12 +552,31 @@ void gsp_matrix_pop(GSPState *s, const unsigned char *rdram)
  * is skipped, so the walker must stop the list rather than merely skip
  * the draw: a culled tail can carry matrix and other state the
  * microcode never executes. */
+int gsp_culldl_rej_count(const GSPState *s, int v0, int vn, unsigned int *visited)
+{
+    int i;
+    if (visited) *visited = 0;
+    if (v0 < 0 || vn < v0 || vn >= GSP_MAX_VERTICES) return 0;
+    /* Native CULLDL compares the unsigned stored Y with exactly 0x7fff.
+     * Its triangle dispatcher has a separate signed >=0x7ffc test. */
+    for (i=v0;i<=vn;i++) {
+        if (visited) ++*visited;
+        if ((s->vtx[i].scr_y >> 14) != 0x7fff) return 0;
+    }
+    return 1;
+}
+
 int gsp_culldl_test(const GSPState *s, int v0, int vn)
 {
     unsigned int acc = ~0u;
     int i;
     if (v0 < 0 || vn < v0 || vn >= GSP_MAX_VERTICES)
         return 0;
+    if (s->clip_reject & GSP_REJ_PROJECT) {
+        /* The compact Rej CULLDL loop reads stored screen Y. A later
+         * MODIFYVTX XY write can replace the rejected-vertex marker. */
+        return gsp_culldl_rej_count(s,v0,vn,0);
+    }
     if(s->clip_reject==2) {
         /* The compact projector marks X=7fff for any guard rejection.
          * CULLDL returns only when every record carries that marker. */
@@ -803,10 +822,15 @@ static void gsp_clip_vertex_flags(const GSPState *st, GSPVertex *vt);
 static void gsp_vertex_screen(GSPState *s, GSPVertex *vt)
 {
     BridgeVertex bv;
+    int reject_bias = (s->clip_reject & GSP_REJ_PROJECT) && ((unsigned int)vt->clip & 0x70700000u);
     bv.cx = vt->cx; bv.cy = vt->cy; bv.cz = vt->cz; bv.cw = vt->cw;
+    if (s->clip_reject & GSP_REJ_PROJECT)
+        rsp_set_vtx_rej_project(1,reject_bias,s->viewport.persp_norm);
     bridge_compute_screen(&bv, &s->viewport,
                           &vt->scr_x, &vt->scr_y, &vt->scr_z,
                           &vt->w_raw, &vt->rsp_ok, &vt->rsp_invw);
+    if (s->clip_reject & GSP_REJ_PROJECT)
+        rsp_set_vtx_rej_project(0,0,0);
     if(s->clip_reject==1)
         /* Rej adds two quarter-pixels in the viewport prologue and
          * stores Y with its low two bits masked. */
@@ -940,7 +964,7 @@ static void gsp_vertex_internal(GSPState *s, const unsigned char *rdram, unsigne
     if (!s->combined_valid)
         gsp_combine_matrices(s);
     gsp_sdk_matrix_store(s);
-    if(n>0 && s_vertex_spill)s_vertex_spill(s->clip_reject==1 ?
+    if(n>0 && s_vertex_spill)s_vertex_spill((s->clip_reject&1) ?
         2 + ((s->geometry_mode & 0x10000u) != 0) : !s->cbfd && !s->acclaim);
 
     for (i = 0; i < n; i++)
@@ -1383,7 +1407,7 @@ static void gsp_vertex_internal(GSPState *s, const unsigned char *rdram, unsigne
          * packed flag halfword only. Its first vertex uses SH, which
          * discards that upper-half flag; generated clip vertices do too. */
         if(s->clip_near_z<0 && (i&1) && vt->cw<0)vt->clip|=1u<<6;
-        if(s->clip_reject==1)rsp_rej_project((unsigned int)i,
+        if(s->clip_reject&1)rsp_rej_project((unsigned int)i,
             (s->geometry_mode&0x10000u)?(unsigned int)vt->a>>16:0);
         rsp_vertex_spill_screen((unsigned int)i,vt->scr_x,vt->scr_y,vt->scr_z);
         if(!(i&1))rsp_vertex_spill_position(vt->cz,s->clip_ratio,s->combined[0][2]);
@@ -2645,7 +2669,10 @@ int gsp_triangle_with_texrecip(GSPState *s, int32_t *cmd, int i0, int i1, int i2
          * (VCH/VCL, VCC & 0x0707/0x7070), then replaces screen Y with
          * 0x7fff on failure. The triangle dispatcher tests that marker;
          * it does not apply the full clipper's unscaled Z/W rejection. */
-        if ((oa | ob | oc) & (s->clip_reject==2?0x30304000u:0x70700000u)) {
+        if ((s->clip_reject & GSP_REJ_PROJECT)
+                ? ((a->scr_y >> 14) >= 0x7ffcu || (b->scr_y >> 14) >= 0x7ffcu
+                    || (c->scr_y >> 14) >= 0x7ffcu)
+                : ((oa | ob | oc) & (s->clip_reject==2?0x30304000u:0x70700000u))) {
             hle_timing_path(HLE_PATH_TRI_REJECT, 1);
             return 0;
         }

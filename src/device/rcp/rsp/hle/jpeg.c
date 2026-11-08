@@ -33,6 +33,7 @@
 #include <string.h>
 
 #include "memory.h"
+#include "hle_timing_jpeg.h"
 
 #define SUBBLOCK_SIZE 64
 
@@ -370,7 +371,7 @@ static uint32_t GetUYVY(int16_t y1, int16_t y2, int16_t u, int16_t v)
 static uint16_t clamp_RGBA_component(int16_t x)
 {
     if (x > 0xff0)
-        return 0xff0;
+        return 0xf80;
     else if (x < 0)
         return 0;
     return (x & 0xf80);
@@ -477,6 +478,28 @@ void jpeg_decode_PS0(struct hle_t* hle)
 void jpeg_decode_PS(struct hle_t* hle)
 {
     if (!jpeg_std_supported(hle)) { HleForwardTask(hle->user_defined); return; }
+    {
+        uint32_t p = *dmem_u32(hle, TASK_DATA_PTR);
+        uint32_t code = *dmem_u32(hle, TASK_UCODE);
+        uint32_t data = *dmem_u32(hle, TASK_UCODE_DATA);
+        struct hle_jpeg_ps_timing_input input;
+        uint32_t cycles;
+        input.program = jpeg_range(code, 0xaf0u, 8) ? dram_u32(hle, code) : NULL;
+        input.boot = (const uint32_t *)hle->imem;
+        input.boot_bytes = *dmem_u32(hle, TASK_UCODE_BOOT_SIZE);
+        input.flags = *dmem_u32(hle, TASK_FLAGS);
+        input.ucode_data_bytes = *dmem_u32(hle, TASK_UCODE_DATA_SIZE);
+        input.parameter_bytes = *dmem_u32(hle, TASK_DATA_SIZE);
+        input.status = *hle->sp_status;
+        input.io_busy = *hle->sp_dma_full | *hle->sp_dma_busy | *hle->sp_semaphore;
+        input.unaligned = (p | code | data | *dram_u32(hle, p) |
+            *dram_u32(hle, p + 12) | *dram_u32(hle, p + 16) |
+            *dram_u32(hle, p + 20)) & 7u;
+        input.macroblocks = *dram_u32(hle, p + 4);
+        input.mode = *dram_u32(hle, p + 8);
+        cycles = hle_timing_jpeg_ps(&input);
+        if (cycles) hle_timing_override(cycles);
+    }
     jpeg_decode_std(hle, "PS", NULL, NULL, EmitRGBATileLine);
     rsp_break(hle, SP_STATUS_TASKDONE);
 }
@@ -516,11 +539,30 @@ void jpeg_decode_OB(struct hle_t* hle)
         HleForwardTask(hle->user_defined);
         return;
     }
+    {
+        uint32_t code = *dmem_u32(hle, TASK_UCODE);
+        struct hle_jpeg_ob_timing_input input;
+        uint32_t cycles;
+        input.program = jpeg_range(code, 0x7b4u, 8) ? dram_u32(hle, code) : NULL;
+        input.boot = (const uint32_t *)hle->imem;
+        input.boot_bytes = *dmem_u32(hle, TASK_UCODE_BOOT_SIZE);
+        input.flags = *dmem_u32(hle, TASK_FLAGS);
+        input.ucode_data_bytes = *dmem_u32(hle, TASK_UCODE_DATA_SIZE);
+        input.status = *hle->sp_status;
+        input.io_busy = *hle->sp_dma_full | *hle->sp_dma_busy | *hle->sp_semaphore;
+        input.unaligned = (code | *dmem_u32(hle, TASK_UCODE_DATA) |
+            *dmem_u32(hle, TASK_DATA_PTR)) & 7u;
+        input.macroblocks = count;
+        input.scale = scale;
+        cycles = hle_timing_jpeg_ob(&input);
+        if (cycles) hle_timing_override(cycles);
+    }
     /* Transcribed from the microcode (Ogre Battle boot scene, 300
      * macroblocks, verified byte-exact against cxd4):
      *
-     * - The quantization scale is applied to the table with a rounded
-     *   arithmetic shift, q' = (q + (1 << (s-1))) >> s for qscale -s;
+     * - A negative quantization scale selects a Q15 multiplier from
+     *   DMEM and applies VMULF. In particular, scale -7 selects 255,
+     *   not 256, so replacing it with a rounded shift changes ties.
      *   a zero qscale selects a unit table (the coefficients still run
      *   through the same pipeline).
      * - Dequantization is vmudh/vmudn: the product clamps to 16 bits,
@@ -558,9 +600,18 @@ void jpeg_decode_OB(struct hle_t* hle)
     } else if (qscale > 0) {
         ScaleSubBlock(qtable, DEFAULT_QTABLE, qscale);
     } else {
-        const int s = -qscale;
+        uint32_t slot = (22u + 2u * (uint32_t)qscale) & 0xffeu;
+        uint32_t data_bytes = *dmem_u32(hle, TASK_UCODE_DATA_SIZE);
+        uint32_t data_address = *dmem_u32(hle, TASK_UCODE_DATA);
+        int16_t multiplier;
+        /* The SDK boot loads ucode data at DMEM zero. The address formed
+         * by LSV wraps at 4 KiB; slots outside that DMA retain DMEM. */
+        if (slot + 2u <= ((data_bytes + 7u) & ~7u) &&
+            jpeg_range(data_address, slot + 2u, 2))
+            multiplier = (int16_t)*dram_u16(hle, data_address + slot);
+        else multiplier = (int16_t)*dmem_u16(hle, slot);
         for (i = 0; i < SUBBLOCK_SIZE; ++i)
-            qtable[i] = (DEFAULT_QTABLE[i] + (1 << (s - 1))) >> s;
+            qtable[i] = clamp_s16(((int32_t)DEFAULT_QTABLE[i] * multiplier * 2 + 0x8000) >> 16);
     }
 
     for (mb = 0; mb < macroblock_count; ++mb) {

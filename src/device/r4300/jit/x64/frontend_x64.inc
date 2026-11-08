@@ -87,11 +87,15 @@ uint64_t n64emujit_generation(const struct n64emujit* s) { return s->generation;
 void* n64emujit_fault_guard(const struct n64emujit* s) { return s && s->faults ? (void*)s->faults->guard : NULL; }
 void* n64emujit_fault_enter(struct n64emujit* s)
 {
+    if (!fault_handler_users.load(std::memory_order_acquire)) return NULL;
     void* previous = active_fault_domain;
-    active_fault_domain = s ? s->faults : NULL;
+    host_fault_activate(s ? s->faults : NULL);
     return previous;
 }
-void n64emujit_fault_leave(void* previous) { active_fault_domain = (host_fault_domain*)previous; }
+void n64emujit_fault_leave(void* previous)
+{
+    if (fault_handler_users.load(std::memory_order_acquire)) host_fault_activate((host_fault_domain*)previous);
+}
 uint64_t n64emujit_fault_count(const struct n64emujit* s) { return s && s->faults ? (uint64_t)s->faults->faults : 0; }
 void n64emujit_fault_resolve(struct n64emujit* s, struct r4300_core* r, uint32_t op)
 {
@@ -226,10 +230,10 @@ static void emit_native(uint32_t instruction, enum r4300_opcode op)
         return;
     }
     switch (op) {
-    case R4300_OP_ADDIU: case R4300_OP_DADDIU:
+    case R4300_OP_ADDI: case R4300_OP_ADDIU: case R4300_OP_DADDIU:
         destination = rt;
         emit_state_load(gpr_offset(rs), RAX);
-        if (op == R4300_OP_ADDIU) { emit_addimm(RAX, (int16_t)instruction, RAX); word = 1; }
+        if (op == R4300_OP_ADDI || op == R4300_OP_ADDIU) { emit_addimm(RAX, (int16_t)instruction, RAX); word = 1; }
         else emit_addimm64(RAX, (int16_t)instruction, RAX);
         break;
     case R4300_OP_ANDI: case R4300_OP_ORI: case R4300_OP_XORI:
@@ -420,6 +424,9 @@ static void emit_transfer_commit(void* block, unsigned index,
 }
 
 #include "../fpu_sequence.inc"
+#ifndef N64EMUJIT_X64_GUARDED_ADDI
+#define N64EMUJIT_X64_GUARDED_ADDI 1
+#endif
 static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     const uint32_t* ops, unsigned count, n64emujit_step step, int optimized, const struct n64emujit_config* config)
 {
@@ -513,21 +520,26 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     JIT(endbr64());
     for (unsigned i = 0; i < count;) {
         enum r4300_opcode op = r4300_get_idec(ops[i])->opcode;
-        if (native_opcode(op) || i == branch_index || (optimized && config && native_ram_opcode(op))) {
+        bool guarded_addi=N64EMUJIT_X64_GUARDED_ADDI && optimized && config && op==R4300_OP_ADDI;
+        if (native_opcode(op) || guarded_addi || i == branch_index || (optimized && config && native_ram_opcode(op))) {
             unsigned end = i + 1;
             if (optimized) {
                 int memory_region = native_ram_opcode(op);
                 while (end < count) {
                     if(ram_delay && end==branch_index)break;
                     enum r4300_opcode next = r4300_get_idec(ops[end])->opcode;
-                    if (!native_opcode(next) && end != branch_index && !(config && native_ram_opcode(next))) break;
+                    if (!native_opcode(next) && end != branch_index && !(config && native_ram_opcode(next)) &&
+                        !(N64EMUJIT_X64_GUARDED_ADDI && next==R4300_OP_ADDI)) break;
                     memory_region |= native_ram_opcode(next); ++end;
                 }
                 unsigned base = 0, memory_count = 0, memory_flags = 0;
+                bool trapping_region=false;
                 for (unsigned j = i; j < end; ++j) {
                     base += r4300_base_cycles(ops[j], 0);
                     memory_count += native_ram_opcode(r4300_get_idec(ops[j])->opcode) != 0;
                     memory_flags |= native_memory_flags(ops[j]);
+                    trapping_region |= r4300_get_idec(ops[j])->opcode==R4300_OP_ADDI &&
+                        ((ops[j]>>21)&31) && (int16_t)ops[j];
                 }
                 int branch_region = branch_index >= i && branch_index < end;
                 unsigned branch_major = branch_region ? ops[branch_index] >> 26 : 0;
@@ -537,6 +549,19 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 unsigned char* branch_prefetch_miss = NULL;
                 struct regcache_state annul_registers;
                 struct memory_exit prepare = {0};
+                unsigned char* itlb_miss=config->cache_timing ?
+                    emit_itlb_miss_guard(config->virtual_pc+i*4) : nullptr;
+                unsigned char* addi_overflow=nullptr;
+                if(guarded_addi && ((ops[i]>>21)&31) && (int16_t)ops[i]) {
+                    /* ADDI is admitted only at a region's first instruction;
+                     * native_opcode deliberately excludes it from later
+                     * positions and branch delay extensions. Check the signed
+                     * low word before any fetch/timing or register changes.
+                     * Overflow replays the original trapping instruction. */
+                    emit_state_load_raw(gpr_offset((ops[i]>>21)&31),RAX);
+                    JIT(add(Xbyak::Reg32(RAX),(int16_t)ops[i]));
+                    addi_overflow=emit_jump(0);
+                }
                 emit_region_guard(config, i, end - i, base, memory_count, &prepare, memory_flags);
                 unsigned char* admitted=out;
 
@@ -552,7 +577,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 regcache_begin(ops, i, end);
                 if(ram_delay && i==branch_index)emit_ram_delay_checkpoint(config->virtual_pc+i*4,ops[branch_index],false);
                 emit_mem_imm(0xc7, 0, 0, RSP, -1, 0, 8,0);
-                if (memory_region || likely_region || (branch_region && branch_major == 0)) regcache.allow_dead_store = 0;
+                if (memory_region || trapping_region || likely_region || (branch_region && branch_major == 0)) regcache.allow_dead_store = 0;
                 emit_movimm(0, R13);
                 int pipeline_live = 1;
                 unsigned pending_cycles=0,pending_fetches=0;
@@ -564,6 +589,19 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                     int check_line = j == i || ((config->virtual_pc + j * 4) >> 5) !=
                         ((config->virtual_pc + (j - 1) * 4) >> 5);
                     enum r4300_opcode instruction_op = r4300_get_idec(ops[j])->opcode;
+                    if(instruction_op==R4300_OP_ADDI && j!=i && ((ops[j]>>21)&31) && (int16_t)ops[j]) {
+                        /* The prefix is already executed. Publish its clocks
+                         * and register snapshot if this instruction traps;
+                         * its fetch/LDI/exception remain entirely precise. */
+                        if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
+                        struct memory_exit *trap=&memory_exits[memory_exit_count++];*trap={};
+                        trap->start=i;trap->index=j;trap->end=end;
+                        emit_state_load(gpr_offset((ops[j]>>21)&31),RAX);
+                        trap->registers=regcache;
+                        JIT(add(Xbyak::Reg32(RAX),(int16_t)ops[j]));memory_guard(trap,0);
+                        /* No native resume: an overflowing ADDI always leaves
+                         * this compiled frame after precise dispatch. */
+                    }
                     if (j == branch_index && (instruction_op == R4300_OP_JR || instruction_op == R4300_OP_JALR)) {
                         if(pending_cycles||pending_fetches){emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}
                         struct memory_exit* exit = &memory_exits[memory_exit_count++];
@@ -642,6 +680,10 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                     emit_imm_op(4,RAX,2,0);emit_mem(0x89,0,RAX,RSP,-1,0,4);
                     auto* retry=emit_b();patch_jump(retry,admitted);patch_jump(precise,out);
                 }
+                /* An overflow must bypass the resident-fetch retry, whose
+                 * admitted entry intentionally skips this first guard. */
+                if(addi_overflow)patch_jump(addi_overflow,out);
+                if(itlb_miss)patch_jump(itlb_miss,out);
                 exits[exit_count++] = emit_step(block, i, ((ram_delay && branch_region ? 1 : end-i) << 8) | 5, step);
                 patch_jump(done, out);
                 for (unsigned n = 0; n < memory_exit_count; ++n)
@@ -683,7 +725,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                 emit_pipeline_history(ops[exit->index - 1]);
             emit_region_commit_native(config, exit->start, exit->index - exit->start, 0);
             exits[exit_count++] = emit_step(block, exit->index, 2, step);
-            if (exit->index == branch_index) {
+            if (exit->index == branch_index || !exit->resume) {
                 exits[exit_count++] = emit_b();
                 continue;
             }

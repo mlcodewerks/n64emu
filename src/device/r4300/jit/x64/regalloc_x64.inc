@@ -42,7 +42,7 @@ static void guest_operands(uint32_t instruction, unsigned* source1, unsigned* so
     switch (op) {
     case R4300_OP_NOP: case R4300_OP_SYNC: *source1 = *source2 = *dest = 0; break;
     case R4300_OP_LUI: *source1 = *source2 = 0; *dest = rt; break;
-    case R4300_OP_ADDIU: case R4300_OP_DADDIU: case R4300_OP_ANDI:
+    case R4300_OP_ADDI: case R4300_OP_ADDIU: case R4300_OP_DADDIU: case R4300_OP_ANDI:
     case R4300_OP_ORI: case R4300_OP_XORI: case R4300_OP_SLTI: case R4300_OP_SLTIU:
         *source2 = 0; *dest = rt; break;
     case R4300_OP_MFHI: case R4300_OP_MFLO:

@@ -33,5 +33,5 @@ int main(void)
     if (!rdp_timing_adapter_feed_words(&dp, commands,
             sizeof(commands) / sizeof(commands[0]), 0)) return 1;
     printf("Queue deadline: %lld COUNT ticks\n", (long long)dp.timing.deadline);
-    return fences == 1 && dp.timing.deadline == 60304 ? 0 : 1;
+    return fences == 1 && dp.timing.deadline == 60388 ? 0 : 1;
 }

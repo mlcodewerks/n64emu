@@ -77,9 +77,11 @@ static void fixed_checks(void)
     assert(rdp_timing_adapter_feed_words(&a, words, 5, 0));
     init(&restored, &other);
     restored.timing = a.timing; /* Test snapshot only; host serialization is field-wise. */
+    restored.timing.span_fraction = 99; /* Derived packet work is rebuilt after load. */
     cb = restored.callbacks;
     assert(rdp_timing_adapter_after_load(&restored, 0x800000, &cb));
-    assert(restored.timing.busy_context == &other && restored.timing.vi_regs == NULL);
+    assert(restored.timing.busy_context == &other && restored.timing.vi_regs == NULL &&
+           restored.timing.span_fraction == 0);
     assert(rdp_timing_adapter_feed_words(&a, words + 5, 39, 0));
     assert(rdp_timing_adapter_feed_words(&restored, words + 5, 39, 0));
     assert(port_state_hash(&a.timing) == port_state_hash(&restored.timing));
@@ -110,6 +112,63 @@ static void fixed_checks(void)
     a.timing.deadline = INT64_MAX - 1;
     assert(rdp_timing_adapter_feed_words(&a, setup, 8, 0));
     assert(a.timing.deadline == INT64_MAX && a.timing.clock_overhang == 0);
+}
+
+static void buffered_checks(void)
+{
+    struct rdp_timing t, other;
+    uint32_t vi[14];
+    uint64_t aligned, unaligned, active, work = 10000;
+    unsigned cycle, width, profile, trials = 0;
+    memset(&t, 0, sizeof(t));
+    t.fb_size = 2;
+    /* Partial transfer words and alignment must affect memory work without
+     * discarding Q8 service. Test spans wider than the pixel floor. */
+    for (cycle = 0; cycle < 2; ++cycle) {
+        for (width = 128; width <= 512; width += 8) {
+            t.cycle_type = cycle;t.span_fraction = 0;other = t;
+            aligned = rdp_timing_buffered_span(&t, 0, width, 0x800000, 0, 1, 0, 1, 0);
+            unaligned = rdp_timing_buffered_span(&other, 0, width, 0x800010, 0, 1, 0, 1, 0);
+            assert(unaligned * 256 + other.span_fraction == aligned * 256 + t.span_fraction + 512);
+        }
+    }
+    t.cycle_type = 0;t.span_fraction = 0;
+    assert(rdp_timing_buffered_span(&t, 0, 0, 0, 0, 0, 0, 1, 0) == UINT64_MAX);
+    assert(rdp_timing_buffered_span(&t, 0, 16, 0x7ffff0, 0, 0, 0, 1, 0) == UINT64_MAX);
+    /* Independently verify the far-buffer row proof against every actual
+     * handoff. It applies to arbitrary span widths and client combinations. */
+    for (width = 1; width <= 1024; width += 7) {
+        for (profile = 1; profile < 16; ++profile) {
+            unsigned cr = profile & 1, zr = (profile >> 1) & 1;
+            unsigned cw = (profile >> 2) & 1, zw = (profile >> 3) & 1;
+            unsigned back = (!cw && !zw && cr && zr) || (cw && zw && !cr && !zr) ||
+                            (cw && zr && !cr && !zw);
+            unsigned segments = rdp_timing_buffers(16, 3, width + 3);
+            if (!(cr || cw) || !(zr || zw)) continue;
+            assert(rdp_timing_row_clocks(0x800030, 0x880030, 16, 3, width + 3, cr, zr, cw, zw) ==
+                3u * (segments * ((cr && zr) + zw) + (segments - 1) * back));
+            ++trials;
+        }
+    }
+    memset(vi, 0, sizeof(vi));
+    vi[0] = 2;vi[1] = 0x100000;vi[2] = 320;vi[6] = 525;
+    vi[9] = (108u << 16) | 748;vi[10] = (37u << 16) | 511;
+    vi[12] = 512;vi[13] = 1024;
+    t.vi_regs = vi;t.vi_field_ticks = 783000;t.span_fraction = 0;
+    assert(rdp_timing_buffered_vi(&t, work, 5, 0x800000, 0, 1, 0) == work);
+    t.deadline = 100000;
+    active = rdp_timing_buffered_vi(&t, work, 5, 0x800000, 0, 1, 0);
+    assert(active > work);
+    t.deadline += t.vi_field_ticks;
+    assert(rdp_timing_buffered_vi(&t, work, 5, 0x800000, 0, 1, 0) == active);
+    vi[0] = 0;
+    assert(rdp_timing_buffered_vi(&t, work, 5, 0x800000, 0, 1, 0) == work);
+    /* Deliberately overcommit every halfline. Fractional service must carry
+     * across windows, even when each window alone rounds down to zero. */
+    vi[0] = 3;vi[9] = 1023;vi[10] = 526;vi[12] = 4095;
+    active = rdp_timing_buffered_vi(&t, 1, 5, 0x800000, 0, 1, 0);
+    assert(active > 1 && active < UINT64_MAX);
+    printf("Buffered service: alignment, partial/bank boundaries, %u row proofs, VI phase and saturated grants passed.\n", trials);
 }
 
 #ifdef RDP_TIMING_DIFFERENTIAL
@@ -182,6 +241,7 @@ static void differential(void)
 int main(void)
 {
     fixed_checks();
+    buffered_checks();
     puts("Portable API: clock carry, fences, packet sizes, endian input, restore, VI snapshots, invalidation and overflow passed.");
 #ifdef RDP_TIMING_DIFFERENTIAL
     differential();

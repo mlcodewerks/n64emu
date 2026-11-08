@@ -37,6 +37,11 @@ enum hle_path_kind {
 };
 struct hle_timing_work {
     uint32_t units[HLE_WORK_COUNT];
+    /* Verified source regions replace their own work-unit cost. Keep the
+     * observed work vector intact for replay/calibration and saved walkers. */
+    uint32_t refined_units[HLE_WORK_COUNT];
+    uint32_t refined_cycles[HLE_WORK_COUNT];
+    uint32_t refined_mask;
     /* Preserve command identity: setup/no-op/branch commands do not have
      * interchangeable dispatch and fixed handler costs. */
     uint32_t commands[256];
@@ -45,12 +50,26 @@ struct hle_timing_work {
     uint32_t override_cycles;
     uint32_t ucode_checksum;
     const char *family;
+    /* Invocation-local instruction profiles; not part of a serialized
+     * audio/graphics snapshot or the legacy 21-counter replay ABI. */
+    uint32_t sdk_boot, native_graphics_profile, native_opcode, native_graphics_overlay;
+    int32_t native_packet_cost;
 };
 void hle_timing_begin(void);
+void hle_timing_boot(const uint32_t *imem);
+void hle_timing_native_graphics(uint32_t profile);
+uint32_t hle_timing_native_graphics_profile(void);
+int hle_timing_graphics_bg_enter(void);
+uint32_t hle_timing_native_opcode(void);
+void hle_timing_graphics_command(uint32_t w0);
+void hle_timing_graphics_refine_command(uint32_t cycles,int32_t packet_cost);
+void hle_timing_graphics_rdp(uint32_t units);
+void hle_timing_graphics_flush(uint32_t bytes,int wrapped);
 void hle_timing_ucode(uint32_t checksum);
 void hle_timing_family(const char *family);
 void hle_timing_graphics_family(const char *family);
 void hle_timing_add(enum hle_work_kind kind, uint32_t units);
+int hle_timing_refine(enum hle_work_kind kind, uint32_t units, uint32_t cycles);
 void hle_timing_command(unsigned int opcode);
 void hle_timing_path(enum hle_path_kind kind, uint32_t count);
 const char *hle_timing_path_name(unsigned int kind);

@@ -190,6 +190,13 @@ static int32_t mp3_scale(int32_t product)
     return product >> 0x10;
 }
 
+/* VMUDM by the unsigned low half followed by VMADH by the signed high
+ * half retains the full signed Q16 gain and saturates the extracted lane. */
+static int16_t mp3_gain(int16_t sample, int32_t gain)
+{
+    return clamp_s16(((int64_t)sample * gain) >> 16);
+}
+
 static void MP3AB0(int32_t* v)
 {
     /* Part 2 - 100% Accurate */
@@ -304,9 +311,6 @@ static void InnerLoop(struct hle_t* hle,
     int32_t mult6;
     int32_t mult4;
     int tmp;
-    int32_t hi0;
-    int32_t hi1;
-    int32_t vt;
     int32_t v[32];
 
     v[0] = *(int16_t *)(hle->mp3_buffer + inPtr + (0x00 ^ S16));
@@ -642,11 +646,9 @@ static void InnerLoop(struct hle_t* hle,
     mult6 = *(int32_t *)(hle->mp3_buffer + 0xCE8);
     mult4 = *(int32_t *)(hle->mp3_buffer + 0xCEC);
     if (t4 & 0x2) {
-        v2 = (v2 **(uint32_t *)(hle->mp3_buffer + 0xCE8)) >> 0x10;
-        *(int16_t *)(hle->mp3_buffer + (outPtr ^ S16)) = v2;
+        *(int16_t *)(hle->mp3_buffer + (outPtr ^ S16)) = mp3_gain(clamp_s16(v2), mult6);
     } else {
-        v4 = (v4 **(uint32_t *)(hle->mp3_buffer + 0xCE8)) >> 0x10;
-        *(int16_t *)(hle->mp3_buffer + (outPtr ^ S16)) = v4;
+        *(int16_t *)(hle->mp3_buffer + (outPtr ^ S16)) = mp3_gain(clamp_s16(v4), mult6);
         mult4 = *(uint32_t *)(hle->mp3_buffer + 0xCE8);
     }
     addptr -= 0x50;
@@ -680,27 +682,22 @@ static void InnerLoop(struct hle_t* hle,
     }
 
     tmp = outPtr;
-    hi0 = mult6;
-    hi1 = mult4;
-
-    hi0 = (int)hi0 >> 0x10;
-    hi1 = (int)hi1 >> 0x10;
     for (i = 0; i < 8; i++) {
         /* v0 */
-        vt = (*(int16_t *)(hle->mp3_buffer + ((tmp - 0x40)^S16)) * hi0);
-        *(int16_t *)((uint8_t *)hle->mp3_buffer + ((tmp - 0x40)^S16)) = clamp_s16(vt);
+        *(int16_t *)((uint8_t *)hle->mp3_buffer + ((tmp - 0x40)^S16)) =
+            mp3_gain(*(int16_t *)(hle->mp3_buffer + ((tmp - 0x40)^S16)), mult6);
 
         /* v17 */
-        vt = (*(int16_t *)(hle->mp3_buffer + ((tmp - 0x30)^S16)) * hi0);
-        *(int16_t *)((uint8_t *)hle->mp3_buffer + ((tmp - 0x30)^S16)) = clamp_s16(vt);
+        *(int16_t *)((uint8_t *)hle->mp3_buffer + ((tmp - 0x30)^S16)) =
+            mp3_gain(*(int16_t *)(hle->mp3_buffer + ((tmp - 0x30)^S16)), mult6);
 
         /* v2 */
-        vt = (*(int16_t *)(hle->mp3_buffer + ((tmp - 0x1E)^S16)) * hi1);
-        *(int16_t *)((uint8_t *)hle->mp3_buffer + ((tmp - 0x1E)^S16)) = clamp_s16(vt);
+        *(int16_t *)((uint8_t *)hle->mp3_buffer + ((tmp - 0x1E)^S16)) =
+            mp3_gain(*(int16_t *)(hle->mp3_buffer + ((tmp - 0x1E)^S16)), mult4);
 
         /* v4 */
-        vt = (*(int16_t *)(hle->mp3_buffer + ((tmp - 0xE)^S16)) * hi1);
-        *(int16_t *)((uint8_t *)hle->mp3_buffer + ((tmp - 0xE)^S16)) = clamp_s16(vt);
+        *(int16_t *)((uint8_t *)hle->mp3_buffer + ((tmp - 0xE)^S16)) =
+            mp3_gain(*(int16_t *)(hle->mp3_buffer + ((tmp - 0xE)^S16)), mult4);
 
         tmp += 2;
     }

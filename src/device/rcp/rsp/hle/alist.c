@@ -1502,7 +1502,8 @@ void alist_envmix_nead(
         uint16_t *env_steps,
         const int16_t *xors,
         unsigned granule,
-        bool wet_bypass)
+        bool wet_bypass,
+        uint16_t *retained_lanes)
 {
     hle_timing_add(HLE_WORK_ENVMIX, (count + 7u) / 8u);
 
@@ -1528,6 +1529,7 @@ void alist_envmix_nead(
     v[0] = env_values[0]; v[1] = (uint16_t)(env_values[0] + env_steps[0]);
     v[2] = env_values[1]; v[3] = (uint16_t)(env_values[1] + env_steps[1]);
     v[4] = env_values[2]; v[5] = (uint16_t)(env_values[2] + env_steps[2]);
+    if (retained_lanes) memcpy(v, retained_lanes, sizeof(v));
 
     halves = granule / 8;
     count = (count + granule - 1) & ~(granule - 1);
@@ -1562,7 +1564,7 @@ void alist_envmix_nead(
 
         if (halves == 2) {
             for (i = 0; i < 6; ++i)
-                v[i] = (uint16_t)(v[i] + 2 * env_steps[i >> 1]);
+                v[i] = (uint16_t)(v[i] + (retained_lanes ? 1 : 2) * env_steps[i >> 1]);
         }
         else {
             v[0] = (uint16_t)(v[0] + env_steps[0]);
@@ -1576,6 +1578,7 @@ void alist_envmix_nead(
     env_values[0] = v[0];
     env_values[1] = v[2];
     env_values[2] = v[4];
+    if (retained_lanes) memcpy(retained_lanes, v, sizeof(v));
 }
 
 

@@ -1,4 +1,5 @@
 #include "hle_timing.h"
+#include "hle_timing_rej.h"
 /* rdp_emit_f3dex2.c -- F3DEX2 display-list dispatcher for the angrylion HLE
  * path. Reads F3DEX2 commands from RDRAM, routes geometry to the C89
  * frontend (rdp_emit_frontend), and appends the resulting RDP triangle
@@ -369,7 +370,7 @@ unsigned int f3dex2_restore_yield(GSPState *s,const unsigned char *dm)
     s->lights_valid=dm[0x1dcu^3u]!=0;
     s->scis_w0=rd_u32_be(dm,0xc0u);s->scis_w1=rd_u32_be(dm,0xc4u);s->scis_valid=1;
     if(stride==20u) {
-        s->clip_reject=1;
+        s->clip_reject=(s->clip_reject & GSP_REJ_PROJECT)|1;
         s_ucode_class|=UCODE_REJRECIP;
     }
     gsp_restore_vertex_records(s,dm,0x380u,stride==20u?20u:40u,0);
@@ -615,7 +616,7 @@ void rdp_fifo_append(RdpFifo *f, const int32_t *words, int count)
 {
     int i;
     unsigned int off;
-    if (count > 0) hle_timing_add(HLE_WORK_RDP, (unsigned int)(count + 1) / 2u);
+    if (count > 0) hle_timing_graphics_rdp((unsigned int)(count + 1) / 2u);
     if (f->used + (unsigned int)count * 4u > f->cap)
     {
         /* Heavy frames (camera swings over a full scene) can exceed the
@@ -778,7 +779,7 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
         HLE_GBI_OBSERVE(pc - 8u, w0, w1, gsp);
 #endif
         hle_timing_graphics_family("gfx_f3dex2");
-        hle_timing_command(cmd);
+        hle_timing_graphics_command(w0);
         if(fifo->dmem && (!rsp_graphics_sdk_one(5)||!rsp_graphics_sdk_one(7))) {
             unsigned char *dm=fifo->dmem;
             unsigned int high=s_othermode_h|0xef000000u;
@@ -1064,9 +1065,10 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                  * the stage rendered black. Assemble the full 4-word command
                  * and skip the two RDPHALF words. */
                 unsigned int st = 0u, dxy = 0u;
-                unsigned int c0;
+                unsigned int c0, first_half;
                 int32_t tr[4];
                 c0 = rd_u32_be(r, pc);
+                first_half=c0>>24;
                 if(fifo->fetch_dl && ((c0>>24)==0xb4u || (c0>>24)==0xb3u))
                     fifo->fetch_dl(pc,c0);
                 if (((c0 >> 24) & 0xffu) == 0xb4u)        /* s, t */
@@ -1096,6 +1098,8 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                 tr[1] = (int32_t)w1;    /* tile + xl/yl */
                 tr[2] = (int32_t)st;    /* s, t       (RDPHALF_1) */
                 tr[3] = (int32_t)dxy;   /* dsdx, dtdy (RDPHALF_2) */
+                if(cmd==0xe4 && first_half==0xb4u && (c0>>24)==0xb3u)
+                    hle_timing_graphics_refine_command(57,0);
                 rdp_fifo_append(fifo, tr, 4);
                 break;
             }
@@ -1865,6 +1869,14 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
             {
                 unsigned int all = GSP_CLIP_REJECT;
                 int vi;
+                if (gsp->clip_reject & GSP_REJ_PROJECT) {
+                    unsigned int visited, cycles;
+                    int culled = gsp_culldl_rej_count(gsp,v0,v1,&visited);
+                    cycles = hle_timing_rej_cull(visited,culled,(unsigned int)s_dl_sp);
+                    if (cycles) hle_timing_refine(HLE_WORK_COMMAND,1,cycles);
+                    if (culled) DL_RETURN();
+                    break;
+                }
                 for (vi = v0; vi <= v1 && all; vi++)
                     all &= (unsigned int)gsp->vtx[vi].clip;
                 if (all)

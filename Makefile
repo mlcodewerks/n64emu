@@ -352,6 +352,16 @@ else
    fpic = -fno-PIC
 endif
 
+# Libretro cores are loaded after frontend/worker startup. Their TLS must not
+# consume the loader's static surplus (renderer row caches are intentionally
+# much larger). Per-variable signal ownership is handled without TLS access.
+SHARED_TLS_FLAGS :=
+ifneq ($(platform),win)
+ifneq ($(STATIC_LINKING),1)
+SHARED_TLS_FLAGS := -ftls-model=global-dynamic
+endif
+endif
+
 include $(CORE_DIR)/src/device/rcp/rsp/p_rsp/simd.mk
 OBJECTS     += $(SOURCES_CXX:.cpp=.o) $(SOURCES_C:.c=.o) $(SOURCES_ASM:.S=.o) $(SOURCES_NASM:.asm=.o) $(SOFTRDP_OBJECTS) $(RSP_SIMD_OBJECTS)
 ifneq ($(platform),win)
@@ -360,7 +370,7 @@ endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
 # n64emuJIT emitter, runtime layout and optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):cxx=$(CXX):$(CXX_MACHINE):$(CXX_VERSION):cxxstd=c++17:glrdp=$(HAVE_GLRDP):gl2=$(HAVE_GL2_RDP):gles2=$(HAVE_GLES2_RDP):d3d9=$(HAVE_D3D9):headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):cxx=$(CXX):$(CXX_MACHINE):$(CXX_VERSION):cxxstd=c++17:glrdp=$(HAVE_GLRDP):gl2=$(HAVE_GL2_RDP):gles2=$(HAVE_GLES2_RDP):d3d9=$(HAVE_D3D9):headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1:pic=$(PIC):tls=$(SHARED_TLS_FLAGS)
 # Wrapper invocations must leave the child's configuration stamp intact.
 CONFIG_WRAPPERS := x86 arm32 usf usf-x86 usf-arm32 rpi4 rpi5
 ifneq ($(strip $(MAKECMDGOALS)),)
@@ -374,8 +384,8 @@ $(file >$(CPU_JIT_CONFIG),$(CPU_JIT_CONFIG_VALUE))
 endif
 endif
 $(OBJECTS): $(CPU_JIT_CONFIG)
-CXXFLAGS    += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(GLFLAGS) $(DYNAFLAGS)
-CFLAGS      += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(GLFLAGS) $(DYNAFLAGS)
+CXXFLAGS    += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(GLFLAGS) $(DYNAFLAGS) $(SHARED_TLS_FLAGS)
+CFLAGS      += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(GLFLAGS) $(DYNAFLAGS) $(SHARED_TLS_FLAGS)
 
 $(CORE_DIR)/src/device/r4300/cpu_ops.o $(CORE_DIR)/src/device/r4300/jit_runtime.o: CFLAGS += -O3
 # Keep precise host operations behind an integer ABI; dispatch and guest checks use fast-math.

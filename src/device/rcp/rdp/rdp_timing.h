@@ -51,6 +51,7 @@ struct rdp_timing {
     int64_t vi_field_start;
     uint32_t vi_field_ticks;
     uint64_t vi_elapsed;
+    uint32_t span_fraction; /* Submission-local Q8 remainder; never serialized. */
 };
 
 /* Command-derived uniform regions are proofs, not samples from GPU-stale
@@ -331,6 +332,197 @@ static inline uint64_t rdp_timing_separate_buffers(uint64_t color, uint64_t dept
     return separate;
 }
 
+/* Hardware-calibrated buffered RGBA16 service. The profile bits select
+ * actual RDP interfaces: color read, depth read, color write, depth write.
+ * Rejected Z-update retains the writeback reservation bit (16). Rates are
+ * Q8 RCP clocks per eight-pixel buffer, with Q8 additional same-bank row
+ * handoff work. Fractional service carries across all spans in a packet.
+ *
+ * These effective throughputs were calibrated against Thar0's published
+ * counter envelopes (a81ced93b28d51b920b5f9470d0bcc5f03726ae4). They are
+ * aggregate interface rates, not individual RDRAM signal latencies. The
+ * calculation uses live span geometry; it recognizes no ROM or test image.
+ * RGBA32, other sizes and bank-crossing spans retain the prior estimate.
+ * See benchmarks/RDP_HARDWARE_TIMING.md for calibration scope and limits. */
+static const uint16_t rdp_buffer_rate[2][20] = {
+    { 0, 2802, 2802, 4411, 2051, 4266, 4580, 6115, 0, 0, 0, 0, 3614, 5823, 5923, 7395, 0, 0, 2806, 4430 }, /* 1-cycle */
+    { 0, 4180, 4664, 4851, 4101, 4226, 4784, 5658, 0, 0, 0, 0, 4222, 5628, 5629, 7314, 0, 0, 4665, 4858 }, /* 2-cycle */
+};
+static const uint16_t rdp_buffer_bank_rate[2][20] = {
+    { 0, 0, 0, 649, 0, 0, 644, 817, 0, 0, 0, 0, 1294, 1336, 1308, 2109, 0, 0, 0, 642 }, /* 1-cycle */
+    { 0, 0, 0, 414, 0, 0, 152, 789, 0, 0, 0, 0, 803, 1668, 1713, 2343, 0, 0, 0, 438 }, /* 2-cycle */
+};
+
+/* Q12 exposed grant cost per VI 64-bit transfer word: independent
+ * service, independent color/Z banks, color-bank recovery, depth-bank
+ * recovery, and common-bank recovery. Negative split-bank terms are
+ * buffering credits; the complete reservation is always nonnegative.
+ * Measured rejection interfaces also supply the corresponding read-only
+ * case. Unmeasured traffic mixes reuse the nearest client schedule. */
+static const int32_t rdp_vi_grants[2][20][5] = {
+    { /* 1-cycle */
+        { 0, 0, 0, 0, 0 }, /* 0: no memory client */
+        { 0, 0, 0, 0, 0 }, /* 1: color read, discarded result */
+        { 0, 0, 0, 0, 0 }, /* 2: depth read, rejected */
+        { 0, 0, 0, 0, 0 }, /* 3: color/depth reads, rejected */
+        { 12444, 0, 18571, 18571, 18571 }, /* 4: color write */
+        { 21329, 0, 10100, 10100, 10100 }, /* 5: color read/write */
+        { 0, 0, 0, 0, 0 }, /* 6: depth read then color write */
+        { 0, 0, 0, 0, 0 }, /* 7: color/depth reads then color write */
+        { 0, 0, 0, 0, 0 }, /* 8: unused interface combination */
+        { 0, 0, 0, 0, 0 }, /* 9: unused interface combination */
+        { 0, 0, 0, 0, 0 }, /* 10: unused interface combination */
+        { 0, 0, 0, 0, 0 }, /* 11: unused interface combination */
+        { 0, 0, 0, 0, 0 }, /* 12: color/depth writes */
+        { 0, 0, 0, 0, 0 }, /* 13: color read then color/depth writes */
+        { 22052, 847, 13692, 13692, 7234 }, /* 14: depth read then color/depth writes */
+        { 21278, 2900, 20866, 20866, 4416 }, /* 15: color/depth reads and writes */
+        { 0, 0, 0, 0, 0 }, /* 16: unused interface combination */
+        { 0, 0, 0, 0, 0 }, /* 17: unused interface combination */
+        { 3883, 0, 14110, 14110, 14110 }, /* 18: rejected depth with writeback reservation */
+        { 13230, -1720, 15022, 15022, 4135 }, /* 19: rejected color/depth with writeback reservation */
+    },
+    { /* 2-cycle */
+        { 0, 0, 0, 0, 0 }, /* 0: no memory client */
+        { 0, 0, 0, 0, 0 }, /* 1: color read, discarded result */
+        { 0, 0, 0, 0, 0 }, /* 2: depth read, rejected */
+        { 0, 0, 0, 0, 0 }, /* 3: color/depth reads, rejected */
+        { 1998, 0, 1722, 1722, 1722 }, /* 4: color write */
+        { 12083, 0, 16308, 16308, 16308 }, /* 5: color read/write */
+        { 0, 0, 0, 0, 0 }, /* 6: depth read then color write */
+        { 0, 0, 0, 0, 0 }, /* 7: color/depth reads then color write */
+        { 0, 0, 0, 0, 0 }, /* 8: unused interface combination */
+        { 0, 0, 0, 0, 0 }, /* 9: unused interface combination */
+        { 0, 0, 0, 0, 0 }, /* 10: unused interface combination */
+        { 0, 0, 0, 0, 0 }, /* 11: unused interface combination */
+        { 0, 0, 0, 0, 0 }, /* 12: color/depth writes */
+        { 0, 0, 0, 0, 0 }, /* 13: color read then color/depth writes */
+        { 22098, 8457, 13344, 13344, 6859 }, /* 14: depth read then color/depth writes */
+        { 19538, 3040, 20680, 20680, 5474 }, /* 15: color/depth reads and writes */
+        { 0, 0, 0, 0, 0 }, /* 16: unused interface combination */
+        { 0, 0, 0, 0, 0 }, /* 17: unused interface combination */
+        { 1987, 0, 1584, 1584, 1584 }, /* 18: rejected depth with writeback reservation */
+        { 9775, -1325, 8267, 8267, 3406 }, /* 19: rejected color/depth with writeback reservation */
+    },
+};
+/* Same RDRAM device, different bank: shared interface recovery. */
+static const int32_t rdp_vi_device_grant[2] = { 620, 0 };
+/* Q8 time, Q12 exposed service per VI transfer word. Source scanout width,
+ * field/halfline phase and bank/device topology remain live inputs. */
+static inline uint64_t rdp_timing_buffered_vi(struct rdp_timing *t,uint64_t work,
+    unsigned profile,uint64_t color,uint64_t depth,unsigned color_live,unsigned depth_live)
+{
+    if(!rdp_timing_vi_enabled(t))return work;
+    if(profile==1 || profile==2)profile=18;
+    else if(profile==3)profile=19;
+    else if(profile==6)profile=5;
+    else if(profile==7)profile=15;
+    else if(profile==12)profile=4;
+    else if(profile==13)profile=14;
+    if(!rdp_vi_grants[t->cycle_type][profile][0])return UINT64_MAX;
+    const uint32_t *v=t->vi_regs;
+    unsigned hs=v[9]>>16&1023,he=v[9]&1023,vs=v[10]>>16&1023,ve=v[10]&1023;
+    unsigned total=(v[6]&1023)+1,stride=v[2]&4095,bpp=(v[0]&3)==3?4:2;
+    uint64_t ticks=t->vi_field_ticks,period=ticks*4;
+    int64_t start=t->deadline%(int64_t)ticks,origin=t->vi_field_start%(int64_t)ticks;
+    if(start<0)start+=ticks;
+    if(origin<0)origin+=ticks;
+    uint64_t phase=(((uint64_t)start*4+period*2-(uint64_t)origin*4-
+        t->clock_overhang+(t->vi_elapsed%period)*3)*256+(uint64_t)t->span_fraction*3)%(period*256);
+    period*=256;
+    uint64_t width=((uint64_t)(he-hs)*(v[12]&4095)+1023)>>10;
+    uint64_t words=(width*bpp+7)/8,line=ticks*8/((uint64_t)total*3);
+    uint64_t remaining=work,elapsed=0,credit=0;
+    const int32_t *grants=rdp_vi_grants[t->cycle_type][profile];
+    while(remaining) {
+        unsigned halfline=(unsigned)(phase*total/period),active=halfline>=vs&&halfline<ve;
+        uint64_t boundary=active?((uint64_t)(halfline+1)*period+total-1)/total:
+            halfline<vs?((uint64_t)vs*period+total-1)/total:period;
+        uint64_t window=(boundary-phase+2)/3,denominator=line*4096,budget=0;
+        if(active) {
+            uint64_t y=(((uint64_t)(halfline-vs)/2)*(v[13]&4095)+((v[13]>>16)&4095))>>10;
+            uint64_t address=((v[1]&0xffffffu)+y*stride*bpp+(((v[12]>>16)&4095)>>10)*bpp)&0xffffffu;
+            unsigned cb=color_live && (color>>23)==(address>>20);
+            unsigned zb=depth_live && (depth>>23)==(address>>20);
+            unsigned split=color_live&&depth_live&&(color>>23)!=(depth>>23);
+            int64_t exposed=grants[0]+(split?grants[1]:0);
+            if(cb&&zb)exposed+=grants[4];
+            else if(cb)exposed+=grants[2];
+            else if(zb)exposed+=grants[3];
+            else if((color_live&&(color>>24)==(address>>21)) ||
+                    (depth_live&&(depth>>24)==(address>>21)))exposed+=rdp_vi_device_grant[t->cycle_type];
+            if(exposed<0)exposed=0;
+            budget=words*(uint64_t)exposed;
+            if(budget>=denominator)budget=denominator-1;
+        }
+        uint64_t available=denominator-budget;
+        uint64_t demand=remaining*denominator;
+        uint64_t stretched=demand<=credit?0:(demand-credit+available-1)/available;
+        if(stretched<=window)return elapsed+stretched;
+        /* Preserve fractional grants across halfline boundaries. Otherwise a
+         * saturated VI could round every window to zero and never progress. */
+        uint64_t service=window*available+credit;
+        uint64_t served=service/denominator;
+        credit=service%denominator;
+        if(served>remaining)served=remaining;
+        remaining-=served;elapsed+=window;phase=(phase+window*3)%period;
+    }
+    return elapsed;
+}
+
+static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned left,unsigned right,
+    uint64_t color,uint64_t depth,unsigned color_read,unsigned depth_read,
+    unsigned color_write,unsigned depth_write)
+{
+    unsigned profile=color_read|depth_read*2u|color_write*4u|depth_write*8u;
+    if(t->reject && depth_read && (t->modes&0x20u))profile|=16;
+    unsigned rate=rdp_buffer_rate[t->cycle_type][profile];
+    if(!rate)return UINT64_MAX;
+    uint64_t pixels=right-left,segments=rdp_timing_buffers(16,left,right);
+    if(!segments)return UINT64_MAX;
+    unsigned color_live=color_read||color_write,depth_live=depth_read||depth_write;
+    uint64_t last_color=color+(pixels-1)*16,last_depth=depth+(pixels-1)*16;
+    // A crossing needs a mixed-bank request schedule. Keep its existing bound.
+    if((color_live&&(color>>23)!=(last_color>>23)) ||
+       (depth_live&&(depth>>23)!=(last_depth>>23)))return UINT64_MAX;
+    uint64_t q=segments*rate;
+    unsigned switches=(color_read&&depth_read)+depth_write;
+    unsigned back=(!color_write&&!depth_write&&color_read&&depth_read) ||
+        (color_write&&depth_write&&!color_read&&!depth_read) ||
+        (color_write&&depth_read&&!color_read&&!depth_write);
+    uint64_t full=3u*(segments*switches+(segments-1)*back);
+    if(full && color_live && depth_live && (color>>23)==(depth>>23)) {
+        uint64_t distance=color>depth?color-depth:depth-color;
+        uint64_t rows;
+        // Every buffered transition must change rows in this common case,
+        // including returns from the preceding buffer. No buffer walk needed.
+        if(distance>=((pixels*16)+UINT64_C(16384)))rows=full;
+        else rows=rdp_timing_row_clocks(color,depth,16,left,right,color_read,depth_read,color_write,depth_write);
+        q+=(uint64_t)rdp_buffer_bank_rate[t->cycle_type][profile]*segments*rows/full;
+    }
+    /* Partial buffers and unaligned words retain their actual transfer work;
+     * a complete eight-pixel RGBA16 client transfers two 64-bit words. */
+    int64_t transfer_delta=((int64_t)rdp_timing_bus_words(color,pixels*16)-(int64_t)segments*2)*
+        (color_read+color_write)+
+        ((int64_t)rdp_timing_bus_words(depth,pixels*16)-(int64_t)segments*2)*(depth_read+depth_write);
+    if(transfer_delta<0) {
+        uint64_t credit=(uint64_t)(-transfer_delta)*256;
+        q=q>credit?q-credit:0;
+    } else q+=(uint64_t)transfer_delta*256;
+    uint64_t raster=pixels*(t->cycle_type+1)*256;
+    if(q<raster)q=raster;
+    uint64_t transient=(color_read+depth_read)*49u*256;
+    RDP_TIMING_OBSERVE_RESPONSE(t,transient>q?(transient-q+255)/256:0);
+    if(q<transient)q=transient;
+    unsigned startup=t->reject?4u+2u*t->cycle_type:15u;
+    q+=startup*256u;
+    q=rdp_timing_buffered_vi(t,q,profile,color,depth,color_live,depth_live);
+    if(q==UINT64_MAX)return q;
+    q+=t->span_fraction;
+    t->span_fraction=(uint32_t)(q&255);
+    return q>>8;
+}
+
 /* RDRAM transfers use estimated 16-byte color-buffer segments (eight RGBA16
  * or four RGBA32 pixels). RGBA32 segmentation is a capacity extrapolation,
  * not a measured hardware buffer size. Charge bus
@@ -367,6 +559,11 @@ static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, in
     uint64_t depth = (uint64_t)t->z_address * 8 +
         ((uint64_t)y * t->fb_width + (unsigned)left) * 16;
     uint64_t depth_words = rdp_timing_bus_words(depth, pixels * 16);
+    if(t->fb_size==2) {
+        uint64_t buffered=rdp_timing_buffered_span(t,(unsigned)left,(unsigned)right,first,depth,
+            color_read,depth_read,color_write,depth_write);
+        if(buffered!=UINT64_MAX){t->vi_elapsed+=buffered;return buffered;}
+    }
     bus += depth_words * (depth_read + depth_write);
     bus += segments * 5 * (color_write + color_read + depth_read + depth_write);
     /* Reads precede writes in a span segment. Changing bus direction costs
@@ -530,6 +727,7 @@ static inline uint64_t rdp_timing_clocks(struct rdp_timing* t)
     unsigned op = (w[0] >> 24) & 63;
     uint64_t work = 0;
     t->vi_elapsed = t->length / 2;
+    t->span_fraction = 0;
     t->reject = 0;
     if (op == 0x3a) t->primitive_color = w[1];
     if (op == 0x3b) t->environment_color = w[1];
@@ -747,6 +945,11 @@ static inline void rdp_timing_finish(struct rdp_timing* t, int64_t submitted,
         if (primitive && t->reject && !(t->modes & 0x50u)) {
             t->observe_busy(t->busy_context, begin, end, 1);
             t->observe_busy(t->busy_context, begin, end - (t->cycle_type + 1) * 3, 2);
+        } else if(primitive && t->fb_size==2 && t->cycle_type<2 && end-begin>48) {
+            /* The buffered client retires before the final pixel-pipeline
+             * drain. Counting identical intervals loses this counter skew. */
+            t->observe_busy(t->busy_context,begin,end-48,1);
+            t->observe_busy(t->busy_context,begin,end,2);
         } else t->observe_busy(t->busy_context, begin, end, mask);
     }
     if (sync && !sync->seen && ((t->words[0] >> 24) & 63) == 0x29) {

@@ -29,6 +29,44 @@
 #include "hle_internal.h"
 #include "memory.h"
 #include "hle_simd.h"
+#include "hle_timing_video.h"
+
+static void video_instruction_timing(struct hle_t *hle, enum hle_video_timing_kind kind)
+{
+    uint32_t p = *dmem_u32(hle, TASK_UCODE_DATA);
+    uint32_t code = *dmem_u32(hle, TASK_UCODE);
+    struct hle_video_timing_input input;
+    uint32_t cycles;
+    input.program = dram_u32(hle, code);
+    input.boot = (const uint32_t *)hle->imem;
+    input.boot_bytes = *dmem_u32(hle, TASK_UCODE_BOOT_SIZE);
+    input.flags = *dmem_u32(hle, TASK_FLAGS);
+    input.data_bytes = *dmem_u32(hle, TASK_UCODE_DATA_SIZE);
+    input.status = *hle->sp_status;
+    input.io_busy = *hle->sp_dma_full | *hle->sp_dma_busy | *hle->sp_semaphore;
+    input.unaligned = (p | code | *dram_u32(hle, p) | *dram_u32(hle, p + 4)) & 7u;
+    input.kind = kind;
+    if (kind == HLE_VIDEO_DECODE) {
+        input.width = *dram_u32(hle, p + 16);
+        input.height = *dram_u32(hle, p + 20);
+        input.rows_per_dma = *dram_u32(hle, p + 24);
+        input.row_pairs = *dram_u32(hle, p + 28);
+        input.descriptor = *dram_u32(hle, p + 32);
+        input.stride_pair = *dram_u32(hle, p + 36);
+        input.unaligned |= (*dram_u32(hle, p + 8) | *dram_u32(hle, p + 12)) & 7u;
+    } else {
+        uint32_t bytes = *dram_u32(hle, p + 8);
+        input.width = bytes / 8u;
+        input.row_pairs = *dram_u32(hle, p + 16);
+        input.height = input.row_pairs * 2u;
+        input.rows_per_dma = *dram_u32(hle, p + 12);
+        input.descriptor = *dram_u32(hle, p + 24);
+        input.stride_pair = *dram_u32(hle, p + 28);
+        input.unaligned |= bytes & 7u;
+    }
+    cycles = hle_timing_video(&input);
+    if (cycles) hle_timing_override(cycles);
+}
 
 #define SATURATE8(x) ((unsigned int) x <= 255 ? x : (x < 0 ? 0: 255))
 
@@ -189,8 +227,123 @@ static uint32_t YCbCr_to_RGBA(uint8_t Y, uint8_t Cb, uint8_t Cr)
 #endif
 }
 
+/* SP DMA packs rows contiguously in DMEM, wraps at 4 KiB, and applies
+ * skip only to RDRAM. Wide video frames overlap the fixed native banks;
+ * retaining this window also preserves the loop's read-after-write feedback. */
+static void video_window_dma(struct hle_t *hle, uint8_t window[4096],
+                             uint32_t cache, uint32_t dram, uint32_t descriptor, int write)
+{
+    uint32_t bytes = (descriptor & 0xfffu) + 1u;
+    uint32_t rows = ((descriptor >> 12) & 255u) + 1u;
+    uint32_t skip = descriptor >> 20, row, k;
+    bytes = (bytes + 7u) & ~7u;
+    cache &= 0xff8u; dram &= 0x7ffff8u;
+    for (row = 0; row < rows; ++row) {
+        for (k = 0; k < bytes; ++k) {
+            uint8_t *ram = dram_u8(hle, (dram + k) & 0x7fffffu);
+            if (write) *ram = window[(cache + k) & 0xfffu];
+            else window[(cache + k) & 0xfffu] = *ram;
+        }
+        cache += bytes; dram += bytes + skip;
+    }
+}
+
+static void video_window_init(struct hle_t *hle, uint8_t window[4096])
+{
+    uint32_t k, data = *dmem_u32(hle, TASK_UCODE_DATA);
+    for (k = 0; k < 4096; ++k) window[k] = *dmem_u8(hle, k);
+    video_window_dma(hle, window, 0, data, *dmem_u32(hle, TASK_UCODE_DATA_SIZE) - 1u, 0);
+}
+
+static void decode_video_window(struct hle_t *hle, uint32_t p)
+{
+    uint8_t window[4096];
+    uint32_t y = *dram_u32(hle, p), cb = *dram_u32(hle, p + 4);
+    uint32_t cr = *dram_u32(hle, p + 8), dest = *dram_u32(hle, p + 12);
+    uint32_t width = *dram_u32(hle, p + 16), pairs = *dram_u32(hle, p + 28);
+    uint32_t rows = *dram_u32(hle, p + 24), descriptor = *dram_u32(hle, p + 32);
+    uint32_t stride = *dram_u32(hle, p + 36), pair, r, x, k;
+    video_window_init(hle, window);
+    memset(window + 0x300, 0, 0x800);
+    for (pair = 0; pair < pairs; ++pair) {
+        uint32_t chroma = 0, first = 0, second = width, out = 0x300;
+        video_window_dma(hle, window, 0, y, 2u * width - 1u, 0);
+        video_window_dma(hle, window, 0x200, cb, width - 1u, 0);
+        video_window_dma(hle, window, 0x280, cr, width - 1u, 0);
+        for (r = 0; r < rows; ++r) {
+            for (x = 0; x < width; x += 16u) {
+                uint32_t pixels[2][16];
+                /* LUV/LHV latch both rows and chroma before any SFV stores. */
+                for (k = 0; k < 16u; ++k) {
+                    uint8_t c = window[(0x200u + chroma + k / 2u) & 0xfffu];
+                    uint8_t v = window[(0x280u + chroma + k / 2u) & 0xfffu];
+                    pixels[0][k] = YCbCr_to_RGBA(window[(first + k) & 0xfffu], c, v);
+                    pixels[1][k] = YCbCr_to_RGBA(window[(second + k) & 0xfffu], c, v);
+                }
+                /* SHV writes planar RGB through the fixed 0xf80 scratch
+                 * area. The second row's LUVs happen after first-row SFV;
+                 * a wide first row can overwrite that scratch in between. */
+                for (k = 0; k < 16u; ++k) {
+                    uint32_t row;
+                    for (row = 0; row < 2u; ++row) {
+                        uint32_t at = 0xf80u + row * 64u;
+                        window[at + k] = pixels[row][k] >> 24;
+                        window[at + 16u + k] = pixels[row][k] >> 16;
+                        window[at + 32u + k] = pixels[row][k] >> 8;
+                    }
+                }
+                for (k = 0; k < 16u; ++k) {
+                    uint32_t at = (out + k * 4u) & 0xfffu, color = pixels[0][k];
+                    window[at] = color >> 24; window[(at + 1u) & 0xfffu] = color >> 16;
+                    window[(at + 2u) & 0xfffu] = color >> 8;
+                }
+                for (k = 0; k < 16u; ++k)
+                    pixels[1][k] = (uint32_t)window[0xfc0u + k] << 24 |
+                        (uint32_t)window[0xfd0u + k] << 16 | (uint32_t)window[0xfe0u + k] << 8;
+                /* Only the second output row is cleared before its RGB writes. */
+                for (k = 0; k < 64u; ++k) window[(out + width * 4u + k) & 0xfffu] = 0;
+                for (k = 0; k < 16u; ++k) {
+                    uint32_t at = (out + width * 4u + k * 4u) & 0xfffu, color = pixels[1][k];
+                    window[at] = color >> 24; window[(at + 1u) & 0xfffu] = color >> 16;
+                    window[(at + 2u) & 0xfffu] = color >> 8;
+                }
+                first += 16u; second += 16u; chroma += 8u; out += 64u;
+                hle_timing_add(HLE_WORK_PIXEL, 4);
+            }
+            first += width; second += width; out += width * 4u;
+        }
+        video_window_dma(hle, window, 0x300, dest, descriptor, 1);
+        y += width * 2u; cb += width / 2u; cr += width / 2u; dest += stride;
+    }
+}
+
+static void fill_video_window(struct hle_t *hle, uint32_t p)
+{
+    uint8_t window[4096];
+    uint32_t src = *dram_u32(hle, p), dest = *dram_u32(hle, p + 4);
+    uint32_t bytes = *dram_u32(hle, p + 8), rows = *dram_u32(hle, p + 12);
+    uint32_t pairs = *dram_u32(hle, p + 16), descriptor = *dram_u32(hle, p + 24);
+    uint32_t stride = *dram_u32(hle, p + 28), pair, k, i;
+    descriptor |= (rows - 1u) << 12;
+    video_window_init(hle, window);
+    for (pair = 0; pair < pairs; ++pair) {
+        video_window_dma(hle, window, 0, src, descriptor, 0);
+        video_window_dma(hle, window, 0x800, dest, descriptor, 0);
+        for (k = 0; k < bytes; k += 8u) {
+            uint8_t mixed[8];
+            for (i = 0; i < 8u; ++i)
+                mixed[i] = (window[(k + i) & 0xfffu] + window[(0x800u + k + i) & 0xfffu]) >> 1;
+            for (i = 0; i < 8u; ++i) window[(0x800u + k + i) & 0xfffu] = mixed[i];
+            hle_timing_add(HLE_WORK_PIXEL, 1);
+        }
+        video_window_dma(hle, window, 0x800, dest, descriptor, 1);
+        src += stride; dest += stride;
+    }
+}
+
 void decode_video_frame_task(struct hle_t* hle)
 {
+    video_instruction_timing(hle, HLE_VIDEO_DECODE);
     int data_ptr = *dmem_u32(hle, TASK_UCODE_DATA);
 
     int pLuminance = *dram_u32(hle, data_ptr);
@@ -200,6 +353,12 @@ void decode_video_frame_task(struct hle_t* hle)
     int nMovieWidth = *dram_u32(hle, data_ptr + 16);
     int nMovieHeight = *dram_u32(hle, data_ptr + 20);
     int nScreenDMAIncrement = *dram_u32(hle, data_ptr + 36);
+
+    if (nMovieWidth > 256 && nMovieWidth <= 320 && !(nMovieWidth & 15)) {
+        decode_video_window(hle, (uint32_t)data_ptr);
+        rsp_break(hle, SP_STATUS_TASKDONE);
+        return;
+    }
 
     int i, j;
     uint8_t Y, Cb, Cr;
@@ -267,6 +426,7 @@ void decode_video_frame_task(struct hle_t* hle)
 
 void fill_video_double_buffer_task(struct hle_t* hle)
 {
+    video_instruction_timing(hle, HLE_VIDEO_FILL);
     /* The boot entry completes a pre-empted fill without touching pixels. */
     if (*hle->sp_status & SP_STATUS_SIG0) {
         *hle->sp_status &= ~SP_STATUS_SIG0;
@@ -280,6 +440,13 @@ void fill_video_double_buffer_task(struct hle_t* hle)
     int width = *dram_u32(hle, data_ptr + 0x8) >> 1;
     int height = *dram_u32(hle, data_ptr + 0x10) << 1;
     int stride = *dram_u32(hle, data_ptr + 0x1c) >> 1;
+
+    if (width > 1024 && width <= 1280 && !(width & 63)) {
+        fill_video_window(hle, (uint32_t)data_ptr);
+        *hle->sp_status &= ~SP_STATUS_SIG0;
+        rsp_break(hle, SP_STATUS_SIG1 | SP_STATUS_TASKDONE);
+        return;
+    }
 
     assert((*dram_u32(hle, data_ptr + 0x28) >> 16) == 0x8000);
 

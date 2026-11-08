@@ -1,5 +1,5 @@
 """Build standalone C/C++ examples and check the host adapter's timing contract."""
-import argparse, hashlib, json, os, shutil, subprocess
+import argparse, datetime, hashlib, json, os, shutil, subprocess
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
@@ -45,10 +45,12 @@ def main():
         (out/(mode+'.log')).write_text(sample+checks)
         results[mode]={'example':sample.strip(),'checks':checks.strip(),
                        'compiler':run([cc,'--version']).splitlines()[0]}
-    source=HERE.parents[1]/'src/device/rcp/rdp/rdp_timing.h'
+    source=HERE.parent/'src/device/rcp/rdp/rdp_timing.h'
     digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
-    if source.exists():assert source.read_bytes()==(HERE/'rdp_timing.h').read_bytes()
-    result={'date':'2026-11-04','timezone':'Australia/Sydney','results':results,
+    # The standalone copy carries its existing license annotation.
+    body=lambda path:path.read_text().replace('requirements. \n * License: WTFPL */','requirements. */')
+    if source.exists():assert body(source)==body(HERE/'rdp_timing.h')
+    result={'date':datetime.date.today().isoformat(),'timezone':'Australia/Sydney','results':results,
             'model_sha256':digest(HERE/'rdp_timing.h'),
             'adapter_sha256':digest(HERE/'rdp_timing_adapter.h'),
             'reference_sha256':digest(a.reference_header) if a.reference_header else None,

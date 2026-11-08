@@ -126,6 +126,7 @@ void hle_init(struct hle_t* hle,
     hle->musyx_ucode_data=0;
     hle->rsp_t6=0;hle->rsp_t6_written=0;
     memset(hle->rsp_f5,0,sizeof(hle->rsp_f5));hle->rsp_f5_written=0;
+    memset(hle->rsp_nead_env, 0, sizeof(hle->rsp_nead_env)); hle->rsp_nead_env_written = 0;
 
     /* a streaming graphics task cannot span a plugin re-init (ROM
      * restart, savestate load): drop any suspended walk */
@@ -147,6 +148,7 @@ static void timing_identify(ucode_func_t handler);
 void hle_execute(struct hle_t* hle)
 {
     hle_timing_begin();
+    hle_timing_boot((const uint32_t *)hle->imem);
     hle->alist_chunk_capacity = 0;
     /* Direct RSP programs have no OSTask header. Do not inspect stale guest
      * pointers or reuse a task-cache entry when handling CIC boot code. */
@@ -659,6 +661,7 @@ void hle_resume_graphics(struct hle_t* hle, enum hle_graphics_resume resume,
     default: hle_execute(hle); return;
     }
     hle_timing_begin();
+    hle_timing_boot((const uint32_t *)hle->imem);
     hle_timing_ucode(checksum);
     timing_identify(handler);
     hle->alist_chunk_capacity = 0;
