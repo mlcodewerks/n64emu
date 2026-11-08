@@ -8,13 +8,13 @@
 
 static inline uint64_t hle_timing_nead_data_hash(uint32_t profile)
 {
-    static const uint64_t hashes[7]={
+    static const uint64_t hashes[8]={
         UINT64_C(0xaff90ce9ce357ba3),UINT64_C(0xb4f360741b887a27),
         UINT64_C(0xd944ae8112835093),UINT64_C(0xf10141b60f9b7580),
         UINT64_C(0xe8761b5b7649d568),UINT64_C(0x77d711ac4ae96b7f),
-        UINT64_C(0x98ceb4f938591947)
+        UINT64_C(0x98ceb4f938591947),UINT64_C(0xf8af0cea5bf97ba3)
     };
-    return profile>=1u && profile<=7u ? hashes[profile-1u] : 0;
+    return profile>=1u && profile<=8u ? hashes[profile-1u] : 0;
 }
 
 static inline uint32_t hle_timing_nead_profile(const uint32_t *imem)
@@ -28,10 +28,13 @@ static inline uint32_t hle_timing_nead_profile(const uint32_t *imem)
     if (hash == UINT64_C(0xd0be1d39ad245891)) return 1;
     if (hash == UINT64_C(0x1f584b205d5afc61)) return 2;
     if (hash == UINT64_C(0x945b97d076844d68)) return 3;
+    /* Communication Kit: identical AC executable, adjacent CPU tail. */
+    if (hash == UINT64_C(0x39771666324ac506)) return 3;
     if (hash == UINT64_C(0x2d179def6fa7b444)) return 4;
     if (hash == UINT64_C(0x562662df86c05f4c)) return 5;
     if (hash == UINT64_C(0xc781edabc413c129)) return 6;
     if (hash == UINT64_C(0x7a60ff0f71b76599)) return 7;
+    if (hash == UINT64_C(0xbb46889adf94920c)) return 8;
     return 0;
 }
 
@@ -58,16 +61,17 @@ static inline uint32_t hle_timing_nead_envmix(uint32_t samples, uint32_t flags)
  * Per-PC affine schedules cover all flags, pitch and phase fixtures. */
 static inline uint32_t hle_timing_nead_resample(uint32_t profile, uint32_t groups, uint32_t flags)
 {
-    static const uint16_t base[7][8] = {
+    static const uint16_t base[8][8] = {
         {161,131,162,132,170,140,162,132},
         {185,155,186,156,194,164,186,156},
         {148,128,149,129,157,137,149,129},
         {153,126,154,127,162,135,154,127},
         {153,126,154,127,162,135,154,127},
         {148,128,149,129,157,137,149,129},
-        {168,138,169,139,177,147,169,139}
+        {168,138,169,139,177,147,169,139},
+        {161,131,162,132,170,140,162,132}
     };
-    if (!profile || profile > 7u || !groups || groups > 127u || flags > 7u) return 0;
+    if (!profile || profile > 8u || !groups || groups > 127u || flags > 7u) return 0;
     return base[profile - 1u][flags] + 44u * groups;
 }
 #endif

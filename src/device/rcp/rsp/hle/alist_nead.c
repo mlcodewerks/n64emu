@@ -114,21 +114,21 @@ static uint32_t nead_dma_list_clocks;
  * is unchanged qualify. This does not replace other lists' coarse costs. */
 static void nead_dma_list_begin(struct hle_t* hle)
 {
-    static const uint16_t base[7] = {189,193,137,797,732,173,193};
-    static const uint8_t load_cpu[7] = {45,45,36,39,39,36,45};
-    static const uint8_t save_cpu[7] = {44,44,35,42,42,35,44};
-    static const uint64_t data_hash[7] = {
+    static const uint16_t base[8] = {189,193,137,797,732,173,193,189};
+    static const uint8_t load_cpu[8] = {45,45,36,39,39,36,45,45};
+    static const uint8_t save_cpu[8] = {44,44,35,42,42,35,44,44};
+    static const uint64_t data_hash[8] = {
         UINT64_C(0xaff90ce9ce357ba3), UINT64_C(0xb4f360741b887a27),
         UINT64_C(0xd944ae8112835093), UINT64_C(0xf10141b60f9b7580),
         UINT64_C(0xe8761b5b7649d568), UINT64_C(0x77d711ac4ae96b7f),
-        UINT64_C(0x98ceb4f938591947)
+        UINT64_C(0x98ceb4f938591947),UINT64_C(0xf8af0cea5bf97ba3)
     };
     uint32_t profile = nead_timing_profile, bytes = *dmem_u32(hle, TASK_DATA_SIZE);
     uint32_t list = *dmem_u32(hle, TASK_DATA_PTR) & 0x7fffffu;
     uint32_t data = *dmem_u32(hle, TASK_UCODE_DATA) & 0x7fffffu;
     uint32_t data_size, rounded, boot, text, clocks, i;
     nead_dma_list_clocks = 0;
-    if (!profile || profile > 7u || !bytes || (bytes & 7u) || (list & 7u) ||
+    if (!profile || profile > 8u || !bytes || (bytes & 7u) || (list & 7u) ||
         bytes > ((profile >= 3u && profile <= 5u) ? 128u : 64u) ||
         list > 0x800000u - bytes || *dmem_u32(hle, TASK_FLAGS) ||
         *hle->sp_dma_full || *hle->sp_dma_busy || *hle->sp_semaphore ||
@@ -191,11 +191,36 @@ static void nead_dma_list_begin(struct hle_t* hle)
         if (opcode == 4u) {
             uint32_t from = w2 >> 16, to = w2 & 0xffffu;
             uint32_t extent = count ? (count + 63u) & ~63u : 64u;
-            /* The verified LQV/SQV schedule needs complete aligned vectors.
-             * Preserve resident dispatch, parameters and staged commands. */
-            if (((from | to) & 15u) || from < 0x400u || to < 0x400u ||
+            /* Keep every partial-vector access away from resident
+             * dispatch, parameters and staged commands. */
+            if (from < 0x400u || to < 0x400u ||
                 from + extent > 0xf90u || to + extent > 0xf90u) return;
             clocks += 7u + 19u * (extent / 64u);
+            continue;
+        }
+        if (opcode == 0x0cu) {
+            uint32_t from=w2>>16,to=w2&0xffffu;
+            uint32_t extent=count?(count+31u)&~31u:32u;
+            if(from<0x400u || to<0x400u || from+extent>0xf90u || to+extent>0xf90u)return;
+            clocks+=profile==4u ? 13u+16u*(extent/32u) :
+                profile==5u ? 12u+16u*(extent/32u) : 14u+14u*(extent/32u);
+            continue;
+        }
+        if (profile == 8u && opcode == 3u) {
+            uint32_t elements=w1&0xffffu,from=w2>>16;
+            if(!elements)elements=1;
+            if(from<0x400u || from+2u*elements>0xf90u)return;
+            clocks+=5u+13u*elements;
+            continue;
+        }
+        if (profile == 8u && opcode == 0u) {
+            /* Own native report spans include both DMA transfers. Keep
+             * the staged block within DMEM and preserve future commands. */
+            if(!count || count>0x50u || address>0x800000u-count ||
+                (address<list+bytes && list<address+count) ||
+                (address<data+rounded && data<address+count) ||
+                (address<text+4096u && text<address+count))return;
+            clocks+=79u+count/4u;
             continue;
         }
         if (opcode != 0x14u && opcode != 0x15u) return;
@@ -280,10 +305,9 @@ static void nead_seed(struct hle_t* hle, uint32_t pc)
 
 static void nead_v31_load(struct hle_t* hle, uint16_t data_off)
 {
-    uint32_t ucode_data = *dmem_u32(hle, TASK_UCODE_DATA);
     unsigned i;
     for (i = 0; i < 8; ++i)
-        nead_v31[i] = *dram_u16(hle, ucode_data + data_off + 2*i);
+        nead_v31[i] = (uint16_t)*nead_s16(hle, (uint16_t)(data_off + 2*i));
 }
 
 static void SPNOOP(struct hle_t* UNUSED(hle), uint32_t UNUSED(w1), uint32_t UNUSED(w2))
@@ -356,7 +380,7 @@ static void ADPCM(struct hle_t* hle, uint32_t w1, uint32_t w2)
     uint32_t input = hle->alist_nead.in, output = hle->alist_nead.out;
     uint32_t step = flags & 4u ? 5u : 9u;
     uint32_t loop_clocks = 0;
-    if (nead_timing_profile == 1u && frames && frames <= 127u &&
+    if ((nead_timing_profile == 1u || nead_timing_profile == 8u || nead_timing_profile == 7u) && frames && frames <= 127u &&
         nead_setbuff_store == 0x2e0u && nead_dmem_base == 0 && !(output & 15u) &&
         input + frames * step + 9u <= 4096u && output + 32u * (frames + 1u) <= 4096u &&
         (input >= output + 32u * (frames + 1u) || input + frames * step + 9u <= output) &&
@@ -409,7 +433,7 @@ static void LOADBUFF(struct hle_t* hle, uint32_t w1, uint32_t w2)
     /* All seven original handlers discard the low four count bits.
      * Keep the native zero-count early return in the AC/MM-debug builds;
      * large zero LOADs and self-modifying IMEM loads need native execution. */
-    if (nead_timing_profile >= 1u && nead_timing_profile <= 7u) {
+    if (nead_timing_profile >= 1u && nead_timing_profile <= 8u) {
         count &= 0xff0u;
         if (!count && (nead_timing_profile == 3u || nead_timing_profile == 6u)) return;
         if (count && address > 0x800000u - count) {
@@ -431,7 +455,7 @@ static void SAVEBUFF(struct hle_t* hle, uint32_t w1, uint32_t w2)
     uint16_t dmem    = (w1 & 0xfff) + nead_dmem_base;
     uint32_t address = nead_address(hle, w2);
 
-    if (nead_timing_profile >= 1u && nead_timing_profile <= 7u) {
+    if (nead_timing_profile >= 1u && nead_timing_profile <= 8u) {
         /* Original handlers mask the byte count to 0xff0. The discarded
          * low count bits remain in SP_MEM_ADDR and can select IMEM.
          * Animal Forest and MM debug return on a zero masked count;
@@ -452,7 +476,29 @@ static void SAVEBUFF(struct hle_t* hle, uint32_t w1, uint32_t w2)
         alist_save(hle, dmem, address, count);
 }
 
-static void MIXER(struct hle_t* hle, uint32_t w1, uint32_t w2)
+/* LQV/SQV start at vector byte zero and stop at the SP quadword
+ * boundary. Preserve every unfilled byte in the retained vector file. */
+static void nead_addmix_lqv(struct hle_t* hle,unsigned reg,uint32_t address)
+{
+    unsigned byte,count=16u-(address&15u);
+    for(byte=0;byte<count;++byte) {
+        uint16_t *lane=&hle->rsp_nead_vectors[reg][byte>>1];
+        unsigned shift=(byte&1u)?0u:8u;
+        uint16_t value=hle->alist_buffer[((address+byte)&0xfffu)^S8];
+        *lane=(uint16_t)((*lane&~(0xffu<<shift))|(value<<shift));
+    }
+}
+static void nead_addmix_sqv(struct hle_t* hle,unsigned reg,uint32_t address)
+{
+    unsigned byte,count=16u-(address&15u);
+    for(byte=0;byte<count;++byte) {
+        unsigned shift=(byte&1u)?0u:8u;
+        hle->alist_buffer[((address+byte)&0xfffu)^S8]=
+            (uint8_t)(hle->rsp_nead_vectors[reg][byte>>1]>>shift);
+    }
+}
+
+static void MIXER_MK(struct hle_t* hle, uint32_t w1, uint32_t w2)
 {
     uint16_t count = (w1 >> 12) & 0xff0;
     int16_t  gain  = w1;
@@ -466,6 +512,73 @@ static void MIXER(struct hle_t* hle, uint32_t w1, uint32_t w2)
 }
 
 
+
+/* The three original schedules differ in when stores become visible to
+ * prefetched input vectors. Keep those ordering differences explicit. */
+static void nead_mixer_vectors(struct hle_t* hle,uint32_t w1,uint32_t w2,unsigned schedule)
+{
+    uint32_t count=(w1>>12)&0xff0u,from=w2>>16,to=w2&0xffffu;
+    uint32_t blocks=count?(count+31u)/32u:1u;
+    unsigned lane;
+    nead_v31_load(hle,0);
+    memcpy(hle->rsp_nead_vectors[31],nead_v31,sizeof(nead_v31));
+    hle->rsp_nead_vectors[30][0]=(uint16_t)w1;
+    hle_timing_add(HLE_WORK_MIX,blocks*2u);
+    nead_addmix_lqv(hle,27,to);nead_addmix_lqv(hle,29,from);
+    nead_addmix_lqv(hle,26,to+16u);nead_addmix_lqv(hle,28,from+16u);
+    do {
+        for(lane=0;lane<8;++lane) {
+            int64_t sum=(int64_t)(int16_t)hle->rsp_nead_vectors[27][lane]*(int16_t)nead_v31[6]+
+                (int64_t)(int16_t)hle->rsp_nead_vectors[29][lane]*(int16_t)w1;
+            hle->rsp_nead_vectors[27][lane]=(uint16_t)nead_clamp_s16((int32_t)((sum*2+0x8000)>>16));
+        }
+        from+=32u;
+        if(schedule==2u)nead_addmix_sqv(hle,27,to);
+        for(lane=0;lane<8;++lane) {
+            int64_t sum=(int64_t)(int16_t)hle->rsp_nead_vectors[26][lane]*(int16_t)nead_v31[6]+
+                (int64_t)(int16_t)hle->rsp_nead_vectors[28][lane]*(int16_t)w1;
+            hle->rsp_nead_vectors[26][lane]=(uint16_t)nead_clamp_s16((int32_t)((sum*2+0x8000)>>16));
+        }
+        nead_addmix_lqv(hle,29,from);
+        if(schedule!=2u) {
+            nead_addmix_sqv(hle,27,to);
+            nead_addmix_lqv(hle,27,to+32u);
+        }
+        if(schedule)nead_addmix_lqv(hle,28,from+16u);
+        nead_addmix_sqv(hle,26,to+16u);
+        if(!schedule)nead_addmix_lqv(hle,28,from+16u);
+        to+=32u;
+        if(schedule==2u)nead_addmix_lqv(hle,27,to);
+        nead_addmix_lqv(hle,26,to+16u);
+    } while(--blocks);
+    hle->rsp_nead_vector_written|=UINT32_C(0xfc000000);
+}
+static void MIXER(struct hle_t* hle,uint32_t w1,uint32_t w2)
+{nead_mixer_vectors(hle,w1,w2,0);}
+static void MIXER_WRJB(struct hle_t* hle,uint32_t w1,uint32_t w2)
+{nead_mixer_vectors(hle,w1,w2,1);}
+static void MIXER_SF(struct hle_t* hle,uint32_t w1,uint32_t w2)
+{nead_mixer_vectors(hle,w1,w2,2);}
+
+
+/* The resampler retains its transpose constants and the next eight phase
+ * lanes. Preserve them for a subsequent partial-vector DSP operation. */
+static void nead_resample_vectors(struct hle_t* hle,uint32_t phase,uint32_t step,uint32_t count)
+{
+    unsigned lane;
+    nead_addmix_lqv(hle,25,0x60);nead_addmix_lqv(hle,31,0x70);
+    nead_addmix_lqv(hle,30,0x80);nead_addmix_lqv(hle,29,0x90);
+    nead_addmix_lqv(hle,28,0xa0);nead_addmix_lqv(hle,27,0xb0);
+    nead_addmix_lqv(hle,26,0xc0);nead_addmix_lqv(hle,24,0xd0);
+    for(lane=0;lane<8;++lane) {
+        uint64_t next=(uint64_t)phase+(uint64_t)step*(count/2u+lane);
+        hle->rsp_nead_vectors[22][lane]=(uint16_t)nead_clamp_s16((int32_t)(next>>16));
+        hle->rsp_nead_vectors[23][lane]=(uint16_t)next;
+    }
+    hle->rsp_nead_vector_written|=UINT32_C(0xffc00000);
+    hle->rsp_vco=0;hle->rsp_vco_written=1;
+}
+
 static void RESAMPLE(struct hle_t* hle, uint32_t w1, uint32_t w2)
 {
     uint8_t  flags   = (w1 >> 16);
@@ -473,9 +586,9 @@ static void RESAMPLE(struct hle_t* hle, uint32_t w1, uint32_t w2)
     uint32_t address = nead_address(hle, w2);
     uint32_t count = ((uint32_t)hle->alist_nead.count + 15u) & ~15u;
     uint32_t exact_clocks = 0;
-    if (!count && nead_timing_profile >= 1u && nead_timing_profile <= 7u) {
-        static const uint16_t targets[7] = {
-            0x14f4u, 0x1514u, 0x147cu, 0x1568u, 0x1534u, 0x14bcu, 0x14fcu
+    if (!count && nead_timing_profile >= 1u && nead_timing_profile <= 8u) {
+        static const uint16_t targets[8] = {
+            0x14f4u, 0x1514u, 0x147cu, 0x1568u, 0x1534u, 0x14bcu, 0x14fcu, 0x14f4u
         };
         uint32_t input = hle->alist_nead.in, output = hle->alist_nead.out;
         uint32_t params = nead_timing_profile == 4u || nead_timing_profile == 5u ? 0x320u : 0x2e0u;
@@ -494,11 +607,11 @@ static void RESAMPLE(struct hle_t* hle, uint32_t w1, uint32_t w2)
         }
     }
 
-    if (nead_timing_profile >= 1u && nead_timing_profile <= 7u && flags <= 7u &&
+    if (nead_timing_profile >= 1u && nead_timing_profile <= 8u && flags <= 7u &&
         count && count <= 127u * 16u && !nead_dmem_base &&
         !*hle->sp_dma_full && !*hle->sp_dma_busy && !*hle->sp_semaphore) {
-        static const uint16_t targets[7] = {
-            0x14f4u, 0x1514u, 0x147cu, 0x1568u, 0x1534u, 0x14bcu, 0x14fcu
+        static const uint16_t targets[8] = {
+            0x14f4u, 0x1514u, 0x147cu, 0x1568u, 0x1534u, 0x14bcu, 0x14fcu, 0x14f4u
         };
         uint32_t params = nead_timing_profile == 4u || nead_timing_profile == 5u ? 0x320u : 0x2e0u;
         uint32_t input = hle->alist_nead.in, output = hle->alist_nead.out;
@@ -529,6 +642,8 @@ static void RESAMPLE(struct hle_t* hle, uint32_t w1, uint32_t w2)
             hle_timing_refine(HLE_WORK_RESAMPLE, count / 16u, exact_clocks);
         return;
     }
+    nead_resample_vectors(hle,(flags&1u)?0u:*dram_u16(hle,address+8u),
+        (uint32_t)pitch*2u,count);
     alist_resample_nead(
             hle,
             nead_slab,
@@ -564,7 +679,7 @@ static void DMEMMOVE(struct hle_t* hle, uint32_t w1, uint32_t w2)
 
     uint32_t profile = nead_timing_profile;
     uint32_t remaining = count;
-    if (profile >= 1u && profile <= 7u) {
+    if (profile >= 1u && profile <= 8u) {
         int short_tail = profile == 2u || profile == 3u || profile == 6u;
         uint32_t rows;
         /* MM/debug enter the two-byte do/while tail even at count zero.
@@ -611,7 +726,7 @@ static void ENVSETUP1(struct hle_t* hle, uint32_t w1, uint32_t w2)
     hle->alist_nead.env_steps[2]  = w1;
     hle->alist_nead.env_steps[0]  = (w2 >> 16);
     hle->alist_nead.env_steps[1]  = w2;
-    if (nead_timing_profile >= 1u && nead_timing_profile <= 3u) {
+    if ((nead_timing_profile >= 1u && nead_timing_profile <= 3u) || nead_timing_profile == 8u || nead_timing_profile == 7u) {
         memset(hle->rsp_nead_env, 0, sizeof(hle->rsp_nead_env));
         hle->rsp_nead_env[4] = hle->alist_nead.env_values[2];
         hle->rsp_nead_env[5] = hle->rsp_nead_env[4] + hle->alist_nead.env_steps[2];
@@ -623,7 +738,7 @@ static void ENVSETUP2(struct hle_t* hle, uint32_t UNUSED(w1), uint32_t w2)
 {
     hle->alist_nead.env_values[0] = (w2 >> 16);
     hle->alist_nead.env_values[1] = w2;
-    if (nead_timing_profile >= 1u && nead_timing_profile <= 3u) {
+    if ((nead_timing_profile >= 1u && nead_timing_profile <= 3u) || nead_timing_profile == 8u || nead_timing_profile == 7u) {
         hle->rsp_nead_env[0] = hle->alist_nead.env_values[0];
         hle->rsp_nead_env[1] = hle->rsp_nead_env[0] + hle->alist_nead.env_steps[0];
         hle->rsp_nead_env[2] = hle->alist_nead.env_values[1];
@@ -673,13 +788,13 @@ static void ENVMIXER(struct hle_t* hle, uint32_t w1, uint32_t w2)
     uint16_t dmem_wl = (w2 >>  4) & 0xff0;
     uint16_t dmem_wr = (w2 <<  4) & 0xff0;
 
-    if (nead_timing_profile >= 1u && nead_timing_profile <= 3u &&
+    if (((nead_timing_profile >= 1u && nead_timing_profile <= 3u) || nead_timing_profile == 8u || nead_timing_profile == 7u) &&
         nead_dmem_base == 0 && nead_env_style == NEAD_ENV_OOT) {
-        static const uint16_t target[3] = { 0x1884u, 0x18bcu, 0x1824u };
+        static const uint16_t target[5] = { 0x1884u, 0x18bcu, 0x1824u, 0x1884u, 0x18a8u };
         uint32_t addresses[5] = { dmemi, dmem_dl, dmem_dr, dmem_wl, dmem_wr };
         uint32_t bytes = (count ? (count + 15u) & ~15u : 16u) * 2u;
         unsigned i, j;
-        int valid = (uint16_t)*nead_s16(hle, 0x36u) == target[nead_timing_profile - 1u];
+        int valid = (uint16_t)*nead_s16(hle, 0x36u) == target[nead_timing_profile == 7u ? 4u : nead_timing_profile == 8u ? 3u : nead_timing_profile - 1u];
         for (i = 0; i < 5; ++i) {
             if (addresses[i] < 0x400u || addresses[i] + bytes > 0xf80u) valid = 0;
             for (j = 0; j < i; ++j)
@@ -788,39 +903,36 @@ static void ADDMIXER(struct hle_t* hle, uint32_t w1, uint32_t w2)
         nead_v31[i] = (uint16_t)(nead_v31[i] << 1);
     }
 
-    /* four 8-sample batches per iteration, counter tested after, so
-     * the extent rounds up to 0x40; the first vadd batch consumes the
-     * carries and clears them */
-    count = (uint16_t)((count + 0x3f) & ~0x3f);
-    if (!count) count = 64;
-    if (nead_timing_profile >= 1u && nead_timing_profile <= 7u &&
-        !((dmemi | dmemo) & 15u)) {
-        uint32_t block;
-        hle_timing_add(HLE_WORK_MIX, count / 16u);
-        /* Original ADDMIXER loads all four input/output vectors before any
-         * SQV. The branch delay slot preloads the next output vector after
-         * the stores. Snapshot each complete 64-byte block, retain the
-         * first VADD's carries, and wrap the SP data address on every access.
-         * The original post-tested loop executes one block at zero count. */
-        for (block = 0; block < count; block += 64u) {
-            int16_t input[32], output[32];
-            for (i = 0; i < 32; ++i) {
-                input[i] = *nead_s16(hle, (uint16_t)(dmemi + block + 2u*i));
-                output[i] = *nead_s16(hle, (uint16_t)(dmemo + block + 2u*i));
-            }
-            for (i = 0; i < 32; ++i)
-                *nead_s16(hle, (uint16_t)(dmemo + block + 2u*i)) =
-                    nead_clamp_s16((int32_t)output[i] + input[i] +
-                        (!block && i < 8u ? (int32_t)carry[i] : 0));
+    /* Original loop: four paired LQV inputs, four VADDs, four SQVs;
+     * the branch delay preloads V27 even after the final iteration. */
+    uint32_t remaining=count?count:64u;
+    hle_timing_add(HLE_WORK_MIX,((remaining+63u)/64u)*4u);
+    for(i=0;i<8;++i)hle->rsp_nead_vectors[31][i]=nead_v31[i];
+    nead_addmix_lqv(hle,27,dmemo);
+    do {
+        static const unsigned out_reg[4]={27,26,25,24};
+        static const unsigned in_reg[4]={29,28,23,22};
+        unsigned pair,lane;
+        nead_addmix_lqv(hle,29,dmemi);
+        for(pair=1;pair<4;++pair) {
+            nead_addmix_lqv(hle,out_reg[pair],dmemo+16u*pair);
+            nead_addmix_lqv(hle,in_reg[pair],dmemi+16u*pair);
         }
-        return;
-    }
-    for (i = 0; i < 8; ++i) {
-        int16_t* o = nead_s16(hle, (uint16_t)(dmemo + 2*i));
-        *o = nead_clamp_s16(*o + *nead_s16(hle, (uint16_t)(dmemi + 2*i)) + carry[i]);
-    }
-    alist_add(hle, (uint16_t)(dmemo + 16), (uint16_t)(dmemi + 16),
-              (uint16_t)(count - 16));
+        dmemi=(uint16_t)(dmemi+64u);
+        for(pair=0;pair<4;++pair)for(lane=0;lane<8;++lane) {
+            int32_t sum=(int16_t)hle->rsp_nead_vectors[out_reg[pair]][lane]+
+                        (int16_t)hle->rsp_nead_vectors[in_reg[pair]][lane]+
+                        (pair?0:(int32_t)carry[lane]);
+            hle->rsp_nead_vectors[out_reg[pair]][lane]=(uint16_t)nead_clamp_s16(sum);
+        }
+        memset(carry,0,sizeof(carry));
+        for(pair=0;pair<4;++pair)nead_addmix_sqv(hle,out_reg[pair],dmemo+16u*pair);
+        dmemo=(uint16_t)(dmemo+64u);nead_addmix_lqv(hle,27,dmemo);
+        if(remaining<=64u)break;
+        remaining-=64u;
+    } while(1);
+    hle->rsp_nead_vector_written|=UINT32_C(0xbfc00000);
+    hle->rsp_vco=0;hle->rsp_vco_written=1;
 }
 
 static void HILOGAIN(struct hle_t* hle, uint32_t w1, uint32_t w2)
@@ -931,7 +1043,7 @@ void alist_process_nead_mk(struct hle_t* hle)
         SPNOOP,         ADPCM,          CLEARBUFF,      SPNOOP,
         SPNOOP,         RESAMPLE,       SPNOOP,         SEGMENT,
         SETBUFF,        SPNOOP,         DMEMMOVE,       LOADADPCM,
-        MIXER,          INTERLEAVE_MK,  POLEF,          SETLOOP,
+        MIXER_MK,          INTERLEAVE_MK,  POLEF,          SETLOOP,
         NEAD_16,        INTERL,         ENVSETUP1_MK,   ENVMIXER_MK,
         LOADBUFF,       SAVEBUFF,       ENVSETUP2,      SPNOOP,
         SPNOOP,         SPNOOP,         SPNOOP,         SPNOOP,
@@ -958,7 +1070,7 @@ void alist_process_nead_sf(struct hle_t* hle)
         SPNOOP,         ADPCM,          CLEARBUFF,      SPNOOP,
         ADDMIXER,       RESAMPLE,       RESAMPLE_ZOH,   SPNOOP,
         SETBUFF,        SPNOOP,         DMEMMOVE,       LOADADPCM,
-        MIXER,          INTERLEAVE_MK,  POLEF,          SETLOOP,
+        MIXER_SF,          INTERLEAVE_MK,  POLEF,          SETLOOP,
         NEAD_16,        INTERL,         ENVSETUP1,      ENVMIXER,
         LOADBUFF,       SAVEBUFF,       ENVSETUP2,      SPNOOP,
         HILOGAIN,       MULTIPLY,        DUPLICATE,      SPNOOP,
@@ -983,7 +1095,7 @@ void alist_process_nead_sfj(struct hle_t* hle)
         SPNOOP,         ADPCM,          CLEARBUFF,      SPNOOP,
         ADDMIXER,       RESAMPLE,       RESAMPLE_ZOH,   SPNOOP,
         SETBUFF,        SPNOOP,         DMEMMOVE,       LOADADPCM,
-        MIXER,          INTERLEAVE_MK,  POLEF,          SETLOOP,
+        MIXER_SF,          INTERLEAVE_MK,  POLEF,          SETLOOP,
         NEAD_16,        INTERL,         ENVSETUP1,      ENVMIXER,
         LOADBUFF,       SAVEBUFF,       ENVSETUP2,      S8DEC_SFJ,
         HILOGAIN,       MULTIPLY,        DUPLICATE,      SPNOOP,
@@ -1112,7 +1224,7 @@ void alist_process_nead_wrjb(struct hle_t* hle)
         SPNOOP,         ADPCM,          CLEARBUFF,      UNKCMD3,
         ADDMIXER,       WRJB_RESAMPLE,   RESAMPLE_ZOH,   SPNOOP,
         WRJB_SETBUFF,   SPNOOP,          DMEMMOVE,      LOADADPCM,
-        MIXER,          INTERLEAVE,     SPNOOP,         SETLOOP,
+        MIXER_WRJB,          INTERLEAVE,     SPNOOP,         SETLOOP,
         NEAD_16,        INTERL,         ENVSETUP1,      ENVMIXER,
         WRJB_LOADBUFF,  WRJB_SAVEBUFF,   ENVSETUP2,     S8DEC_SFJ,
         HILOGAIN,       MULTIPLY,       DUPLICATE,      FILTER,
@@ -1315,10 +1427,44 @@ void alist_process_nead_mats(struct hle_t* hle)
     rsp_break(hle, SP_STATUS_TASKDONE);
 }
 
+/* Expansion Kit text f18..f48 is a scalar, in-place byte-table
+ * expansion. It never reloads V31. Its post-tested loop runs once at zero.
+ * Keep accesses bytewise: both operands may be odd or wrap DMEM. */
+static void EFZ_TABLE_LOOKUP(struct hle_t* hle,uint32_t w1,uint32_t w2)
+{
+    uint32_t count=w1&0xffffu,at=w2>>16,table=w2&0xffffu;
+    if(!count)count=1;
+    hle_timing_add(HLE_WORK_COPY,(count+15u)/16u);
+    do {
+        uint8_t index=hle->alist_buffer[(at&0xfffu)^S8];
+        uint8_t value=hle->alist_buffer[((table+index)&0xfffu)^S8];
+        hle->alist_buffer[(at&0xfffu)^S8]=value;
+        hle->alist_buffer[((at+1u)&0xfffu)^S8]=0;
+        at+=2u;
+    } while(--count);
+}
+
 void alist_process_nead_efz(struct hle_t* hle)
 {
-    /* F-Zero X: Expansion Kit (64DD), ucode signature 0x1f4c1230.
-     * The Expansion Kit reuses the F-Zero X cartridge audio engine and shares
-     * its nead_fz command layout, so dispatch through the same processor. */
-    alist_process_nead_fz(hle);
+    static const acmd_callback_t ABI[0x18] = {
+        NEAD_00,        ADPCM,          CLEARBUFF,      EFZ_TABLE_LOOKUP,
+        ADDMIXER,       RESAMPLE,       RESAMPLE_ZOH,   FILTER,
+        SETBUFF,        DUPLICATE,      DMEMMOVE,       LOADADPCM,
+        MIXER,          INTERLEAVE,     HILOGAIN,       SETLOOP,
+        NEAD_16,        INTERL,         ENVSETUP1,      ENVMIXER,
+        LOADBUFF,       SAVEBUFF,       ENVSETUP2,      S8DEC
+    };
+
+    nead_slab = 0xfb0;
+    nead_book = 0x330;
+    nead_filter_avg = 1;
+    nead_env_style = NEAD_ENV_OOT;
+    nead_resample_old = 0;
+    nead_seed(hle, 0);
+    nead_dmem_base = 0;
+    nead_setbuff_store = 0x2e0;
+    nead_loop_offset = 8;
+    nead_walk(hle, ABI, 0x18, 0x2f0, 64);
+    rsp_break(hle, SP_STATUS_TASKDONE);
 }
+

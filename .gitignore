@@ -129,6 +129,7 @@ src/device/rcp/rsp/p_rsp/simd-build/
 !benchmarks/jit32/
 benchmarks/jit32/*
 !benchmarks/jit32/*.cpp
+!benchmarks/jit32/*.c
 !benchmarks/jit32/*.py
 !benchmarks/jit32/*.mk
 !benchmarks/jit32/*.md

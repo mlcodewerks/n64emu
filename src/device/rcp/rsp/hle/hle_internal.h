@@ -103,6 +103,8 @@ struct hle_t
      * them. Keep this outside the legacy audio snapshot layout. */
     uint16_t rsp_nead_env[8];
     int rsp_nead_env_written;
+    uint16_t rsp_nead_vectors[32][8];
+    uint32_t rsp_nead_vector_written;
 };
 
 /* some mips interface interrupt flags */

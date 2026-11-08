@@ -411,13 +411,15 @@ unsigned int optional_rsp_execute(unsigned int cycles)
         uint16_t latches[32][8];parallelRSPGetGraphicsLatches(latches);rsp_factor5_seed(latches);
         naboo_set_packet_cursor(parallelRSPGetPacketCursor());
     }
-    hle.rsp_nead_env_written = 0;
+    hle.rsp_nead_env_written = 0;hle.rsp_nead_vector_written=0;
     if (kind == HLE_TASK_AUDIO) {
         uint16_t latches[32][8]; parallelRSPGetGraphicsLatches(latches);
         memcpy(hle.rsp_nead_env, latches[1], sizeof(hle.rsp_nead_env));
+        memcpy(hle.rsp_nead_vectors,latches,sizeof(latches));hle.rsp_nead_vector_written=0;
         const uint32_t *data=(const uint32_t*)(info.RDRAM+(task[6]&0x7fffffu));
         nead_audio=data[0]==1 && data[12]!=0xf0000f00u && nead_known_signature(data[4]);
         if(nead_audio)nead_v31_begin();
+        if(nead_audio)memcpy(hle.rsp_nead_vectors[31],hle.nead_v31,sizeof(hle.nead_v31));
     }
     if (kind == HLE_TASK_GRAPHICS) graphics_capture_begin(task);
     if ((*(const uint32_t*)hle.imem & 0xfc000000u) == 0x08000000u) {
@@ -431,6 +433,7 @@ unsigned int optional_rsp_execute(unsigned int cycles)
     else hle_execute(&hle);
     if (strict_hle_failed) return 0;
     if(nead_audio)nead_v31_end();
+    if(hle.rsp_nead_vector_written)parallelRSPSetGraphicsLatches(hle.rsp_nead_vectors,hle.rsp_nead_vector_written&~(UINT32_C(1)<<31));
     if(kind==HLE_TASK_GRAPHICS)nead_v31_prefer_shadow=0;
     if(hle.rsp_vco_written)parallelRSPSetVCO(hle.rsp_vco);
     if (hle.rsp_nead_env_written) {
@@ -684,6 +687,8 @@ unsigned int optional_rsp_timing_replay(const char *path, char *family,
         }else naboo_set_packet_cursor(0);
         rsp_factor5_seed(latches);
         memcpy(probe.rsp_nead_env, latches[1], sizeof(probe.rsp_nead_env));
+        memcpy(probe.nead_v31,latches[31],sizeof(probe.nead_v31));
+        memcpy(probe.rsp_nead_vectors,latches,sizeof(latches));
     }
     timing_probe_active = 1; timing_probe_failed = 0;
     /* Audio state slabs overlap OSTask in native DMEM. Completion may
