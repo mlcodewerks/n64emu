@@ -6,6 +6,17 @@
 #define HLE_TIMING_NEAD_H
 #include "hle_timing_identity.h"
 
+static inline uint64_t hle_timing_nead_data_hash(uint32_t profile)
+{
+    static const uint64_t hashes[7]={
+        UINT64_C(0xaff90ce9ce357ba3),UINT64_C(0xb4f360741b887a27),
+        UINT64_C(0xd944ae8112835093),UINT64_C(0xf10141b60f9b7580),
+        UINT64_C(0xe8761b5b7649d568),UINT64_C(0x77d711ac4ae96b7f),
+        UINT64_C(0x98ceb4f938591947)
+    };
+    return profile>=1u && profile<=7u ? hashes[profile-1u] : 0;
+}
+
 static inline uint32_t hle_timing_nead_profile(const uint32_t *imem)
 {
     uint64_t hash;

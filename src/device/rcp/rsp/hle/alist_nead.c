@@ -188,6 +188,16 @@ static void nead_dma_list_begin(struct hle_t* hle)
                 (profile == 3u) + 10u * blocks;
             continue;
         }
+        if (opcode == 4u) {
+            uint32_t from = w2 >> 16, to = w2 & 0xffffu;
+            uint32_t extent = count ? (count + 63u) & ~63u : 64u;
+            /* The verified LQV/SQV schedule needs complete aligned vectors.
+             * Preserve resident dispatch, parameters and staged commands. */
+            if (((from | to) & 15u) || from < 0x400u || to < 0x400u ||
+                from + extent > 0xf90u || to + extent > 0xf90u) return;
+            clocks += 7u + 19u * (extent / 64u);
+            continue;
+        }
         if (opcode != 0x14u && opcode != 0x15u) return;
         if (early) { clocks += 9u; continue; }
         if (opcode == 0x14u) {
@@ -782,6 +792,29 @@ static void ADDMIXER(struct hle_t* hle, uint32_t w1, uint32_t w2)
      * the extent rounds up to 0x40; the first vadd batch consumes the
      * carries and clears them */
     count = (uint16_t)((count + 0x3f) & ~0x3f);
+    if (!count) count = 64;
+    if (nead_timing_profile >= 1u && nead_timing_profile <= 7u &&
+        !((dmemi | dmemo) & 15u)) {
+        uint32_t block;
+        hle_timing_add(HLE_WORK_MIX, count / 16u);
+        /* Original ADDMIXER loads all four input/output vectors before any
+         * SQV. The branch delay slot preloads the next output vector after
+         * the stores. Snapshot each complete 64-byte block, retain the
+         * first VADD's carries, and wrap the SP data address on every access.
+         * The original post-tested loop executes one block at zero count. */
+        for (block = 0; block < count; block += 64u) {
+            int16_t input[32], output[32];
+            for (i = 0; i < 32; ++i) {
+                input[i] = *nead_s16(hle, (uint16_t)(dmemi + block + 2u*i));
+                output[i] = *nead_s16(hle, (uint16_t)(dmemo + block + 2u*i));
+            }
+            for (i = 0; i < 32; ++i)
+                *nead_s16(hle, (uint16_t)(dmemo + block + 2u*i)) =
+                    nead_clamp_s16((int32_t)output[i] + input[i] +
+                        (!block && i < 8u ? (int32_t)carry[i] : 0));
+        }
+        return;
+    }
     for (i = 0; i < 8; ++i) {
         int16_t* o = nead_s16(hle, (uint16_t)(dmemo + 2*i));
         *o = nead_clamp_s16(*o + *nead_s16(hle, (uint16_t)(dmemi + 2*i)) + carry[i]);

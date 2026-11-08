@@ -134,7 +134,39 @@ public:
         host.bind(done);
     }
     bool instruction(uint32_t instruction);
+    void fpu_compare(uint32_t instruction,unsigned index,const n64emujit_config* config,Label& exit);
+    void fpu_word_to_double(uint32_t instruction,unsigned index,const n64emujit_config* config,Label& exit);
+    void fpu_transfer(uint32_t instruction) {
+        unsigned fmt=(instruction>>21)&31,rt=(instruction>>16)&31,fs=(instruction>>11)&31;
+        bool wide=fmt==1 || fmt==5;
+        if(fmt==2) {
+            if(fs==0 || fs==31)host.load(0,STATE,int32_t(fs==0?offsetof(r4300_core,cp1.fcr0):offsetof(r4300_core,cp1.fcr31)));
+            else host.imm(0,0);
+            sign_word();store(rt);return;
+        }
+        host.load(3,STATE,int32_t((wide?offsetof(r4300_core,cp1.regs_double):offsetof(r4300_core,cp1.regs_simple))+fs*sizeof(void*)));
+        if(fmt==4 || fmt==5) {
+            load(rt);host.store(0,3,0);if(wide)host.store(2,3,4);
+        } else {
+            host.load(0,3,0);if(wide)host.load(2,3,4);else sign_word();store(rt);
+        }
+    }
 };
+
+static bool native_fpu_transfer(uint32_t instruction) {
+    if(instruction>>26!=17)return false;
+    unsigned fmt=(instruction>>21)&31;
+    return fmt==0 || fmt==1 || fmt==2 || fmt==4 || fmt==5;
+}
+static bool native_fpu_compare(uint32_t instruction) {
+    unsigned fmt=(instruction>>21)&31;
+    return instruction>>26==17 && (fmt==16 || fmt==17) && (instruction&63)>=48;
+}
+#include "fpu_compare.inc"
+#include "fpu_exact.inc"
+static bool native_fpu_word_to_double(uint32_t instruction) {
+    return instruction>>26==17 && ((instruction>>21)&31)==20 && (instruction&63)==33;
+}
 
 static bool native_instruction(uint32_t instruction) {
     unsigned major=instruction>>26,fn=instruction&63;
@@ -219,7 +251,17 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
                 host.bind(done);i=end;continue;
             }
         }
-        if(native_instruction(ops[i])) {
+        if(config && config->fpu_prepare && config->fpu_finish && native_fpu_word_to_double(ops[i])) {
+            compiler.fpu_word_to_double(ops[i],i,config,exit);++compiler.native;
+        } else if(config && config->fpu_prepare && config->fpu_finish && native_fpu_compare(ops[i])) {
+            compiler.fpu_compare(ops[i],i,config,exit);++compiler.native;
+        } else if(native_fpu_transfer(ops[i])) {
+            /* Keep the original issue/hazard and CU1 admission boundary.
+             * FR-selected pointers are refreshed by the precise CPU model;
+             * the generated move uses integer word pairs on both hosts. */
+            compiler.step(block,i,11,callback,exit);compiler.fpu_transfer(ops[i]);++compiler.native;
+            compiler.step(block,i,1,callback,exit);
+        } else if(native_instruction(ops[i])) {
             compiler.step(block,i,0,callback,exit);compiler.instruction(ops[i]);++compiler.native;
             compiler.step(block,i,1,callback,exit);
         } else compiler.step(block,i,2,callback,exit);
@@ -262,7 +304,7 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
 }
 }
 int n64emujit_has_native(const uint32_t* ops,unsigned count,uint32_t,unsigned,unsigned) {
-    for(unsigned i=0;i<count;i++)if(native_instruction(ops[i]))return 1;return 0;
+    for(unsigned i=0;i<count;i++)if(native_instruction(ops[i])||native_fpu_transfer(ops[i])||native_fpu_compare(ops[i])||native_fpu_word_to_double(ops[i]))return 1;return 0;
 }
 n64emujit_entry n64emujit_compile(n64emujit* jit,void* block,const uint32_t* ops,unsigned count,n64emujit_step step) {
     try{return compile(jit,block,ops,count,step,nullptr);}catch(const std::exception& error){core_log(CORE_LOG_ERROR,"32-bit JIT emission failed: %s",error.what());return nullptr;}

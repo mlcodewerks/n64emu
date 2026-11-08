@@ -39,6 +39,24 @@ extern void parallelRSPSetPacketCursor(uint32_t);
 extern void parallelRSPGetGraphicsLatches(uint16_t values[32][8]);
 extern void parallelRSPSetGraphicsLatches(const uint16_t values[32][8],uint32_t);
 static struct hle_t hle;
+/* Old states may contain a newer HLE V31 shadow than their native register
+ * file. Preserve that shadow until the first NEAD use or newer native work.
+ * New saves record the current authoritative lanes in the existing layout. */
+static unsigned int nead_v31_prefer_shadow;
+static void nead_v31_begin(void)
+{
+    if(!nead_v31_prefer_shadow) {
+        uint16_t lanes[32][8];parallelRSPGetGraphicsLatches(lanes);
+        memcpy(hle.nead_v31,lanes[31],sizeof(hle.nead_v31));
+    }
+    nead_v31_prefer_shadow=0;
+}
+static void nead_v31_end(void)
+{
+    uint16_t lanes[32][8];
+    memcpy(lanes[31],hle.nead_v31,sizeof(hle.nead_v31));
+    parallelRSPSetGraphicsLatches(lanes,UINT32_C(1)<<31);
+}
 static rsp_memory info;
 static void capture_cp0(uint32_t words[16])
 {
@@ -164,6 +182,7 @@ void optional_rsp_init(rsp_memory rsp_info)
     graphics_capture_prefix = getenv("HLE_GRAPHICS_CAPTURE");
     graphics_capture_started = graphics_capture_count = 0;
     memset(&hle, 0, sizeof(hle));
+    nead_v31_prefer_shadow=0;
     graphics_tasks = audio_tasks = other_tasks = boot_tasks = lle_tasks = 0;
     native_fallback_slices = 0;
     strict_hle_failed = 0;
@@ -331,6 +350,7 @@ static unsigned int unsupported_hle_task(void)
 unsigned int optional_rsp_execute(unsigned int cycles)
 {
     native_dispatch = 0;
+    int nead_audio=0;
     const uint32_t *task = (const uint32_t *)(info.DMEM + 0xfc0);
 #ifdef N64EMU_USF
     /* Some rips submit a display list during startup. Acknowledge the task
@@ -395,6 +415,9 @@ unsigned int optional_rsp_execute(unsigned int cycles)
     if (kind == HLE_TASK_AUDIO) {
         uint16_t latches[32][8]; parallelRSPGetGraphicsLatches(latches);
         memcpy(hle.rsp_nead_env, latches[1], sizeof(hle.rsp_nead_env));
+        const uint32_t *data=(const uint32_t*)(info.RDRAM+(task[6]&0x7fffffu));
+        nead_audio=data[0]==1 && data[12]!=0xf0000f00u && nead_known_signature(data[4]);
+        if(nead_audio)nead_v31_begin();
     }
     if (kind == HLE_TASK_GRAPHICS) graphics_capture_begin(task);
     if ((*(const uint32_t*)hle.imem & 0xfc000000u) == 0x08000000u) {
@@ -407,6 +430,8 @@ unsigned int optional_rsp_execute(unsigned int cycles)
     }
     else hle_execute(&hle);
     if (strict_hle_failed) return 0;
+    if(nead_audio)nead_v31_end();
+    if(kind==HLE_TASK_GRAPHICS)nead_v31_prefer_shadow=0;
     if(hle.rsp_vco_written)parallelRSPSetVCO(hle.rsp_vco);
     if (hle.rsp_nead_env_written) {
         uint16_t latches[32][8];
@@ -435,6 +460,7 @@ unsigned int optional_rsp_execute(unsigned int cycles)
     return hle_timing_cycles();
 native:
     native_dispatch = 1;
+    nead_v31_prefer_shadow=0;
     if (renderer_settings.rsp_hle) native_fallback_slices++;
     if ((*info.SP_PC_REG & 0xfff) == 0 && task[0] == 1 && task[3] <= 0x1000 &&
         task[4] <= 0x7ff000 && task[6] <= 0x7ff000)
@@ -506,11 +532,17 @@ void optional_rsp_save(void *buffer)
     n64video_save_noise((unsigned char *)buffer + AUDIO_STATE_BYTES + rdp_emit_hle_state_size());
     rdp_emit_stream_save((unsigned char *)buffer + legacy_state_size());
     hle_stream_state_save((unsigned char *)buffer + legacy_state_size() + rdp_emit_stream_state_size());
-    memcpy((unsigned char *)buffer + nead_state_offset(), hle.nead_v31, sizeof(hle.nead_v31));
+    if(nead_v31_prefer_shadow)
+        memcpy((unsigned char *)buffer + nead_state_offset(), hle.nead_v31, sizeof(hle.nead_v31));
+    else {
+        uint16_t lanes[32][8];parallelRSPGetGraphicsLatches(lanes);
+        memcpy((unsigned char *)buffer + nead_state_offset(),lanes[31],sizeof(hle.nead_v31));
+    }
     f3d_state_save((unsigned char *)buffer + f3d_state_offset());
 }
 void optional_rsp_load_legacy(const void *buffer)
 {
+    nead_v31_prefer_shadow=buffer!=NULL;
     memset(hle.nead_v31, 0, sizeof(hle.nead_v31));
     rdp_emit_stream_load(NULL);
     hle_stream_state_load(NULL);

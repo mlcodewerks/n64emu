@@ -1,4 +1,6 @@
 #include "../fpu_flags.h"
+#include "fpu_compare_arm64.inc"
+#include "fpu_exact_arm64.inc"
 
 static int native_fpu_instruction(uint32_t instruction)
 {
@@ -128,18 +130,9 @@ static void emit_fpu_native(uint32_t instruction,unsigned index,const struct n64
     emit_helper_call((const void*)prepare);
     emit_reg_op(0x85,T0,T0,0); exits[(*exit_count)++]=emit_jump(4);
     if(fn>=48) {
-        emit_mem_imm(0x81,0,7,SP,-1,0,48,0); unsigned char* unordered=emit_jump(5);
-        emit_fpu_environment_begin();
-        emit_mem(0x8b,1,T0,SP,-1,0,32); emit_mem(0x8b,1,T1,SP,-1,0,40);
-        if(fmt==16) JIT(fmov(SReg(0),WReg(T0))); else JIT(fmov(DReg(0),XReg(T0))); if(fmt==16) JIT(fmov(SReg(1),WReg(T1))); else JIT(fmov(DReg(1),XReg(T1)));
-        if(fmt==16) JIT(fcmp(SReg(0),SReg(1))); else JIT(fcmp(DReg(0),DReg(1))); /* FCMP */
-        emit_movimm(0,CACHE0); emit_movimm(0,CACHE1);
-        if(fn&2) emit_set_condition(CACHE0,4);
-        if(fn&4) emit_set_condition(CACHE1,2);
-        emit_reg_op(0x09,CACHE1,CACHE0,0);
-        emit_fpu_environment_end(); emit_movimm(0,CACHE1);
-        unsigned char* done=emit_b(); patch_jump(unordered,out);
-        emit_movimm(fn&1,CACHE0); emit_movimm(0,CACHE1); patch_jump(done,out);
+        emit_fpu_compare(fmt,fn);
+    } else if(fmt==20 && fn==33) {
+        emit_fpu_word_to_double();
     } else if(fn>=5 && fn<=7) {
         emit_mem(0x8b,1,CACHE0,SP,-1,0,32); emit_movimm(0,CACHE1);
         if(fn!=6) {
