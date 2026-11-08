@@ -339,6 +339,7 @@ benchmarks/linux-tls/*
 !benchmarks/softrdp/fp_branch_checks.c
 !benchmarks/hle-calibration/nead_load_admission_checks.c
 !benchmarks/hle-calibration/nead_admission_bridge.c
+!benchmarks/hle-calibration/dd_loader_checks.c
 !benchmarks/accurate-perf/prepare_fp_mixed_trial.py
 !benchmarks/accurate-perf/prepare_fp_mixed_profile.py
 !benchmarks/softrdp/fp_mixed_checks.c

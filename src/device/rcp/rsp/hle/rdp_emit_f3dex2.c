@@ -1,3 +1,5 @@
+#include "rdp_emit_frontend.h"
+#include "hle_s2dex206.h"
 #include "hle_timing.h"
 #include "hle_timing_rej.h"
 /* rdp_emit_f3dex2.c -- F3DEX2 display-list dispatcher for the angrylion HLE
@@ -96,6 +98,7 @@ static unsigned int s_half1;
 #define UCODE_DMA_INLINE 0x800
 #define UCODE_OM_COALESCE 0x1000
 #define UCODE_REJRECIP 0x2000
+#define UCODE_S2DEX206 0x4000
 static int s_ucode_class;
 
 int f3dex205_ucode_match(const unsigned char *r, unsigned int size,
@@ -253,8 +256,12 @@ static int probe_ucode_class(const unsigned char *r, unsigned int text, unsigned
                rd_u32_be(r,text+at+12u)==0x4bff00edu)
                 return UCODE_L3DEX2 | attributes;
     }
-    if (w1 == 0xc81f2018u)
-        return UCODE_S2DEX2;
+    if (w1 == 0xc81f2018u) {
+        int verified = data <= s_rdram_size && 0x390u <= s_rdram_size-data &&
+            0x18c0u <= s_rdram_size-text &&
+            hle_s2dex206_profile((const uint32_t *)(r+text),(const uint32_t *)(r+data));
+        return UCODE_S2DEX2 | (verified ? UCODE_S2DEX206 : 0);
+    }
     return UCODE_F3DEX2 | attributes;
 }
 
@@ -454,7 +461,7 @@ static unsigned char *s_rdram_base = 0;
 void f3dex2_set_task_ucode(const unsigned char *rdram, unsigned int text, unsigned int data)
 {
     s_ucode_class = probe_ucode_class(rdram, text, data);
-    s2dex_set_version2((s_ucode_class & 0xff) == UCODE_S2DEX2);
+    s2dex_set_version2((s_ucode_class & UCODE_S2DEX206) ? 2 : (s_ucode_class & 0xff) == UCODE_S2DEX2);
     s_variant_cbfd = 0;
     s_variant_acclaim = 0;
 }
@@ -780,7 +787,7 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
 #endif
         hle_timing_graphics_family("gfx_f3dex2");
         hle_timing_graphics_command(w0);
-        if(fifo->dmem && (!rsp_graphics_sdk_one(5)||!rsp_graphics_sdk_one(7))) {
+        if(fifo->dmem && (gsp_gbi208_active() || !rsp_graphics_sdk_one(5)||!rsp_graphics_sdk_one(7))) {
             unsigned char *dm=fifo->dmem;
             unsigned int high=s_othermode_h|0xef000000u;
             memcpy(dm+0xc8u,&high,4);memcpy(dm+0xccu,&s_othermode_l,4);
@@ -937,14 +944,14 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                 break;
             }
             case 0xc1:                          /* G_OBJ_LOADTXTR */
-                s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo, gsp_seg_addr_rsp);
+                s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo, gsp_seg_addr_rsp, w0);
                 break;
             case 0xc2:                          /* G_OBJ_LDTX_SPRITE (txtr+sprite) */
-                s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo, gsp_seg_addr_rsp);
+                s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo, gsp_seg_addr_rsp, w0);
                 s2dex_obj_sprite(gsp, r, s_rdram_size, seg_addr(w1) + 24u, fifo);
                 break;
             case 0xc3:                          /* G_OBJ_LDTX_RECT (txtr+rect) */
-                s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo, gsp_seg_addr_rsp);
+                s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo, gsp_seg_addr_rsp, w0);
                 s2dex_obj_rectangle(gsp, r, s_rdram_size, seg_addr(w1) + 24u, fifo);
                 break;
             case 0xb1:                          /* G_OBJ_RENDERMODE */
@@ -1035,7 +1042,7 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                 break;
             }
             case 0xc4:                          /* G_OBJ_LDTX_RECT_R: load + rect_R */
-                s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo, gsp_seg_addr_rsp);
+                s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo, gsp_seg_addr_rsp, w0);
                 s2dex_obj_rectangle_r(gsp, r, s_rdram_size, seg_addr(w1) + 24u, fifo);
                 break;
             case 0xb4:                          /* G_RDPHALF_1: ucode data pointer */
@@ -1167,7 +1174,7 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
             {
             case 0x05:                  /* G_OBJ_LOADTXTR */
                 s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo,
-                                   seg_addr);
+                                   seg_addr, w0);
                 break;
             case 0x01:                  /* G_OBJ_RECTANGLE */
                 s2dex_obj_rectangle(gsp, r, s_rdram_size, seg_addr(w1), fifo);
@@ -1177,19 +1184,19 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
                 break;
             case 0x06:                  /* G_OBJ_LDTX_SPRITE (txtr + sprite) */
                 s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo,
-                                   seg_addr);
+                                   seg_addr, w0);
                 s2dex_obj_sprite(gsp, r, s_rdram_size, seg_addr(w1) + 24u,
                                  fifo);
                 break;
             case 0x07:                  /* G_OBJ_LDTX_RECT (txtr + rect) */
                 s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo,
-                                   seg_addr);
+                                   seg_addr, w0);
                 s2dex_obj_rectangle(gsp, r, s_rdram_size, seg_addr(w1) + 24u,
                                     fifo);
                 break;
             case 0x08:                  /* G_OBJ_LDTX_RECT_R (txtr + rect_R) */
                 s2dex_obj_loadtxtr(r, s_rdram_size, seg_addr(w1), fifo,
-                                   seg_addr);
+                                   seg_addr, w0);
                 s2dex_obj_rectangle_r(gsp, r, s_rdram_size, seg_addr(w1) + 24u,
                                       fifo);
                 break;
@@ -1267,9 +1274,7 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
              * always one. Skeleton rendering pops several levels at once; only
              * popping one leaves the stack too deep and transforms subsequent
              * draws with a stale limb matrix. */
-            unsigned int npop = w1 >> 6;
-            while (npop--)
-                gsp_matrix_pop(gsp, r);
+            gsp_matrix_pop_bytes(gsp,r,w1);
             break;
         }
 
@@ -1406,17 +1411,21 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
 
         case F3DEX2_TRI1:
         {
+            uint32_t rejects=gsp_gbi208_active()?hle_timing_path_count(HLE_PATH_TRI_REJECT):UINT32_MAX;
             int a = (int)((w0 >> 17) & 0x7f);
             int b = (int)((w0 >> 9) & 0x7f);
             int c = (int)((w0 >> 1) & 0x7f);
             if (fifo->store_indices) fifo->store_indices(w0);
             gsp_triangle_fifo_with_texrecip(gsp, fifo, a, b, c, s_textured, s_zbuffered, f3dex2_native_texrecip());
+            if(rejects!=UINT32_MAX && hle_timing_path_count(HLE_PATH_TRI_REJECT)-rejects==1u)
+                hle_timing_gbi208_rejected(1);
             break;
         }
 
         case F3DEX2_TRI2:
         case F3DEX2_QUAD:
         {
+            uint32_t rejects=gsp_gbi208_active()?hle_timing_path_count(HLE_PATH_TRI_REJECT):UINT32_MAX;
             int a0 = (int)((w0 >> 17) & 0x7f);
             int b0 = (int)((w0 >> 9) & 0x7f);
             int c0 = (int)((w0 >> 1) & 0x7f);
@@ -1437,6 +1446,8 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
             gsp_triangle_fifo_with_texrecip(gsp, fifo, a1, b1, c1, s_textured, s_zbuffered, f3dex2_native_texrecip());
             if (fifo->store_indices) fifo->store_indices(w0);
             gsp_triangle_fifo_with_texrecip(gsp, fifo, a0, b0, c0, s_textured, s_zbuffered, f3dex2_native_texrecip());
+            if(rejects!=UINT32_MAX && hle_timing_path_count(HLE_PATH_TRI_REJECT)-rejects==2u)
+                hle_timing_gbi208_rejected(2);
             break;
         }
 
@@ -1480,6 +1491,7 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
 
         case F3DEX2_MOVEWORD:
         {
+            if(gsp_gbi208_active())hle_timing_gbi208_moveword();
             /* G_MOVEWORD with index G_MW_SEGMENT (0x06) sets a segment-table
              * base: segment = (w0 >> 2) & 0xf, base = w1 & 0xffffff. Other
              * MOVEWORD indices (numlight, fog, clip, ...) don't affect address
@@ -1833,7 +1845,7 @@ void f3dex2_run_dl(GSPState *gsp, RdpFifo *fifo, unsigned int addr,
             if (fifo->load_ucode)
                 fifo->load_ucode(fifo, text, seg_addr(s_half1), (w0 & 0xffffu) + 1u);
             s_ucode_class = probe_ucode_class(r, text, seg_addr(s_half1));
-            s2dex_set_version2((s_ucode_class & 0xff) == UCODE_S2DEX2);
+            s2dex_set_version2((s_ucode_class & UCODE_S2DEX206) ? 2 : (s_ucode_class & 0xff) == UCODE_S2DEX2);
             f3dex2_set_variant_cbfd(r,seg_addr(s_half1),(w0&0xffffu)+1u);
             /* The microcode reload re-DMAs the data segment, restoring
              * the S2DEX scissor/status defaults. The data address was

@@ -52,6 +52,14 @@ static int read_u16_be(const unsigned char *rdram, unsigned int addr)
     return (int)*p;
 }
 
+/* Re-derived on every microcode activation, including resumed tasks. */
+static int s_native_force_shade;
+void gsp_force_shade(int on){s_native_force_shade=on;}
+static int s_native_matrix_stack;
+static unsigned char *s_gbi208_memory;
+void gsp_native_matrix_stack(int on,unsigned char *memory)
+{s_native_matrix_stack=on;s_gbi208_memory=on?memory:0;}
+int gsp_gbi208_active(void){return s_native_matrix_stack;}
 static unsigned char *s_sdk_memory;
 static unsigned int s_sdk_vertex_base;
 void gsp_sdk_vertex_memory(unsigned char *memory,unsigned int base)
@@ -399,6 +407,25 @@ void gsp_matrix_load_dma(GSPState *s, const unsigned char *rdram, unsigned int a
     int32_t m[4][4];
     hle_timing_add(HLE_WORK_MATRIX, 1);
     load_n64_matrix(m, rdram, addr);
+    if(s_native_matrix_stack && !projection && push && s_stack_rdram) {
+        uint32_t at=s->mtx_stack_ptr&0xfffff8u;
+        /* Own 2.08 0fc..110 writes 64 bytes and increments f4 without
+         * consulting OSTask.stack_size. RDRAM owns the saved matrices. */
+        if(at<=0x800000u-64u)store_n64_matrix(s_stack_rdram,at,s->modelview[s->modelview_top]);
+        else {
+            uint32_t saved[16];unsigned int k;
+            store_n64_matrix((unsigned char*)saved,0,s->modelview[s->modelview_top]);
+            /* The SP bus wraps at 16 MiB; the unpopulated upper half
+             * drops writes rather than aliasing the first 8 MiB. */
+            for(k=0;k<64;k++) {
+                uint32_t dest=(at+k)&0xffffffu;
+                if(dest<0x800000u)s_stack_rdram[dest]=((unsigned char*)saved)[k];
+            }
+        }
+        s->mtx_stack_ptr+=64u;
+        push=0; /* The current matrix needs one host slot, independent of depth. */
+    }
+
 
     if (projection)
     {
@@ -515,8 +542,38 @@ void gsp_select_matrix_dkr(GSPState *s, int index)
     s->lights_valid = 0;
 }
 
+void gsp_matrix_pop_bytes(GSPState *s,const unsigned char *rdram,unsigned int bytes)
+{
+    if(s_native_matrix_stack) {
+        uint32_t next=s->mtx_stack_ptr-bytes;
+        /* Original 04c..074 subtracts bytes once, clamps the signed
+         * difference to the base, and performs at most one DMA. */
+        if((int32_t)(next-s->mtx_stack_base)<0)next=s->mtx_stack_base;
+        if(next!=s->mtx_stack_ptr && rdram) {
+            uint32_t at; s->mtx_stack_ptr=next;at=next&0xfffff8u;
+            if(at<=0x800000u-64u)load_n64_matrix(s->modelview[s->modelview_top],rdram,at);
+            else {
+                uint32_t saved[16];unsigned int k;
+                for(k=0;k<64;k++) {
+                    uint32_t source=(at+k)&0xffffffu;
+                    ((unsigned char*)saved)[k]=source<0x800000u?rdram[source]:0;
+                }
+                load_n64_matrix(s->modelview[s->modelview_top],(const unsigned char*)saved,0);
+            }
+            s->combined_valid=0;s->lights_valid=0;
+        }
+        return;
+    }
+    bytes>>=6;
+    while(bytes--)gsp_matrix_pop(s,rdram);
+}
+
 void gsp_matrix_pop(GSPState *s, const unsigned char *rdram)
 {
+    if(s_native_matrix_stack) {
+        gsp_matrix_pop_bytes(s,rdram,64u);
+        return;
+    }
     /* do_popmtx only zeroes mvpValid/lightsValid when bytes were
      * actually popped from the matrix stack. The pop reloads the top
      * from the RDRAM slot; at the base it is a complete no-op (the
@@ -714,6 +771,7 @@ void gsp_set_rsp_screen_model(GSPState *s, int on)
 
 void gsp_task_reset(GSPState *s)
 {
+    s_native_matrix_stack=0;s_gbi208_memory=0;s_native_force_shade=0;
     s_sdk_memory=0;
     s_classic_texgen_memory=0;
     rsp_sdk_triangle_xl(0);
@@ -1226,6 +1284,19 @@ static void gsp_vertex_internal(GSPState *s, const unsigned char *rdram, unsigne
                     rsp_light_vtx_legacy(nrm,s->light_rgb[s->num_lights],
                         (const int32_t (*)[3])s->light_rgb,
                         (const int32_t (*)[3])s->light_dir,s->num_lights,out);
+                else if(s_gbi208_memory) {
+                    int32_t colors[GSP_MAX_LIGHTS][3];int light,channel;
+                    /* Original 3dc/694 LUV consumes both RGB copies. The
+                     * first vertex is in lanes 4..7, the second in 0..3;
+                     * MOVEWORD is allowed to update just one copy. */
+                    unsigned int copy=(i&1)?0u:4u;
+                    for(light=0;light<=s->num_lights;light++)
+                        for(channel=0;channel<3;channel++)
+                            colors[light][channel]=read_u8_n64(s_gbi208_memory,
+                                (0x220u+(unsigned int)light*24u+copy+(unsigned int)channel)&0xfffu);
+                    rsp_light_vtx(nrm,colors[s->num_lights],
+                        (const int32_t (*)[3])colors,(const int32_t (*)[3])s->light_dir,s->num_lights,out);
+                }
                 else rsp_light_vtx(nrm, s->light_rgb[s->num_lights],
                               (const int32_t (*)[3])s->light_rgb,
                               (const int32_t (*)[3])s->light_dir,
@@ -2576,7 +2647,7 @@ static int gsp_triangle_f3d(GSPState *s, int32_t *cmd, const GSPVertex *a,
     memset(&st, 0, sizeof(st));
     st.rev = vp->f3d_tri_rev;
     st.geometry_mode = (z_buffered ? 0x1u : 0u) | (textured ? 0x2u : 0u)
-                     | ((gm & 0x4u) ? 0x4u : 0u)
+                     | (((gm & 0x4u)||s_native_force_shade) ? 0x4u : 0u)
                      | ((gm & 0x00200000u) ? 0x200u : 0u)
                      | (((gm >> 9) & 3u) << 12)
                      | (gm & 0x00010000u);
@@ -2876,7 +2947,7 @@ int gsp_triangle_with_texrecip(GSPState *s, int32_t *cmd, int i0, int i1, int i2
             nc = bridge_add_triangle_with_texrecip(cmd + total, &bv[0], &bv[1], &bv[2],
                                      &s->viewport,
                                      textured, z_buffered,
-                                     (s->geometry_mode & 0x00000004u) ? 1 : 0,
+                                     ((s->geometry_mode & 0x00000004u)||s_native_force_shade) ? 1 : 0,
                                      ((s->geometry_mode & 0x00200000u)
                                       || s->viewport.f3d_flat_select == F3D_FLAT_RGB) ? 1 : 0,
                                      s->rs_clip_model

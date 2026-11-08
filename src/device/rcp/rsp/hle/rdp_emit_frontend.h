@@ -252,6 +252,10 @@ void gsp_set_rsp_screen_model(GSPState *s, int on);
 /* per-RSP-task reset: the microcode's DRAM matrix-stack pointer is
  * re-initialised at every task boot, so an unbalanced push/pop count within
  * one display list (which games rely on) cannot leak into the next frame. */
+void gsp_force_shade(int on);
+void gsp_native_matrix_stack(int on,unsigned char *memory);
+int gsp_gbi208_active(void);
+void gsp_matrix_pop_bytes(GSPState *s,const unsigned char *rdram,unsigned int bytes);
 void gsp_task_reset(GSPState *s);
 
 /* matrix ops (addr is an RDRAM byte address to a 4x4 N64 fixed-point matrix) */

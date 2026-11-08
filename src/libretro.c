@@ -255,49 +255,94 @@ void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) {
 void retro_set_input_poll(retro_input_poll_t cb) { poll_cb = cb; }
 void retro_set_input_state(retro_input_state_t cb) { input_cb = cb; }
 
+/* DD IPL dumps use a different boot signature from cartridge ROMs. */
+static int dd_ipl_signature(const void *data, size_t size)
+{
+    const unsigned char *p = (const unsigned char *)data;
+    if (!p || size < 4) return 0;
+    return (p[0]==0x80 && p[1]==0x27 && p[2]==0x07 && p[3]==0x40) ||
+           (p[0]==0x27 && p[1]==0x80 && p[2]==0x40 && p[3]==0x07) ||
+           (p[0]==0x40 && p[1]==0x07 && p[2]==0x27 && p[3]==0x80);
+}
+
+static int dd_ipl_valid(const void *data, size_t size)
+{
+    return size >= 0x1000 && size <= 0x400000 && !(size & 3) &&
+           dd_ipl_signature(data, size);
+}
+
 bool retro_load_game_special(unsigned game_type, const struct retro_game_info *info, size_t num_info)
 {
     size_t outSize = 0;
     bool result = false;
     void *gameBuffer = NULL;
 
+    if (load_game_successful) return false;
     cleanup_global_paths();
 
     switch (game_type)
     {
     case RETRO_GAME_TYPE_DD:
-        if (num_info == 1)
-        {
-            retro_dd_path_img = strdup(info[0].path);
-        }
-        else if (num_info == 2)
-        {
-            retro_dd_path_img = strdup(info[0].path);
-            retro_dd_path_rom = strdup(info[1].path);
-        }
-        else
-        {
+    {
+        struct retro_game_info ipl = {0};
+        const char *content_path = NULL;
+        void *bios_buffer = NULL;
+        size_t bios_size = 0;
+        int need_default = 1;
+        if (!info || (num_info != 1 && num_info != 2) || !info[0].path)
             return false;
-        }
-
-        log_cb(RETRO_LOG_INFO, "Loading %s...\n", info[0].path);
-
-        result = load_file(info[1].path, &gameBuffer, &outSize) == file_ok;
-        if (result)
-        {
-            memcpy(&info[1].data, &gameBuffer, sizeof(void *));
-            memcpy(&info[1].size, &outSize, sizeof(size_t));
-            result = result && retro_load_game(&info[1]);
-
-            if (gameBuffer)
-            {
-                free(gameBuffer);
-                gameBuffer = NULL;
-                // To prevent potential double free // TODO: revisit later
-                memcpy(&info[1].data, &gameBuffer, sizeof(void *));
+        retro_dd_path_img = strdup(info[0].path);
+        if (!retro_dd_path_img) return false;
+        if (num_info == 2) {
+            result = info[1].path && load_file(info[1].path, &gameBuffer, &outSize) == file_ok;
+            if (!result) { cleanup_global_paths(); break; }
+            content_path = info[1].path;
+            if (dd_ipl_signature(gameBuffer, outSize)) {
+                if (!dd_ipl_valid(gameBuffer, outSize)) {
+                    free(gameBuffer); gameBuffer = NULL;
+                    result = false; cleanup_global_paths(); break;
+                }
+                /* Retain the explicit-IPL form as well as Disk + Cartridge. */
+                retro_dd_path_rom = strdup(info[1].path);
+                result = retro_dd_path_rom != NULL;
+                need_default = 0;
             }
         }
+        if (need_default) {
+            /* A disk alone has no info[1]; a companion cartridge is not an
+             * IPL. Resolve the BIOS separately in the system directory. */
+            static const char *const names[] = {"IPL.n64", "64DD_IPL.bin"};
+            const char *directory = NULL;
+            unsigned i;
+            result = false;
+            environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &directory);
+            if (!directory || !*directory) directory = ".";
+            for (i = 0; i < sizeof(names)/sizeof(names[0]); ++i) {
+                size_t bytes = strlen(directory) + strlen(names[i]) + 2;
+                retro_dd_path_rom = malloc(bytes);
+                if (!retro_dd_path_rom) break;
+                snprintf(retro_dd_path_rom, bytes, "%s/%s", directory, names[i]);
+                result = load_file(retro_dd_path_rom, &bios_buffer, &bios_size) == file_ok;
+                result = result && dd_ipl_valid(bios_buffer, bios_size);
+                if (result) break;
+                free(bios_buffer); bios_buffer = NULL; bios_size = 0;
+                free(retro_dd_path_rom); retro_dd_path_rom = NULL;
+            }
+        }
+        if (result) {
+            if (!gameBuffer) {
+                gameBuffer = bios_buffer; bios_buffer = NULL;
+                outSize = bios_size; content_path = retro_dd_path_rom;
+            }
+            ipl.path = content_path;
+            ipl.data = gameBuffer;
+            ipl.size = outSize;
+            result = retro_load_game(&ipl);
+        }
+        free(gameBuffer); gameBuffer = NULL; free(bios_buffer);
+        if (!result) cleanup_global_paths();
         break;
+    }
     case RETRO_GAME_TYPE_TRANSFERPAK:
         if (num_info == 3)
         {

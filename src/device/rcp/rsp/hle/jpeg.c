@@ -34,6 +34,7 @@
 
 #include "memory.h"
 #include "hle_timing_jpeg.h"
+#include "hle_jpeg_rgb16.h"
 
 #define SUBBLOCK_SIZE 64
 
@@ -438,6 +439,27 @@ static void EmitRGBATileLine(struct hle_t* hle, const int16_t *y, const int16_t 
 }
 
 
+static void EmitRGB16TileLine(struct hle_t* hle, const int16_t *y, const int16_t *u, uint32_t address)
+{
+    uint16_t rgba[16];
+
+    const int16_t *const v  = u + SUBBLOCK_SIZE;
+    const int16_t *const y2 = y + SUBBLOCK_SIZE;
+
+    {
+        int16_t cb[8],cr[8];unsigned i;
+        for(i=0;i<8;i++){cb[i]=u[i/2];cr[i]=v[i/2];}
+        hle_jpeg_rgba8(rgba,y,cb,cr);
+        for(i=0;i<8;i++){cb[i]=u[4+i/2];cr[i]=v[4+i/2];}
+        hle_jpeg_rgba8(rgba+8,y2,cb,cr);
+    }
+
+    /* The own RGB16 writer has no alpha-bit OR. Preserve all RGB bits. */
+    for(unsigned i=0;i<16;++i)rgba[i]&=0xfffeu;
+    dram_store_u16(hle, rgba, address, 16);
+}
+
+
 /* global functions */
 
 /***************************************************************************
@@ -682,3 +704,62 @@ void jpeg_decode_OB(struct hle_t* hle)
     rsp_break(hle, SP_STATUS_TASKDONE);
 }
 
+
+/* Dedicated fresh/resumed RGB16 task. osSpTaskLoad points ucode_data
+ * at the 512-byte yield image on a resume: constants, three quantizers,
+ * then the scalar context saved by original a84..a9c. */
+void jpeg_decode_RGB16(struct hle_t *hle)
+{
+    uint32_t flags=*dmem_u32(hle,TASK_FLAGS),data=*dmem_u32(hle,TASK_UCODE_DATA);
+    uint32_t data_size=*dmem_u32(hle,TASK_UCODE_DATA_SIZE),code=*dmem_u32(hle,TASK_UCODE);
+    uint32_t p=*dmem_u32(hle,TASK_DATA_PTR),mode,count,address,output,stride;
+    uint32_t qt[3],cycles;unsigned i,mb;int16_t tables[3][64],pixels[384];
+    struct hle_jpeg_ps_timing_input timing;
+    if((*hle->sp_status&0x80u) && !(*hle->sp_dma_full|*hle->sp_dma_busy|*hle->sp_semaphore) &&
+       *dmem_u32(hle,TASK_UCODE_BOOT_SIZE)==0xd0u &&
+       hle_timing_word_fingerprint((const uint32_t*)hle->imem,0xd0u/4u)==UINT64_C(0x0f7c8dfaf9f62fc0)) {
+        /* SDK-loader early yield precedes all JPEG work and writes no context. */
+        hle_timing_override(45u+(data_size+7u)/8u);
+        *hle->sp_status&=~0x80u;
+        rsp_break(hle,SP_STATUS_SIG1|SP_STATUS_TASKDONE);return;
+    }
+    if(flags&1u) {
+        if(!jpeg_range(data,512,8)) { HleForwardTask(hle->user_defined);return; }
+        count=*dram_u32(hle,data+0x1e0);address=*dram_u32(hle,data+0x1e4);
+        mode=*dram_u32(hle,data+0x1ec);stride=*dram_u32(hle,data+0x1f8);
+        output=*dram_u32(hle,data+0x1e8)+stride;
+        if((mode!=0 && mode!=2) || stride!=(mode+4u)*128u ||
+           *dram_u32(hle,data+0x1f0)!=stride-1u ||
+           *dram_u32(hle,data+0x1f4)!=(mode?511u:255u)) {
+            HleForwardTask(hle->user_defined);return;
+        }
+        for(i=0;i<3;i++)qt[i]=data+0x60u+i*128u;
+    } else {
+        if(!jpeg_std_supported(hle)) { HleForwardTask(hle->user_defined);return; }
+        count=*dram_u32(hle,p+4);mode=*dram_u32(hle,p+8);address=output=*dram_u32(hle,p);
+        stride=(mode+4u)*128u;
+        for(i=0;i<3;i++)qt[i]=*dram_u32(hle,p+12+i*4);
+    }
+    if(!count || count>0x800000u/stride ||
+       !jpeg_range(address,count*stride,2) || !jpeg_range(output,count*stride,2)) {
+        HleForwardTask(hle->user_defined);return;
+    }
+    for(i=0;i<3;i++)dram_load_u16(hle,(uint16_t*)tables[i],qt[i],64);
+    timing.program=dram_u32(hle,code);timing.boot=(const uint32_t*)hle->imem;
+    timing.boot_bytes=*dmem_u32(hle,TASK_UCODE_BOOT_SIZE);timing.flags=flags;
+    timing.ucode_data_bytes=data_size;timing.parameter_bytes=*dmem_u32(hle,TASK_DATA_SIZE);
+    timing.status=*hle->sp_status;timing.io_busy=*hle->sp_dma_full|*hle->sp_dma_busy|*hle->sp_semaphore;
+    timing.unaligned=(address|output|code|data|qt[0]|qt[1]|qt[2])&7u;
+    timing.macroblocks=count;timing.mode=mode;
+    cycles=hle_timing_jpeg_rgb16(&timing,dram_u32(hle,data));
+    if(cycles)hle_timing_override(cycles);
+    for(mb=0;mb<count;mb++) {
+        hle_timing_add(HLE_WORK_BLOCK,mode+4u);
+        dram_load_u16(hle,(uint16_t*)pixels,address,(mode+4u)*64u);
+        decode_macroblock_std(NULL,NULL,pixels,mode+4u,(const int16_t(*)[64])tables);
+        if(mode)EmitTilesMode2(hle,EmitRGB16TileLine,pixels,output);
+        else EmitTilesMode0(hle,EmitRGB16TileLine,pixels,output);
+        address+=stride;output+=stride;
+    }
+    rsp_break(hle,SP_STATUS_TASKDONE);
+}

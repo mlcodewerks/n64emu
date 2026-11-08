@@ -406,13 +406,18 @@ static Rsp32 mac32(Rsp32 a, Rsp32 b, RspAcc *acc_out)
 /* S2DEX2 RECTANGLE_R, one independent X/Y lane group. The reciprocal
  * folds, unsigned extent multiply, accumulator-low ALU writes and carry
  * into the endpoint follow the resident d80/bb4/c50 vector chains. */
-int rsp_s2dex_rect_axis(int obj, int scale, int extent, int base_scale,
+int rsp_s2dex_rect_axis_impl(int obj, int scale, int extent, int base_scale,
                         int trans, const int16_t c[6], int flip,
-                        int clip_min, int clip_max, int frac_scale, int truncate, int out[4])
+                        int clip_min, int clip_max, int frac_scale, int truncate, int plain, int out[4])
 {
     Rsp32 base_rcp = mk32(rsp_rcp16(base_scale)), pos, eff, span, rcp, delta;
     RspAcc acc;
     int start, finish, step, tex, coord_frac, sum, lo, hi, frac;
+    if(plain) {
+        /* Original ba8/bac: the plain entry bypasses BaseScale and translation. */
+        start=S16(clamp_s16(S16(obj)+c[2])&U16(c[3]));
+        coord_frac=0;step=S16(scale);
+    } else {
     acc = p_udn(1, base_rcp.i) + p_udn(base_rcp.f, 1);
     base_rcp.f = acc_clamp_low(acc);
     acc += p_udh(base_rcp.i, 1);
@@ -429,6 +434,7 @@ int rsp_s2dex_rect_axis(int obj, int scale, int extent, int base_scale,
     eff.i = acc_clamp_mid(acc); eff.f = acc_clamp_low(acc);
     acc = p_udn(eff.f, scale) + p_udh(eff.i, scale);
     step = S16(acc_clamp_mid(acc));
+    }
     rcp = mk32(rsp_rcp16(step));
     sum = U16(rcp.f) + U16(rcp.i);
     rcp.f = U16(sum);
@@ -464,6 +470,14 @@ int rsp_s2dex_rect_axis(int obj, int scale, int extent, int base_scale,
     tex = clamp_s16(tex - S16(acc_clamp_mid(acc)));
     out[0] = start; out[1] = finish; out[2] = tex; out[3] = step;
     return 1;
+}
+
+int rsp_s2dex_rect_axis(int obj, int scale, int extent, int base_scale,
+                        int trans, const int16_t c[6], int flip,
+                        int clip_min, int clip_max, int frac_scale, int truncate, int out[4])
+{
+    return rsp_s2dex_rect_axis_impl(obj,scale,extent,base_scale,trans,c,flip,
+        clip_min,clip_max,frac_scale,truncate,0,out);
 }
 
 /* ---- vertex 1/w ------------------------------------------------------- */

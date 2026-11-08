@@ -15,6 +15,9 @@ void rsp_vertex_spill_clip(int32_t x,int32_t y,int32_t z);
 void rsp_rej_project(unsigned int vertex,unsigned int alpha);
 void rsp_rej_prologue(uint32_t words[4], unsigned char alpha[2]);
 void rsp_four_pair_begin(void);
+int rsp_s2dex_rect_axis_impl(int obj, int scale, int extent, int base_scale,
+                        int trans, const int16_t correction[6], int flip,
+                        int clip_min, int clip_max, int frac_scale, int truncate, int plain, int out[4]);
 int rsp_s2dex_rect_axis(int obj, int scale, int extent, int base_scale,
                         int trans, const int16_t correction[6], int flip,
                         int clip_min, int clip_max, int frac_scale, int truncate, int out[4]);

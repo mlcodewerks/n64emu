@@ -27,7 +27,7 @@ void s2dex_set_status(unsigned int sid, unsigned int value);
 int s2dex_select_dl(unsigned int sid, unsigned int flag, unsigned int mask);
 int s2dex_obj_loadtxtr(const unsigned char *rdram, unsigned int rdram_bytes,
                        unsigned int ta, RdpFifo *fifo,
-                       unsigned int (*segfn)(unsigned int));
+                       unsigned int (*segfn)(unsigned int), unsigned int command);
 
 /* G_BG_1CYC (S2DEX2 opcode 0x09). bg_addr is the resolved physical address
  * of the uObjScaleBg structure. Emits the RDP command stream for the

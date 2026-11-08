@@ -39,6 +39,7 @@
 #include "rdp_emit_f3d.h"
 #include <string.h>
 #include "ucodes.h"
+#include "hle_jpeg_rgb16.h"
 
 #define min(a,b) (((a) < (b)) ? (a) : (b))
 
@@ -801,6 +802,16 @@ static ucode_func_t try_normal_task_detection(struct hle_t* hle)
         return &jpeg_decode_PS0;
 
     /* JPEG: found in Zelda Ocarina of Time, Pokemon Stadium 1, Pokemon Stadium 2 */
+    case 0x1eeff: {
+        uint32_t text=*dmem_u32(hle,TASK_UCODE),data=*dmem_u32(hle,TASK_UCODE_DATA);
+        if(!(text&3u) && text<=0x800000u-0xad0u &&
+           !(data&3u) && data<=0x800000u-0x60u &&
+           *dmem_u32(hle,TASK_UCODE_SIZE)==0xad0u &&
+           *dmem_u32(hle,TASK_UCODE_DATA_SIZE)==((*dmem_u32(hle,TASK_FLAGS)&1u)?0x200u:0x60u) &&
+           hle_jpeg_rgb16_profile(dram_u32(hle,text),dram_u32(hle,data)))
+            return &jpeg_decode_RGB16;
+        return NULL;
+    }
     case 0x2caa6:
         return &jpeg_decode_PS;
 
@@ -947,6 +958,7 @@ static void timing_identify(ucode_func_t handler)
 #ifndef N64EMU_USF
     if (handler == jpeg_decode_PS0) { hle_timing_family("jpeg_decode_PS0"); return; }
     if (handler == jpeg_decode_PS) { hle_timing_family("jpeg_decode_PS"); return; }
+    if (handler == jpeg_decode_RGB16) { hle_timing_family("jpeg_decode_RGB16"); return; }
     if (handler == jpeg_decode_OB) { hle_timing_family("jpeg_decode_OB"); return; }
     if (handler == resize_bilinear_task) { hle_timing_family("resize_bilinear_task"); return; }
     if (handler == decode_video_frame_task) { hle_timing_family("decode_video_frame_task"); return; }

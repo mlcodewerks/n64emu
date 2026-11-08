@@ -43,6 +43,17 @@ void hle_timing_graphics_refine_command(uint32_t cycles,int32_t packet_cost)
     if(work.native_graphics_profile==1 && cycles &&
        hle_timing_refine(HLE_WORK_COMMAND,1,cycles)) work.native_packet_cost=packet_cost;
 }
+/* Original 2.06 550..63c plus its 12-clock resident dispatch.
+ * Includes two segment resolutions, the 24-byte read and its idle DMA
+ * polling; 644's no-drain return is included. 598's resident branch skips
+ * the entire writer. 5ac and 604 each add one clock on their emit path.
+ * The separate flush callback adds the excess over the no-drain return. */
+void hle_timing_s2dex206_load(int resident,int history)
+{
+    uint32_t cycles = resident ? 72u : 125u + (history == -127) + (history >= 0);
+    if(hle_timing_refine(HLE_WORK_COMMAND,1,cycles))
+        work.native_packet_cost=HLE_PACKET_S2DEX206_LOAD;
+}
 void hle_timing_graphics_command(uint32_t w0)
 {
     int32_t packet_cost;
@@ -66,7 +77,9 @@ void hle_timing_graphics_command(uint32_t w0)
 void hle_timing_graphics_rdp(uint32_t units)
 {
     hle_timing_add(HLE_WORK_RDP,units);
-    if(work.native_graphics_profile==1 && work.native_packet_cost>=0) {
+    if(work.native_packet_cost==HLE_PACKET_S2DEX206_LOAD)
+        hle_timing_refine(HLE_WORK_RDP,units,0);
+    else if(work.native_graphics_profile==1 && work.native_packet_cost>=0) {
         uint64_t clocks=(uint64_t)units*(uint32_t)work.native_packet_cost;
         hle_timing_refine(HLE_WORK_RDP,units,clocks>INT_MAX?INT_MAX:(uint32_t)clocks);
     }
@@ -74,6 +87,16 @@ void hle_timing_graphics_rdp(uint32_t units)
 void hle_timing_graphics_flush(uint32_t bytes,int wrapped)
 {
     uint32_t extra;
+    if(work.native_packet_cost==HLE_PACKET_S2DEX206_LOAD) {
+        uint32_t beats=(bytes+7u)/8u;
+        /* Original 644..6bc and the shared fd8 writer: 34 extra idle
+         * clocks beyond the included no-drain path; 66c's wrap adds ten. */
+        hle_timing_add(HLE_WORK_DMA,beats);
+        hle_timing_refine(HLE_WORK_DMA,beats,beats);
+        hle_timing_add(HLE_WORK_DMA_SETUP,1);
+        hle_timing_refine(HLE_WORK_DMA_SETUP,1,34u+(wrapped?10u:0u));
+        return;
+    }
     if(work.native_graphics_profile!=1)return;
     hle_timing_add(HLE_WORK_DMA,(bytes+7u)/8u);
     /* 0xde8..return: 46 + bytes/8, plus ten clocks on ring wrap.
@@ -297,4 +320,24 @@ uint32_t hle_timing_cycles(void)
         cycles += cost;
     }
     return cycles ? (uint32_t)cycles : 1;
+}
+
+/* Own FIFO 2.08 resident MOVEWORD: 038..048 is eight issue/interlock/
+ * redirect clocks; resident dispatch adds twelve. The wait through fc8
+ * when 194 is a JAL delay slot belongs to the preceding DMA operation.
+ * Command-buffer DMA and task startup are charged separately. */
+void hle_timing_gbi208_moveword(void)
+{
+    if(work.sdk_boot)hle_timing_refine(HLE_WORK_COMMAND,1,20u);
+}
+
+uint32_t hle_timing_path_count(enum hle_path_kind kind)
+{return (unsigned int)kind<HLE_PATH_COUNT?work.paths[kind]:0;}
+void hle_timing_gbi208_rejected(unsigned int triangles)
+{
+    /* Both original kernels take 24 clocks through the caller return.
+     * TRI1 adds 12 dispatch + 2 entry; TRI2/QUAD adds 12 + 5 entry.
+     * No packet or draw work is charged on this complete reject route. */
+    if(work.sdk_boot && (triangles==1u || triangles==2u))
+        hle_timing_refine(HLE_WORK_COMMAND,1,triangles==1u?38u:65u);
 }

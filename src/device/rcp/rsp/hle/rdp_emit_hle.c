@@ -1,3 +1,6 @@
+#include "hle_dezaemon.h"
+#include "rdp_emit_frontend.h"
+#include "hle_gbi208.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -974,6 +977,23 @@ void gsp_detect_ucode_params(GSPState *st, const unsigned char *rdram,
                 }
                 break;
             }
+        }
+    }
+    {
+        unsigned int profile=ut<=rdram_size && 0xf80u<=rdram_size-ut
+            ? hle_gbi208_profile((const uint32_t*)(rdram+ut)):0;
+        gsp_native_matrix_stack(profile!=0,(unsigned char*)s_backend->get_dmem());
+        gsp_force_shade(ut<=rdram_size && 0xf80u<=rdram_size-ut &&
+            hle_dezaemon_profile((const uint32_t*)(rdram+ut)));
+
+        if(profile && ut_is_task_start) {
+            const unsigned char *dm=s_backend->get_dmem();unsigned int k;
+            /* Preserve the logical pointer even in the unpopulated bus
+             * region. The per-transfer SP DMA mask handles physical access. */
+            gsp_set_matrix_stack(st,rdram,read_dmem_u32(dm,0xfe0u),read_dmem_u32(dm,0xfe4u));
+            gsp_seed_matrices(st,dm,0,64u);
+            for(k=0;k<4;k++)gsp_force_matrix_chunk(st,dm,0x80u+k*16u,k*16u);
+            st->combined_valid=dm[0x1d9u^3u]!=0;
         }
     }
     if (ut_is_task_start && ut <= rdram_size && 0x1000u <= rdram_size - ut) {

@@ -61,6 +61,10 @@ void hle_timing_native_graphics(uint32_t profile);
 uint32_t hle_timing_native_graphics_profile(void);
 int hle_timing_graphics_bg_enter(void);
 uint32_t hle_timing_native_opcode(void);
+/* Includes packet-store instructions; suppress generic per-packet cost. */
+#define HLE_PACKET_S2DEX206_LOAD (-2)
+void hle_timing_s2dex206_load(int resident,int history);
+void hle_timing_gbi208_moveword(void);
 void hle_timing_graphics_command(uint32_t w0);
 void hle_timing_graphics_refine_command(uint32_t cycles,int32_t packet_cost);
 void hle_timing_graphics_rdp(uint32_t units);
@@ -72,6 +76,8 @@ void hle_timing_add(enum hle_work_kind kind, uint32_t units);
 int hle_timing_refine(enum hle_work_kind kind, uint32_t units, uint32_t cycles);
 void hle_timing_command(unsigned int opcode);
 void hle_timing_path(enum hle_path_kind kind, uint32_t count);
+uint32_t hle_timing_path_count(enum hle_path_kind kind);
+void hle_timing_gbi208_rejected(unsigned int triangles);
 const char *hle_timing_path_name(unsigned int kind);
 /* Rare/Fast3D's native pointer-list walk, fed the HLE polygon's stored flags.
  * This counts native restarts/sentinels, rather than the shorter C clip loop. */

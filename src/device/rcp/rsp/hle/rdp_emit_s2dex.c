@@ -166,7 +166,7 @@ static unsigned int s_obj_rtile = 0;    /* S2DEX2 render tile 0 <-> 2 */
 
 void s2dex_set_version2(int on)
 {
-    s_s2dex2 = on ? 1 : 0;
+    s_s2dex2 = on == 2 ? 2 : on ? 1 : 0;
 }
 
 static int s_obj_tile7_used;
@@ -217,7 +217,7 @@ static void s2dex_bg_append(RdpFifo *fifo, int32_t *cw, unsigned int count);
 
 int s2dex_obj_loadtxtr(const unsigned char *rdram, unsigned int rdram_bytes,
                        unsigned int ta, RdpFifo *fifo,
-                       unsigned int (*segfn)(unsigned int))
+                       unsigned int (*segfn)(unsigned int), unsigned int command)
 {
     unsigned int type, image, tmem, tsize, tline, sid, flag, mask;
     int drawn_since;
@@ -250,11 +250,17 @@ int s2dex_obj_loadtxtr(const unsigned char *rdram, unsigned int rdram_bytes,
           |  (unsigned int)rdram[(ta + 23) ^ 3];
 
     sid = (sid >> 2) & 3u;
+    if(s_s2dex2 == 2 && (command >> 24) == 5u &&
+       (command & 0xffu) == 23u && fifo->dmem &&
+       (type == 0x30u || type == 0x1033u || type == 0xfc1034u))
+        hle_timing_s2dex206_load((s_obj_status[sid] & mask) == flag,
+            (signed char)fifo->dmem[0x2aeu^3u]);
     if ((s_obj_status[sid] & mask) == flag)
         return 1;                       /* already resident */
     s_obj_status[sid] = (s_obj_status[sid] & ~mask) | flag;
+    if(s_s2dex2 == 2 && fifo->group)fifo->group(1);
 
-    if (s_s2dex2?s_obj_tile7_used:(fifo->dmem && fifo->dmem[0xd2u^3u]==0x81u))
+    if (s_s2dex2 == 1 ? s_obj_tile7_used : (fifo->dmem && fifo->dmem[(s_s2dex2?0x2aeu:0xd2u)^3u]==0x81u))
     {
         cw[0] = (int32_t)0x28000000u;   /* tilesync against the last load */
         cw[1] = 0;
@@ -262,9 +268,10 @@ int s2dex_obj_loadtxtr(const unsigned char *rdram, unsigned int rdram_bytes,
     }
     s_obj_tile7_used = 1;
     drawn_since = s_obj_drawn;
-    if(!s_s2dex2 && fifo->dmem) {
-        drawn_since=(signed char)fifo->dmem[0xd2u^3u]>=0;
-        fifo->dmem[0xd2u^3u]=0x81u;
+    if(s_s2dex2 != 1 && fifo->dmem) {
+        unsigned int history=s_s2dex2?0x2aeu:0xd2u;
+        drawn_since=(signed char)fifo->dmem[history^3u]>=0;
+        fifo->dmem[history^3u]=0x81u;
     }
     s_obj_drawn = 0;
 
@@ -280,7 +287,7 @@ int s2dex_obj_loadtxtr(const unsigned char *rdram, unsigned int rdram_bytes,
         cw[3] = (int32_t)0x27000000u;
         cw[4] = (int32_t)0x30000000u;
         cw[5] = (int32_t)(0x27000000u | ((tsize & 0x3ffu) << 14) | tline);
-        if(!s_s2dex2 && drawn_since) {
+        if(s_s2dex2 != 1 && drawn_since) {
             s2dex_bg_append(fifo,cw,4);
             {int32_t sync[2]={0x26000000,0};s2dex_bg_append(fifo,sync,2);}
             s2dex_bg_append(fifo,cw+4,2);
@@ -331,12 +338,13 @@ int s2dex_obj_loadtxtr(const unsigned char *rdram, unsigned int rdram_bytes,
         cw[4] = (int32_t)0x34000000u;
         cw[5] = (int32_t)(0x27000000u | (((tsize << 2) & 0xfffu) << 12)
                           | (tline & 0xfffu));
-        if(!s_s2dex2 && drawn_since) {
+        if(s_s2dex2 != 1 && drawn_since) {
             s2dex_bg_append(fifo,cw,4);
             {int32_t sync[2]={0x26000000,0};s2dex_bg_append(fifo,sync,2);}
             s2dex_bg_append(fifo,cw+4,2);
         } else s2dex_bg_append(fifo, cw, 6);
     }
+    if(s_s2dex2 == 2 && fifo->group)fifo->group(0);
     return 1;
 }
 
@@ -1508,7 +1516,7 @@ static void s2dex_obj_coords(int use_matrix, int objX, int objY,
 static void s2dex_rect_r_native(int objX, int objY, unsigned int scaleW,
     unsigned int scaleH, unsigned int imageW, unsigned int imageH,
     unsigned int stride, unsigned int address, unsigned int fmt,
-    unsigned int siz, unsigned int palette, unsigned int flags, RdpFifo *fifo)
+    unsigned int siz, unsigned int palette, unsigned int flags, int plain, RdpFifo *fifo)
 {
     static const unsigned int a01[8] = {0,0x00100020u,0x00200040u,0x00300060u,
         0x0000fff4u,0x00100014u,0x00200034u,0x00300054u};
@@ -1524,10 +1532,10 @@ static void s2dex_rect_r_native(int objX, int objY, unsigned int scaleW,
     correction[3] = (s_obj_rendermode & 8u) ? -1 : -4;
     correction[4] = (s_obj_rendermode & 8u) ? -16 : 0;
     correction[5] = (s_obj_rendermode & 8u) ? 3 : 0;
-    if (!rsp_s2dex_rect_axis(objX,scaleW,imageW,s_objmtx_bsx,s_objmtx_x,
-            correction,flags&1u,s_scis_ulx,s_scis_lrx,0,!s_s2dex2,x) ||
-        !rsp_s2dex_rect_axis(objY,scaleH,imageH,s_objmtx_bsy,s_objmtx_y,
-            correction,flags&16u,s_scis_uly,s_scis_lry,0x200,!s_s2dex2,y)) return;
+    if (!rsp_s2dex_rect_axis_impl(objX,scaleW,imageW,s_objmtx_bsx,s_objmtx_x,
+            correction,flags&1u,s_scis_ulx,s_scis_lrx,0,!s_s2dex2,plain,x) ||
+        !rsp_s2dex_rect_axis_impl(objY,scaleH,imageH,s_objmtx_bsy,s_objmtx_y,
+            correction,flags&16u,s_scis_uly,s_scis_lry,0x200,!s_s2dex2,plain,y)) return;
     rtile = s_obj_rtile;
     if (fifo->dmem) {
         unsigned int history=s_s2dex2?0x2aeu:0xd2u;
@@ -1591,13 +1599,20 @@ static void s2dex_draw_obj(GSPState *gsp, const unsigned char *r,
     imagePal    = r[(addr + 0x16) ^ 3];
     imageFlags  = r[(addr + 0x17) ^ 3];
 
-    if (!as_rect && !s_s2dex2) {
+    if (!as_rect && s_s2dex2 != 1) {
         int obj[6]={objX,(int)scaleW,(int)imageW,objY,(int)scaleH,(int)imageH};
         int32_t matrix[6]={s_objmtx_a,s_objmtx_b,s_objmtx_c,s_objmtx_d,s_objmtx_x,s_objmtx_y};
         int16_t corners[4][4];
         int32_t packet[54];
         unsigned int tile=0,limit=(((imageW&0x7ff8u)<<9)|(imageH>>3))-0x4004u;
         int k,inside[4]={0,0,0,0};
+        /* Original 2.06 VADD at 704 uses correction lane V4[3], the
+         * low half of A23[(mode>>3)&3]: -2 unless SHRINKSIZE_1 (0x10).
+         * BILERP alone still uses -2. The VADD saturates. */
+        if(s_s2dex2 == 2 && !(s_obj_rendermode&16u)) {
+            obj[0]=objX<-32766?-32768:objX-2;
+            obj[3]=objY<-32766?-32768:objY-2;
+        }
         rsp_s2dex_sprite_corners(corners,obj,matrix,s_obj_rendermode,imageFlags);
         for(k=0;k<4;k++) {
             inside[0]|=corners[k][2]>=(int)s_scis_ulx;
@@ -1607,15 +1622,16 @@ static void s2dex_draw_obj(GSPState *gsp, const unsigned char *r,
         }
         if(!inside[0]||!inside[1]||!inside[2]||!inside[3])return;
         if(fifo->dmem) {
-            tile=fifo->dmem[0xd3u^3u]^2u;
-            fifo->dmem[0xd3u^3u]=(unsigned char)tile;
-            if(tile==fifo->dmem[0xd2u^3u]) {
+            unsigned int history=s_s2dex2?0x2aeu:0xd2u;
+            tile=fifo->dmem[(history+1u)^3u]^2u;
+            fifo->dmem[(history+1u)^3u]=(unsigned char)tile;
+            if(tile==fifo->dmem[history^3u]) {
                 int32_t sync[2]={0,0};
                 if(fifo->read_staging)fifo->read_staging(0,sync,2);
                 sync[0]=(int32_t)(((unsigned int)sync[0]&0xffffffu)|0x28000000u);
                 rdp_fifo_append(fifo,sync,2);
             }
-            fifo->dmem[0xd2u^3u]=(unsigned char)tile;
+            fifo->dmem[history^3u]=(unsigned char)tile;
         }
         packet[0]=(int32_t)(0x35000000u|(((imageFmt<<21)|(imageSiz<<19)|(imageStride<<9)|imageAdrs)&0xffffffu));
         packet[1]=(int32_t)((tile<<24)|(imagePal<<20)|0x80200u);
@@ -1633,9 +1649,9 @@ static void s2dex_draw_obj(GSPState *gsp, const unsigned char *r,
         return;
     }
 
-    if (use_matrix && as_rect) {
+    if (as_rect && (use_matrix || s_s2dex2 == 2)) {
         s2dex_rect_r_native(objX,objY,scaleW,scaleH,imageW,imageH,imageStride,
-            imageAdrs,imageFmt,imageSiz,imagePal,imageFlags,fifo);
+            imageAdrs,imageFmt,imageSiz,imagePal,imageFlags,!use_matrix,fifo);
         return;
     }
 

@@ -37,13 +37,20 @@ static core_system_type rom_country_code_to_system_type(uint16_t country_code);
 static const uint8_t Z64_SIGNATURE[4] = { 0x80, 0x37, 0x12, 0x40 };
 static const uint8_t V64_SIGNATURE[4] = { 0x37, 0x80, 0x40, 0x12 };
 static const uint8_t N64_SIGNATURE[4] = { 0x40, 0x12, 0x37, 0x80 };
+/* The DD subsystem loads the IPL as content and also maps it in DD ROM. */
+static const uint8_t DD_Z64_SIGNATURE[4] = { 0x80, 0x27, 0x07, 0x40 };
+static const uint8_t DD_V64_SIGNATURE[4] = { 0x27, 0x80, 0x40, 0x07 };
+static const uint8_t DD_N64_SIGNATURE[4] = { 0x40, 0x07, 0x27, 0x80 };
 
 /* Tests if a file is a valid N64 rom by checking the first 4 bytes. */
 static int is_valid_rom(const unsigned char *buffer)
 {
     if (memcmp(buffer, Z64_SIGNATURE, sizeof(Z64_SIGNATURE)) == 0
      || memcmp(buffer, V64_SIGNATURE, sizeof(V64_SIGNATURE)) == 0
-     || memcmp(buffer, N64_SIGNATURE, sizeof(N64_SIGNATURE)) == 0)
+     || memcmp(buffer, N64_SIGNATURE, sizeof(N64_SIGNATURE)) == 0
+     || memcmp(buffer, DD_Z64_SIGNATURE, sizeof(DD_Z64_SIGNATURE)) == 0
+     || memcmp(buffer, DD_V64_SIGNATURE, sizeof(DD_V64_SIGNATURE)) == 0
+     || memcmp(buffer, DD_N64_SIGNATURE, sizeof(DD_N64_SIGNATURE)) == 0)
         return 1;
     else
         return 0;
@@ -66,7 +73,8 @@ static int is_valid_rom(const unsigned char *buffer)
  */
 static void swap_copy_rom(void* dst, const void* src, size_t len, unsigned char* imagetype)
 {
-    if (memcmp(src, V64_SIGNATURE, sizeof(V64_SIGNATURE)) == 0)
+    if (memcmp(src, V64_SIGNATURE, sizeof(V64_SIGNATURE)) == 0 ||
+        memcmp(src, DD_V64_SIGNATURE, sizeof(DD_V64_SIGNATURE)) == 0)
     {
         size_t i;
         const uint16_t* src16 = (const uint16_t*) src;
@@ -79,7 +87,8 @@ static void swap_copy_rom(void* dst, const void* src, size_t len, unsigned char*
             *dst16++ = core_swap16(*src16++);
         }
     }
-    else if (memcmp(src, N64_SIGNATURE, sizeof(N64_SIGNATURE)) == 0)
+    else if (memcmp(src, N64_SIGNATURE, sizeof(N64_SIGNATURE)) == 0 ||
+        memcmp(src, DD_N64_SIGNATURE, sizeof(DD_N64_SIGNATURE)) == 0)
     {
         size_t i;
         const uint32_t* src32 = (const uint32_t*) src;
