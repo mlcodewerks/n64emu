@@ -783,7 +783,7 @@ static void nb_xfrm(unsigned int count)
 static int nb_expand_indices(unsigned int count)
 {
     unsigned int source = nb_dmem_r32(0x154u), slot;
-    if (!count || count > 32u) return 0;
+    if (!count) return 0;
     for (slot = count; slot > 0u; slot--) {
         unsigned int index = (unsigned short)nb_dmem_s16(0x170u + (slot - 1u) * 2u);
         unsigned int address = source + index * 6u, offset = address & 7u;
@@ -1926,8 +1926,10 @@ static void nb_process_loaded(unsigned int sub, unsigned int w0, unsigned int w1
     switch (sub) {
     case 2:                                     /* vertex transform */
         if ((w0 & 0x400000u) && !nb_expand_indices(w1 >> 24)) { nb.active = 2u; break; }
-        if ((w1 >> 24) > 32u) { nb.active = 2u; break; }
-        nb_xfrm((w1 >> 24) & 0x7fu);
+        /* Resident bb8 takes the complete count byte with SRL s4,24.
+         * The original loop and indexed overlay have no 32-record gate;
+         * their DMEM accesses retain the usual 4 KiB address wrapping. */
+        nb_xfrm(w1 >> 24);
         break;
     case 4:                                     /* color processor
          * (text 0xbd4-0xc70): in-place top-down expansion of the
