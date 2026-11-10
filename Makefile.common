@@ -95,15 +95,16 @@ SOFTRDP_DIR = $(CORE_DIR)/src/device/rcp/rdp/softrdp
 RSP_HLE_DIR = $(CORE_DIR)/src/device/rcp/rsp/hle
 SOURCES_C += $(wildcard $(RSP_HLE_DIR)/*.c) \
              $(CORE_DIR)/src/device/rcp/rsp/optional_rsp.c
+# Keep the standalone DSP implementation valid under the requested C89 dialect.
+$(RSP_HLE_DIR)/zsort_dsp.o: CFLAGS += -std=c89 -pedantic-errors
 SOURCES_C += $(LIBRETRO_COMM_DIR)/encodings/encoding_crc32.c
 SOURCES_C += $(CORE_DIR)/src/renderer_options.c
 ifeq ($(USF),1)
 # Audio decoders contain no RDP renderer, display-list walker, framebuffer
 # protection, presentation code, renderer worker pool or image/video decoder.
-SOURCES_C := $(filter-out $(RSP_HLE_DIR)/rdp_emit%.c $(addprefix $(RSP_HLE_DIR)/,jpeg.c hvqm.c re2.c),$(SOURCES_C))
+SOURCES_C := $(filter-out $(RSP_HLE_DIR)/rdp_emit%.c $(addprefix $(RSP_HLE_DIR)/,jpeg.c hvqm.c re2.c zsort_dsp.c),$(SOURCES_C))
 SOURCES_C += $(CORE_DIR)/src/usf/rdp_stubs.c
 else
-SOURCES_CXX += $(RSP_HLE_DIR)/zsort_dsp.cpp
 SOURCES_C += $(addprefix $(CORE_DIR)/src/device/rcp/rdp/,fb.c rdp_core.c rdp_hle_fifo.c) \
              $(CORE_DIR)/src/device/rcp/rdp/performance_cores.c
 SOURCES_C += $(SOFTRDP_DIR)/worker_pool.c \

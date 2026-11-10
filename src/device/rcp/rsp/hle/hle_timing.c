@@ -276,6 +276,13 @@ static const struct timing_model fallback = {
 };
 #include "hle_timing_models.h"
 
+struct timing_path_model {
+    const char *family;
+    uint32_t checksum, base_q8;
+    uint32_t work_q8[HLE_WORK_COUNT], path_q8[8];
+};
+#include "hle_timing_path_models.h"
+static const struct timing_path_model *selected_path;
 static const struct timing_model *selected;
 
 static void select_model(void)
@@ -286,10 +293,16 @@ static void select_model(void)
         if (work.family && !strcmp(work.family, timing_models[i].family) &&
             (timing_models[i].checksum == 0xffffffffu || work.ucode_checksum == timing_models[i].checksum))
         { selected = &timing_models[i]; break; }
+    selected_path = NULL;
+    for (i = 0; i < sizeof(timing_path_models) / sizeof(timing_path_models[0]); ++i)
+        if (work.family && !strcmp(work.family, timing_path_models[i].family) &&
+            work.ucode_checksum == timing_path_models[i].checksum) {
+            selected_path = &timing_path_models[i]; break;
+        }
     model_valid = 1;
 }
 
-uint32_t hle_timing_cycles(void)
+static uint32_t coarse_timing_cycles(void)
 {
     const struct timing_model *model;
     uint64_t cycles;
@@ -320,6 +333,47 @@ uint32_t hle_timing_cycles(void)
         cycles += cost;
     }
     return cycles ? (uint32_t)cycles : 1;
+}
+
+
+/* Spatial work profiles use Q8 coefficients so short tasks do not accumulate
+ * a rounding error on every vertex or packet. Existing models retain their
+ * original integer arithmetic and checksum selection. */
+uint32_t hle_timing_cycles(void)
+{
+    uint64_t cycles, limit = (uint64_t)INT_MAX * 256u;
+    unsigned int i;
+    if (work.override_cycles) return work.override_cycles;
+    if (!model_valid) select_model();
+    if (!selected_path) return coarse_timing_cycles();
+    cycles = selected_path->base_q8;
+    for (i = 0; i < HLE_WORK_COUNT; ++i) {
+        uint32_t units = work.units[i];
+        uint64_t cost = 0;
+        if (work.refined_mask && work.refined_units[i] <= units) {
+            units -= work.refined_units[i];
+            cost = (uint64_t)work.refined_cycles[i] * 256u;
+        }
+        cost += (uint64_t)selected_path->work_q8[i] * units;
+        if (cycles >= limit || cost > limit - cycles) return INT_MAX;
+        cycles += cost;
+    }
+    for (i = 0; i < 8; ++i) {
+        uint64_t cost = (uint64_t)selected_path->path_q8[i] *
+            work.paths[timing_path_kinds[i]];
+        if (cycles >= limit || cost > limit - cycles) return INT_MAX;
+        cycles += cost;
+    }
+    cycles >>= 8;
+    if (!cycles) cycles = 1;
+    /* A partial clip shadow must not lower the published producer time.
+     * Retaining the maximum also preserves prefix monotonicity when the
+     * incomplete/saturated flag first appears. */
+    if (work.paths_saturated || work.paths[HLE_PATH_CLIP_UNMAPPED]) {
+        uint32_t coarse = coarse_timing_cycles();
+        if (cycles < coarse) cycles = coarse;
+    }
+    return (uint32_t)cycles;
 }
 
 /* Own FIFO 2.08 resident MOVEWORD: 038..048 is eight issue/interlock/

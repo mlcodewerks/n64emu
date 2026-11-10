@@ -289,7 +289,7 @@ static void graphics_capture_begin(const uint32_t *task)
     uint32_t header[4] = {0x484c5431u, 0, 0, 0x47465849u}, context[7], zero = 0;
     char path[1024];
     core_file *file;
-    if (!graphics_capture_prefix || (task[1] & 1u)) return;
+    if (!graphics_capture_prefix || g_dev.sp.rsp_task_locked || (task[1] & 1u)) return;
     if (getenv("HLE_GRAPHICS_CAPTURE_CLOCK") &&
         g_dev.r4300.cp0.count_clock < (int64_t)strtoull(getenv("HLE_GRAPHICS_CAPTURE_CLOCK"), NULL, 0)) return;
     for (i = 0; i < (task[5] < 0xf80 ? task[5] : 0xf80) / 2; i++)

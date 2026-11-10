@@ -64,6 +64,28 @@ static void emit_icache_fill_wait_native(const struct n64emujit_config* config,u
     emit_state_imm(offsetof(struct r4300_core,icache_fill_index),0,0);
     JIT(pop(Xbyak::Reg64(RCX)));JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RAX)));patch_jump(skip,out);
 }
+static void emit_icache_fill_cycles(unsigned dest,unsigned unissued)
+{
+ JIT(push(Xbyak::Reg64(RCX)));JIT(push(Xbyak::Reg64(RDX)));JIT(push(Xbyak::Reg64(R10)));JIT(push(Xbyak::Reg64(R11)));
+ emit_movimm(R4300_ICACHE_FILL_IDLE_CYCLES,RDX);
+ emit_mem(0x8b,1,RCX,R12,-1,0,offsetof(struct r4300_core,vi));
+ emit_reg_op(0x85,RCX,RCX,1);auto *no_vi=emit_jump(4);
+ emit_mem(0x8b,1,RCX,RCX,-1,0,offsetof(struct vi_controller,dp));
+ emit_reg_op(0x85,RCX,RCX,1);auto *no_dp=emit_jump(4);
+ emit_mem(0x8b,1,R10,RCX,-1,0,offsetof(struct rdp_core,timing)+offsetof(struct rdp_timing,deadline));
+ // Native blocks defer COUNT updates. Sample the same instruction boundary
+ // as the precise path, excluding this instruction's unissued base cycles.
+ emit_mem(0x8b,0,R11,R12,-1,0,offsetof(struct r4300_core,cp0.count_phase));
+ emit_reg_op(0x01,R13,R11,1);
+ if(unissued)emit_addimm64(R11,-int(unissued),R11);
+ emit_shift_reg(R11,5,1,1);
+ emit_mem(0x8b,1,RCX,R12,-1,0,offsetof(struct r4300_core,cp0.count_clock));
+ emit_reg_op(0x01,RCX,R11,1);
+ emit_reg_op(0x39,R11,R10,1);auto *idle=emit_jump(14);emit_movimm(R4300_ICACHE_FILL_BUSY_CYCLES,RDX);
+ patch_jump(idle,out);patch_jump(no_dp,out);patch_jump(no_vi,out);
+ emit_reg_op(0x01,RDX,dest,dest==RAX);
+ JIT(pop(Xbyak::Reg64(R11)));JIT(pop(Xbyak::Reg64(R10)));JIT(pop(Xbyak::Reg64(RDX)));JIT(pop(Xbyak::Reg64(RCX)));
+}
 static void emit_icache_prefetch_native(const struct n64emujit_config* config,unsigned unissued,unsigned index)
 {
     JIT(push(Xbyak::Reg64(RAX)));JIT(push(Xbyak::Reg64(RDX)));JIT(push(Xbyak::Reg64(RCX)));
@@ -78,7 +100,7 @@ static void emit_icache_prefetch_native(const struct n64emujit_config* config,un
     emit_mem(0x8b,1,RDX,R12,RCX,3,offsetof(struct r4300_core,write_buffer_end));
     emit_reg_op(0x39,RDX,RAX,1);auto *later=emit_jump(3);
     emit_mov64(RDX,RAX);patch_jump(later,out);patch_jump(empty,out);
-    emit_addimm64(RAX,R4300_ICACHE_FILL_CYCLES,RAX);emit_mem(0x89,1,RAX,R12,-1,0,offsetof(struct r4300_core,icache_fill_end));
+    emit_icache_fill_cycles(RAX,unissued);emit_mem(0x89,1,RAX,R12,-1,0,offsetof(struct r4300_core,icache_fill_end));
     if(index==UINT32_MAX){
         emit_mov(R14,RDX);emit_shift_reg(RDX,5,5,0);emit_imm_op(4,RDX,511,0);emit_addimm(RDX,1,RDX);
         emit_mem(0x89,0,RDX,R12,-1,0,offsetof(struct r4300_core,icache_fill_index));
@@ -240,7 +262,7 @@ static void emit_fetch_native(const struct n64emujit_config* config, unsigned in
         patch_jump(plain,out);
         emit_state_imm(tag, key, 0);
         if(future&&!config->compat_issue_clock)emit_icache_prefetch_native(config,defer_base?0:cycles,(fetch_pc>>5)&511);
-        else emit_addimm(R13, R4300_ICACHE_FILL_CYCLES, R13);
+        else emit_icache_fill_cycles(R13,defer_base?0:cycles);
         patch_jump(hit, out);
     }
     if(defer_base){

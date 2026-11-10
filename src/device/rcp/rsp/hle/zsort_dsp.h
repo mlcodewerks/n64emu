@@ -1,6 +1,8 @@
 #ifndef N64EMU_ZSORT_DSP_H
 #define N64EMU_ZSORT_DSP_H
 #include <stdint.h>
+/* Self-contained C89 DSP implementation. Callers provide DMEM and optional
+ * transport callbacks; no native RSP state, vector library or JIT is needed. */
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -7,13 +7,14 @@
  * and refresh latency distributions are not completely modeled.
  */
 enum {
-    /* Shared service estimate, checked against the DK64 opening and other
-     * fixed video intervals. The 80-clock probe misses the vine; 88 retains
-     * the crossing and reduces sequence drift. Cache differentials and Nemu
-     * check implementation consistency,
-     * but do not independently measure instruction-fill latency. See
-     * rdp_timing/reports/DK64_TIMING_ANALYSIS.md. */
-    R4300_ICACHE_FILL_CYCLES = 88,
+    /* Empirical shared-memory service estimate: a pending RDP deadline
+     * selects the contended instruction-fill cost. Keep the maximum as the
+     * native region/event bound; actual fills select the cost at runtime.
+     * See benchmarks/hle-calibration/DEMO_REPAIR.md for joint DK64/demo checks.
+     * This is an approximation of contention, not measured bus arbitration. */
+    R4300_ICACHE_FILL_IDLE_CYCLES = 32,
+    R4300_ICACHE_FILL_BUSY_CYCLES = 128,
+    R4300_ICACHE_FILL_CYCLES = R4300_ICACHE_FILL_BUSY_CYCLES,
     R4300_DCACHE_FILL_CYCLES = 41,
     R4300_COMPAT_DCACHE_FILL_CYCLES = 40,
     R4300_DCACHE_WRITEBACK_CYCLES = 40,

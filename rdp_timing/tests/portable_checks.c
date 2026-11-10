@@ -1,4 +1,4 @@
-#include <assert.h>
+#include "test_assert.h"
 #include <stdio.h>
 /* Define just one observation macro: other defaults must still compile. */
 #define RDP_TIMING_OBSERVE_SPAN(t,p,r) ((void)(t), (void)(p), (void)(r))

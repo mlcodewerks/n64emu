@@ -72,6 +72,11 @@ static void timing_capture_begin(const uint32_t *task)
     enum hle_task_kind kind;
     if (!timing_capture_prefix || (*info.SP_PC_REG & 0xfff) != 0 ||
         timing_capture_file || g_dev.sp.rsp_task_locked) return;
+    {
+        const char *clock_filter = getenv("HLE_TIMING_CAPTURE_CLOCK");
+        if (clock_filter && (uint64_t)g_dev.r4300.cp0.count_clock <
+            strtoull(clock_filter, NULL, 0)) return;
+    }
     boot = task[3] > 0x1000;
     if (boot) {
         kind = hle_get_task_kind(&hle);
@@ -85,6 +90,13 @@ static void timing_capture_begin(const uint32_t *task)
         if (text_size > 0xf80u) text_size = 0xf80u;
         for (i = 0; i < text_size / 2; i++)
             header[2] += info.RDRAM[task[4] + i];
+    }
+    {
+        const char *kind_filter = getenv("HLE_TIMING_CAPTURE_KIND");
+        if (kind_filter &&
+            ((!strcmp(kind_filter, "graphics") && kind != HLE_TASK_GRAPHICS) ||
+             (!strcmp(kind_filter, "audio") && kind != HLE_TASK_AUDIO) ||
+             (!strcmp(kind_filter, "boot") && kind != HLE_TASK_BOOT))) return;
     }
     if (!boot) header[3] = *(const uint32_t *)(info.RDRAM + task[6] + 0x10);
     for(i=0;i<timing_capture_nucodes;++i) {

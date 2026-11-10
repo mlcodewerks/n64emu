@@ -22,6 +22,9 @@ ReturnMode Interpreter::run(uint32_t limit) {
              (state.cycles >= state.cycle_limit && poll_boundary)))
             return MODE_TIMESLICE;
         const auto pc = state.pc & 0xffc, op = state.imem[pc >> 2];
+#ifdef RSP_INTERPRETER_OBSERVE_BEFORE
+        const uint32_t observer_before = state.cycles;
+#endif
         auto decoded = RSPTimingDecoder::decoderEXECUTE(op);
         if (!timed)
             ++state.cycles;
@@ -34,6 +37,12 @@ ReturnMode Interpreter::run(uint32_t limit) {
                      RSPTimingDecoder::canDualIssue(decoded, second);
             state.cycles += pipeline.issue(decoded, paired ? &second : nullptr);
         }
+#ifdef RSP_INTERPRETER_OBSERVE_BEFORE
+        RSP_INTERPRETER_OBSERVE_BEFORE(pc, op, observer_before, state.cycles - observer_before);
+#endif
+#ifdef RSP_INTERPRETER_OBSERVE_AFTER
+        const uint32_t observer_issued = state.cycles;
+#endif
         const bool prior_branch = state.has_delay_slot;
         auto mode = execute_instruction(state, op);
         if (timed && prior_branch) {
@@ -41,6 +50,11 @@ ReturnMode Interpreter::run(uint32_t limit) {
             pipeline = {};
             paired = false;
         }
+#ifdef RSP_INTERPRETER_OBSERVE_AFTER
+        RSP_INTERPRETER_OBSERVE_AFTER(pc, op,
+            state.cycles - observer_issued - (timed && prior_branch ? 1u : 0u),
+            timed && prior_branch ? 1u : 0u);
+#endif
         if (mode == MODE_BREAK) {
             auto &status = *state.cp0.cr[CP0_REGISTER_SP_STATUS];
             status |= SP_STATUS_HALT | SP_STATUS_BROKE;

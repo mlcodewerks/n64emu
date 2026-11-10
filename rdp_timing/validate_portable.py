@@ -25,6 +25,9 @@ def main():
         example=out/(mode+'-example.exe')
         run(strict+[str(HERE/'example.c'),'-o',str(example)])
         sample=run([str(example)])
+        short_span=out/(mode+'-short-span-checks.exe')
+        run(strict+[str(HERE/'tests/short_span_vi_checks.c'),'-o',str(short_span)])
+        short_span_result=run([str(short_span)])
         objects=[]
         if a.reference_header:
             ref=a.reference_header.resolve(strict=True)
@@ -41,7 +44,7 @@ def main():
             run(command+['-c',str(HERE/'tests/portable_checks.c'),'-o',str(source_obj)])
             run([cc,str(source_obj)]+objects+['-o',str(test)])
         else:run(command+[str(HERE/'tests/portable_checks.c')]+objects+['-o',str(test)])
-        checks=run([str(test)])
+        checks=run([str(test)])+short_span_result
         (out/(mode+'.log')).write_text(sample+checks)
         results[mode]={'example':sample.strip(),'checks':checks.strip(),
                        'compiler':run([cc,'--version']).splitlines()[0]}

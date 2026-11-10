@@ -7,6 +7,15 @@
 #include "jit_runtime.h"
 #include <string.h>
 
+#include "device/rcp/rdp/rdp_core.h"
+/* Use the scheduler clock consistently in C and native paths. The RDP
+ * deadline is a coarse busy estimate and can include queued work. */
+static osal_force_inline unsigned r4300_icache_fill_cycles(const struct r4300_core *r)
+{
+    const struct rdp_core *dp = r->vi ? r->vi->dp : NULL;
+    return dp && dp->timing.deadline > r->cp0.count_clock
+        ? R4300_ICACHE_FILL_BUSY_CYCLES : R4300_ICACHE_FILL_IDLE_CYCLES;
+}
 /* Shared compatibility hit estimate, including the existing cache handoff. */
 enum { R4300_DCACHE_HIT_CYCLES = 1 };
 static osal_force_inline unsigned r4300_dcache_hit_cycles(unsigned compatibility)
@@ -292,10 +301,10 @@ static osal_force_inline unsigned int r4300_fetch_cycles_internal(struct r4300_c
         if(future&&!r->compat_issue_clock){
             uint64_t start=r4300_cpu_clock(r);
             if(r->write_buffer_count&&start<r->write_buffer_end[r->write_buffer_count-1])start=r->write_buffer_end[r->write_buffer_count-1];
-            r->icache_fill_end=start+R4300_ICACHE_FILL_CYCLES;r->icache_fill_index=((va>>5)&511)+1;
+            r->icache_fill_end=start+r4300_icache_fill_cycles(r);r->icache_fill_index=((va>>5)&511)+1;
             return cycles;
         }
-        return cycles + R4300_ICACHE_FILL_CYCLES;
+        return cycles + r4300_icache_fill_cycles(r);
     }
     return cycles;
 }
@@ -352,7 +361,7 @@ static inline void r4300_cache_operation(struct r4300_core* r, unsigned op,
         break;
     case 0x10: case 0x11: if (hit) *tag &= ~1u; break;
     case 0x14:
-        cp0_step_cycles(&r->cp0, R4300_ICACHE_FILL_CYCLES); *tag = key;
+        cp0_step_cycles(&r->cp0, r4300_icache_fill_cycles(r)); *tag = key;
         r4300_icache_materialize(r,(va>>5)&511);
         break;
     case 0x15:
@@ -370,7 +379,7 @@ static inline void r4300_cache_operation(struct r4300_core* r, unsigned op,
             for (unsigned i = 0; i < 8; ++i)
                 mem_write32(mem_get_handler(r->mem, line), line + i * 4,
                     r->icache_shadow_words[index][i], ~UINT32_C(0));
-            cp0_step_cycles(&r->cp0, R4300_ICACHE_FILL_CYCLES);
+            cp0_step_cycles(&r->cp0, r4300_icache_fill_cycles(r));
         }
         break;
     case 0x19:

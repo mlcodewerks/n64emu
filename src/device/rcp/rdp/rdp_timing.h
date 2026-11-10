@@ -511,13 +511,31 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
     } else q+=(uint64_t)transfer_delta*256;
     uint64_t raster=pixels*(t->cycle_type+1)*256;
     if(q<raster)q=raster;
-    uint64_t transient=(color_read+depth_read)*49u*256;
-    RDP_TIMING_OBSERVE_RESPONSE(t,transient>q?(transient-q+255)/256:0);
-    if(q<transient)q=transient;
+    /* Same-bank and separate-device spans retain the hardware-calibrated
+     * response path. The unmeasured two-bank/single-device topology permits
+     * read-fill latency to overlap VI-adjusted service. Apply its floor after
+     * service, so pipeline latency is not stretched as additional bus work.
+     * Only one-cycle spans use this overlap. Two-cycle consumption retains
+     * its serialized VI response. The short-span floors (49/60 clocks per
+     * read stream) are aggregate video calibrations for this unmeasured
+     * topology, not independently measured per-request latencies. */
+    unsigned paired=color_read && depth_read &&
+        (color>>24)==(depth>>24) && (color>>23)!=(depth>>23);
+    unsigned interleaved=paired && !t->cycle_type;
+    uint64_t transient=(color_read+depth_read)*(paired && t->cycle_type?60u:49u)*256;
+    if(!interleaved) {
+        RDP_TIMING_OBSERVE_RESPONSE(t,transient>q?(transient-q+255)/256:0);
+        if(q<transient)q=transient;
+    }
     unsigned startup=t->reject?4u+2u*t->cycle_type:15u;
     q+=startup*256u;
     q=rdp_timing_buffered_vi(t,q,profile,color,depth,color_live,depth_live);
     if(q==UINT64_MAX)return q;
+    if(interleaved) {
+        transient+=startup*256u;
+        RDP_TIMING_OBSERVE_RESPONSE(t,transient>q?(transient-q+255)/256:0);
+        if(q<transient)q=transient;
+    }
     q+=t->span_fraction;
     t->span_fraction=(uint32_t)(q&255);
     return q>>8;
