@@ -402,6 +402,7 @@ static void zboss_gfx_task(struct hle_t* hle)
  * the cursor through the incomplete-return protocol; a top-level EndDL
  * completes immediately, as in the resident instruction sequence. */
 int angrylion_naboo_dlist(int resume, int emit);
+void naboo_set_status(unsigned int status);
 /* Naboo-era Factor 5 streaming server (Battle for Naboo, Indiana
  * Jones): same libultra yield protocol as Rogue Squadron; the walker
  * is incremental and returns negative on commands it does not yet
@@ -410,9 +411,7 @@ static void naboo_gfx_task(struct hle_t* hle)
 {
     int resume;
     int r;
-    if(l_naboo_gfx_running && (*hle->sp_status&SP_STATUS_SIG0)){
-        rsp_break(hle,SP_STATUS_SIG1);return;
-    }
+    naboo_set_status(*hle->sp_status);
 
     resume = l_naboo_gfx_running
           || ((*dmem_u32(hle, TASK_FLAGS) & 1) != 0);
@@ -430,6 +429,12 @@ static void naboo_gfx_task(struct hle_t* hle)
         return;
     }
 
+    if (r == 2) { /* Retain private mid-emitter state alongside the yield image. */
+        l_naboo_gfx_running = 1;
+        rsp_break(hle, SP_STATUS_SIG1);
+        return;
+    }
+
     if (r == 0) {
         l_naboo_gfx_running = 0;
         rsp_break(hle, SP_STATUS_TASKDONE);
@@ -440,10 +445,7 @@ static void naboo_gfx_task(struct hle_t* hle)
     *hle->dpc_current = *hle->dpc_end;
     *hle->dpc_status &= ~0x600u;
 
-    if (*hle->sp_status & SP_STATUS_SIG0) {
-        rsp_break(hle, SP_STATUS_SIG1);
-        return;
-    }
+
 }
 
 static void rs_gfx_task(struct hle_t* hle)
@@ -713,7 +715,7 @@ static ucode_func_t try_audio_task_detection(struct hle_t* hle)
                 return &alist_process_nead_fz;
             case 0x1f08122c: /* YoshisStory */
                 return &alist_process_nead_ys;
-            case 0x1f38122c: /* 1080° Snowboarding */
+            case 0x1f38122c: /* 1080Ã‚Â° Snowboarding */
                 return &alist_process_nead_1080;
             case 0x1f681230: /* Zelda OoT / Zelda MM (J, J RevA) */
                 return &alist_process_nead_oot;

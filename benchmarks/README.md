@@ -1,5 +1,25 @@
 # Headless interpreter benchmarks
 
+[Heavy-game frame budgets](HEAVY_GAMES.md) covers the audit's slow cases on
+SoftRDP and fenced paraLLEl-RDP, guarded native FPU preparation, and upstream
+conformance reruns. The strict 10 ms maximum remains a measured requirement.
+
+[GLRDP and legacy GPU optimization](GPU_OPTIMIZATION.md) covers depth-buffer
+transfers, command batching, GPU equivalence checks and fenced before/after timings.
+
+Run the C++17 GPU checks from the repository root with
+`make -f benchmarks/gpu_checks.mk check`. The makefile selects Linux or MinGW
+OpenGL libraries and executable names from the compiler target. Supply
+`CC=gcc-9 CXX=g++-9` to select GCC 9. GLFW/OpenGL development libraries and a
+display supporting OpenGL 4.3 are required for the complete GPU checks.
+`make -f benchmarks/gpu_checks.mk check-parser` runs only the parser checks and
+needs no graphics libraries or display. Compiler and linker flags remain
+configurable through `CPPFLAGS`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, and `LDLIBS`;
+override `GPU_LIBS` for a custom GLFW/OpenGL installation.
+
+[ROM-set boot repairs and reproduction](ROMSET_BOOT.md) cover BattleTanx startup,
+cold-boot calibration and restoring Fast timing after the first VI.
+
 [SoftRDP eventcount worker pool](softrdp/THREADPOOL.md) records the replacement
 of condition-variable synchronization, stress checks and whole-core timings.
 The [threading follow-up](softrdp/THREADING_PERFORMANCE.md) compares polling
@@ -7,6 +27,10 @@ policies, cache layouts and whole-core performance.
 
 [CPU JIT compilation hitches](softrdp/JIT_COMPILATION.md) measures first-use
 compilation, direct local-branch patching, and startup/intro frame times.
+
+[Accurate-mode JIT follow-up](softrdp/JIT_FOLLOWUP.md) covers mapped cache
+attributes, shared continuations and compilation costs, with state comparisons
+and frame-budget measurements on both SoftRDP and paraLLEl-RDP.
 
 [Jet Force Gemini repairs](softrdp/JET_FORCE_GEMINI.md) covers the native RSP
 boot self-test, Rare's HLE clipper selection, and opening/Goldwood checks.
@@ -394,3 +418,10 @@ Active Gauntlet, Rogue Squadron, Naboo/Indiana Jones and BOSS tasks reuse their
 validated handler between slices. Polling clocks and handshakes are unchanged.
 See [measurements and validation](STREAMING_HLE_PERFORMANCE.md) and the
 [recorded comparison metadata](streaming-hle-validation.json).
+
+## RDP hardware timing
+
+[Hardware-envelope calibration and reproduction](RDP_HARDWARE_TIMING.md)
+requires all 200 original Thar0 counter ranges. The
+[validation record](rdp-hardware-validation.json) distinguishes host command
+streams, full-console ROM execution and the separate CPU/RSP suites.

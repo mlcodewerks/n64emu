@@ -2361,7 +2361,7 @@ int angrylion_naboo_dlist(int resume, int emit)
     s_fifo.flush = fifo_flush_to_rdp;
 
     dl_addr = read_dmem_u32(dmem, 0xff0u) & 0x00ffffffu;
-    if (dl_addr == 0 || dl_addr >= rdram_size)
+    if (dl_addr >= rdram_size)
         return -1;
 
     if (!resume)

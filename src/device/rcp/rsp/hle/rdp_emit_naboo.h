@@ -3,6 +3,7 @@
 
 #include "rdp_emit_f3dex2.h"
 
+#define NABOO_R_YIELD      2
 #define NABOO_R_DONE       0
 #define NABOO_R_FALLBACK  (-1)
 /* Distinguish a native DMEM yield image from a private HLE continuation. */
@@ -18,6 +19,7 @@ int naboo_restore_yield(const unsigned char *dmem);
 void naboo_seed_output(unsigned int end, unsigned int current);
 void naboo_set_emit(int on);
 void naboo_set_clock(unsigned int clock);
+void naboo_set_status(unsigned int status);
 void naboo_set_phase(unsigned int phase);
 int naboo_get_phase(unsigned int *phase);
 void naboo_set_size_fraction(unsigned int fraction);

@@ -45,6 +45,8 @@ extern void rdp_fifo_append(RdpFifo *f, const int32_t *words, int count);
 static unsigned char *s_rdram;
 static unsigned int   s_rdram_size;
 static unsigned int s_clock;
+static unsigned int nb_signal0;
+void naboo_set_status(unsigned int status){nb_signal0=status&0x80u;}
 typedef struct NbWrite {
     struct NbWrite *next;
     unsigned int address, bytes;
@@ -68,6 +70,10 @@ static unsigned int nb_packet_saved;
 void naboo_set_packet_cursor(unsigned int cursor){nb_packet_bytes=cursor>=0xe80u&&cursor<=0xff0u?cursor-0xe80u:0;}
 unsigned int naboo_get_packet_cursor(void){return 0xe80u+nb_packet_bytes;}
 static int nb_dmem_s16(unsigned int off);
+static unsigned int nb_dmem_r32(unsigned int off);
+static void nb_dmem_w32(unsigned int off, unsigned int v);
+static void nb_dmem_w8(unsigned int off, unsigned int v);
+static void nb_dmem_w16(unsigned int off, unsigned int v);
 void naboo_set_size_fraction(unsigned int fraction){nb_size_fraction=fraction;nb_size_fraction_written=0;}
 int naboo_get_size_fraction(unsigned int *fraction){*fraction=nb_size_fraction;return nb_size_fraction_written;}
 static void nb_size_fraction_set(unsigned int fraction){nb_size_fraction=fraction;nb_size_fraction_written=1;}
@@ -137,16 +143,18 @@ static unsigned int nb_read_u32(unsigned int addr)
 /* Walk state persists across slices of one task (the server yields and
  * resumes); a fresh task launch resets it. */
 #define NB_DL_STACK 8
+#define NB_NATIVE_STACK 32
 static struct {
-    /* Display lists are chained 0x100-byte chunks, each prefixed by an
-     * 8-byte header whose first word points at the next chunk (zero =
-     * chain end).  The microcode reads them through the DMEM ring at
-     * 0x270 (fetch loop text 0x60-0x8c, 0x108-byte refills); the
-     * walker models the same chunked cursor over RDRAM directly. */
+    /* Display lists have 0x100 command bytes after an 8-byte header.
+     * Its first word supplies the next DMA source, including address
+     * zero. Resident 060..094 refills the DMEM window at 0x270 with
+     * 0x108 bytes; command reads use that private cached window. */
     unsigned int chunk;         /* current chunk base (RDRAM) */
     unsigned int off;           /* byte offset within chunk (8..0x108) */
     unsigned int dl;            /* current command address (chunk+off) */
     unsigned int active;
+    unsigned int link;          /* native scalar RA for overlay/yield state */
+    unsigned int poll, yielded, defer, native_chunk; /* server checkpoint and nested yield unwind */
     unsigned int sp;            /* DL call depth (slot 0x06 / 0x0f) */
     unsigned int clip_poly[10]; /* clip fan resume state */
     unsigned int clip_n, clip_idx, clip_active;
@@ -161,10 +169,53 @@ static struct {
      * viewport/live-tail words, ...) */
     unsigned char dmem[0x1000];
 } nb;
+/* The RSP executes the DMA snapshot, including bytes restored by overlay 00.
+ * CPU writes to the backing RDRAM page do not change an already loaded chunk. */
+static unsigned int nb_cmd_u32(unsigned int offset)
+{
+    return nb_dmem_r32(0x270u+nb.off+offset);
+}
+
 static void nb_chunk_shadow(void)
 {
     unsigned i;if(!s_rdram)return;
     for(i=0;i<0x108u;i++)nb.dmem[(0x270u+i)^3u]=s_rdram[((nb.chunk+i)&0x7fffffu)^3u];
+    nb.native_chunk=0;
+    nb_dmem_w32(0x5a4u,nb.chunk);
+    nb_dmem_w32(0x5a0u,nb_read_u32(nb.chunk));
+}
+
+/* A native yield image owns its cached header until its next DMA. Live HLE
+ * pages retain the CPU-publication protocol: the producer can complete the
+ * next link between slices after this high-level page was admitted. */
+static unsigned int nb_next_chunk(void)
+{
+    return (nb.native_chunk?nb_dmem_r32(0x5a0u):nb_read_u32(nb.chunk))&0x00fffff8u;
+}
+
+/* Resident 754/778 uses an unsigned depth byte and wrapping DMEM stores.
+ * The old eight-entry host mirror is retained in the state layout; DMEM
+ * owns all native frames, including those beyond that mirror. */
+static int nb_stack_push(unsigned int off)
+{
+    if(nb.sp>=NB_NATIVE_STACK)return 0;
+    nb_dmem_w32(0xfe0u+nb.sp*8u,nb.chunk);
+    nb_dmem_w32(0xfe4u+nb.sp*8u,0x270u+off);
+    if(nb.sp<NB_DL_STACK){nb.stack[nb.sp*2u]=nb.chunk;nb.stack[nb.sp*2u+1u]=off;}
+    nb.sp=(nb.sp+1u)&(NB_NATIVE_STACK-1u);
+    nb_dmem_w8(0x142u,nb.sp*8u);
+    return 1;
+}
+
+static void nb_stack_pop(void)
+{
+    nb.sp--;
+    nb_dmem_w8(0x142u,nb.sp*8u);
+    nb.chunk=nb_dmem_r32(0xfe0u+nb.sp*8u)&0x00fffff8u;
+    nb.off=(nb_dmem_r32(0xfe4u+nb.sp*8u)&0xfffu)-0x270u;
+    nb.dl=nb.chunk+nb.off;
+    nb_chunk_shadow();
+    nb.link=(nb_dmem_s16(0x68u)&0xfffu)==0xc70u?0x790u:0x794u;
 }
 
 static void nb_dl_enter(unsigned int addr)
@@ -173,6 +224,7 @@ static void nb_dl_enter(unsigned int addr)
     nb.off = 8u;
     nb.dl = nb.chunk + nb.off;
     nb_chunk_shadow();
+    nb.link=0x1010u;nb.poll=1;
 }
 
 /* Advance the chunked cursor by len bytes, following the chain link in
@@ -182,14 +234,14 @@ static void nb_dl_step(unsigned int len)
     nb.off += len;
     while (nb.off >= 0x108u) {
         unsigned int rem = nb.off - 0x108u;
-        unsigned int next = nb_read_u32(nb.chunk) & 0x00fffff8u;
+        unsigned int next = nb_next_chunk();
         nb.chunk = next;
         nb.off = 8u + rem;
-        if (next == 0u)
-            break;
         nb_chunk_shadow();
+        nb.poll=1;
     }
     nb.dl = nb.chunk + nb.off;
+    nb.link=0x1010u;
 }
 
 unsigned int nb_task_ordinal;
@@ -199,7 +251,7 @@ void naboo_task_reset(unsigned int dl)
     nb_dl_enter(dl);
     nb.active = 1;
     nb.sp = 0;
-    nb_packet_bytes=0;
+    nb_packet_bytes=0;nb.link=0x10u;
 }
 
 /* Seed the DMEM shadow from the live DMEM.  The streaming server's
@@ -242,6 +294,33 @@ static void nb_rdp_append(RdpFifo *fifo,const int32_t *words,int count)
     rdp_fifo_append(fifo,words,count);nb_packet_bytes+=(unsigned)count*4u;
 }
 
+static void nb_boot_init(void)
+{
+    nb_dmem_w32(0xfc4u, 0u);
+    nb_dmem_w32(0x5b0u, 0u);
+    nb_dmem_w32(0x5b4u, 0u);
+    nb_dmem_w32(0x16cu, nb_dmem_r32(0xff8u));
+    nb_dmem_w32(0x5a0u, nb_dmem_r32(0xff0u));
+    nb_dmem_w8(0x142u, 0u);
+    /* Indiana's initializer omits this store and retains the callback. */
+    if((nb_dmem_r32(0x68u)>>16&0xfffu)!=0xc70u)
+        nb_dmem_w16(0x152u,0x17b4u);
+    nb_dmem_w32(0x120u, 0xef000000u);
+    nb_dmem_w32(0x124u, 0u);
+    nb.dmem[0x58au ^ 3u] = 0u;      /* batching countdown */
+    nb_dmem_w32(0x11cu, 0u);        /* conditional-insert state */
+    nb_dmem_w32(0x58cu, 0u);        /* splice link */
+    nb_dmem_w16(0x168u, 0xffu);
+    nb.dmem[0x37eu ^ 3u] = 0u;
+    nb_dmem_w32(0x110u, nb_dmem_r32(0xfe8u));
+    nb_dmem_w32(0x114u, nb_dmem_r32(0xfecu));
+    nb_dmem_w32(0x118u, nb_dmem_r32(0xfecu));
+    nb.geom = 0;
+    nb_dmem_w8(0x143u,0);
+    nb.sp=nb.tri_phase=nb.clip_active=0;
+    nb_packet_bytes=0;
+}
+
 void naboo_seed_dmem(const unsigned char *dmem)
 {
     unsigned int i;
@@ -259,31 +338,7 @@ void naboo_seed_dmem(const unsigned char *dmem)
                 nb.dmem[i ^ 3u] = s_rdram[(data + i) ^ 3u];
     }
 
-    /* Boot init (overlay at IMEM 0xd60, also the op 0x80 handler),
-     * skipped when the task flags carry the resume bit: reset the
-     * overlay id and DL depth bytes, install the default attribute
-     * routine, zero the live-tail scratch, seed the SET_OTHER_MODES
-     * state pair, and clear the geometry mode. */
-    if (!(nb_dmem_r32(0xfc4u) & 1u)) {
-        nb_dmem_w32(0xfc4u, 0u);
-        nb_dmem_w32(0x5b0u, 0u);
-        nb_dmem_w32(0x5b4u, 0u);
-        nb_dmem_w32(0x16cu, nb_dmem_r32(0xff8u));
-        nb_dmem_w32(0x5a0u, nb_dmem_r32(0xff0u));
-        nb_dmem_w8(0x142u, 0u);
-        nb_dmem_w16(0x152u, (nb_dmem_r32(0x68u)>>16&0xfffu)==0xc70u?0x17b0u:0x17b4u);
-        nb_dmem_w32(0x120u, 0xef000000u);
-        nb_dmem_w32(0x124u, 0u);
-        nb.dmem[0x58au ^ 3u] = 0u;      /* batching countdown */
-        nb_dmem_w32(0x11cu, 0u);        /* conditional-insert state */
-        nb_dmem_w32(0x58cu, 0u);        /* splice link */
-        nb_dmem_w16(0x168u, 0xffu);
-        nb.dmem[0x37eu ^ 3u] = 0u;
-        nb_dmem_w32(0x110u, nb_dmem_r32(0xfe8u));
-        nb_dmem_w32(0x114u, nb_dmem_r32(0xfecu));
-        nb_dmem_w32(0x118u, nb_dmem_r32(0xfecu));
-        nb.geom = 0;
-    }
+    if (!(nb_dmem_r32(0xfc4u) & 1u)) { nb_boot_init(); nb.link=0x10u; nb_dmem_w16(0x16au,nb.link); }
 }
 
 /* Native overlays 06/00 save and reload the complete 4 KiB DMEM image.
@@ -300,7 +355,7 @@ int naboo_yield_supported(const unsigned char *ram, unsigned int size,
     cursor=((unsigned int)saved[0x37cu^3u]<<8)|saved[0x37du^3u];
     depth=saved[0x142u^3u];
     if (cursor<0x278u || cursor>0x378u || (cursor&7u) ||
-        (depth&7u) || depth/8u>NB_DL_STACK) return 0;
+        (depth&7u)) return 0;
     memcpy(&chunk,saved+0x5a4u,4);chunk&=0x7ffff8u;
     if (chunk>=size || cursor-0x270u>size-chunk) return 0;
     for(i=0;i<depth/8u;i++) {
@@ -322,12 +377,15 @@ int naboo_restore_yield(const unsigned char *dm)
     nb.dl=nb.chunk+nb.off;
     nb.geom=nb_dmem_r32(0x378u);
     nb.sp=nb.dmem[0x142u^3u]/8u;
-    for(i=0;i<nb.sp;i++) {
+    for(i=0;i<nb.sp && i<NB_DL_STACK;i++) {
         nb.stack[i*2]=nb_dmem_r32(0xfe0u+i*8u)&0x7ffff8u;
         nb.stack[i*2+1]=(nb_dmem_r32(0xfe4u+i*8u)&0xfffu)-0x270u;
         if(nb.stack[i*2+1]<8u || nb.stack[i*2+1]>0x108u) return 0;
     }
-    nb.active=1;nb_packet_bytes=0;
+    nb.active=1;nb_packet_bytes=0;nb.native_chunk=1;
+    nb.link=(nb_dmem_s16(0x68u)&0xfffu)==0xc70u
+        ?(nb.dmem[0x37eu^3u]?0xe78u:0xe40u)
+        :(nb.dmem[0x37eu^3u]?0xe80u:0xe48u);
     return nb.dl<s_rdram_size;
 }
 
@@ -846,18 +904,8 @@ static void nb_ovl18(unsigned int w0, unsigned int w1)
  */
 static void nb_dl_fetch(unsigned char *dst, unsigned int len)
 {
-    unsigned int chunk = nb.chunk, off = nb.off, i;
-    for (i = 0; i < len; i++) {
-        unsigned int a;
-        if (off >= 0x108u) {
-            chunk = nb_read_u32(chunk) & 0x00fffff8u;
-            off = 8u + (off - 0x108u);
-        }
-        a = (chunk + off) & 0x7fffffu;
-        dst[i] = (unsigned char)((s_rdram && a < s_rdram_size)
-                                 ? s_rdram[a ^ 3u] : 0u);
-        off++;
-    }
+    unsigned int i;
+    for(i=0;i<len;i++)dst[i]=nb.dmem[((0x270u+nb.off+i)&0xfffu)^3u];
 }
 
 static int nb_pl_s16(const unsigned char *pl, unsigned int o)
@@ -1226,12 +1274,12 @@ static int nb_sprite15_packet(unsigned int w0, unsigned int fraction,
     v[10][0] = (short)nb_dmem_s16(0x14eu);
     for (lane = 0; lane < 2u; lane++) {
         unsigned int shift = (1u-lane)*16u;
-        v[8][lane] = (short)(nb_read_u32(nb.dl+12u) >> shift);
-        v[11][lane] = (short)(nb_read_u32(nb.dl+16u) >> shift);
+        v[8][lane] = (short)(nb_cmd_u32(12u) >> shift);
+        v[11][lane] = (short)(nb_cmd_u32(16u) >> shift);
         v[13][lane] = (short)nb_dmem_s16(record+0x18u+lane*2u);
         v[14][lane] = (short)nb_dmem_s16(0x130u+lane*2u);
-        v[15][lane] = (short)(nb_read_u32(nb.dl+20u) >> shift);
-        v[16][lane] = (short)(nb_read_u32(nb.dl+24u) >> shift);
+        v[15][lane] = (short)(nb_cmd_u32(20u) >> shift);
+        v[16][lane] = (short)(nb_cmd_u32(24u) >> shift);
     }
     nb_vmudm(&acc,v[14],v[31],13,0,v[14]);
     if (swap) { short t=v[8][0];v[8][0]=v[8][1];v[8][1]=t; }
@@ -1268,7 +1316,7 @@ static int nb_sprite15_packet(unsigned int w0, unsigned int fraction,
     for (lane=0;lane<2u;lane++) {
         unsigned int flip=w0 & (2u<<lane);
         slope[lane]=flip?-v[11][lane]:v[11][lane];
-        origin[lane]=flip?(unsigned short)(nb_read_u32(nb.dl+16u)>>((1u-lane)*16u)):0;
+        origin[lane]=flip?(unsigned short)(nb_cmd_u32(16u)>>((1u-lane)*16u)):0;
         value=-(int64_t)slope[lane]*64;
         v[12][lane]=(short)value;v[11][lane]=(short)(value>>16);
     }
@@ -1280,11 +1328,11 @@ static int nb_sprite15_packet(unsigned int w0, unsigned int fraction,
     for (lane=0;lane<2u;lane++) origin[lane]+=v[11][lane]*8-16;
     words[0]=0x2e000000u;
     words[1]=(unsigned int)(unsigned short)((int32_t)nb_dmem_r32(record+0x1cu)>>11)<<16;
-    words[2]=0x3a000000u;words[3]=nb_read_u32(nb.dl+28u);
+    words[2]=0x3a000000u;words[3]=nb_cmd_u32(28u);
     *size=4;
     if (nb.geom&0x10000u) {
         words[(*size)++]=0x38000000u;
-        words[(*size)++]=(nb_read_u32(nb.dl+8u)&0xffffff00u)|nb.dmem[((record+0x13u)&0xfffu)^3u];
+        words[(*size)++]=(nb_cmd_u32(8u)&0xffffff00u)|nb.dmem[((record+0x13u)&0xfffu)^3u];
     }
     words[(*size)++]=((unsigned int)right[0]<<12)|(unsigned int)right[1];
     words[(*size)++]=((unsigned int)left[0]<<12)|(unsigned int)left[1];
@@ -1309,7 +1357,7 @@ static int nb_ovl15(RdpFifo *fifo,unsigned int w0)
     words[2]=0x3a000000u;words[3]=low[3];count=4;
     if(nb.geom&0x10000u){
         words[count++]=0x38000000u;
-        words[count++]=(nb_read_u32(nb.dl+8u)&0xffffff00u)|nb.dmem[((record+0x13u)&0xfffu)^3u];
+        words[count++]=(nb_cmd_u32(8u)&0xffffff00u)|nb.dmem[((record+0x13u)&0xfffu)^3u];
     }
     for(k=0;k<4;k++)words[count+k]=low[nl-4u+k];
     words[count+1u]=(words[count+1u]&0x00ffffffu)|((nb.dmem[0x14au^3u]&7u)<<24);
@@ -1338,13 +1386,13 @@ static int nb_sprite24_packet(unsigned int record, unsigned int position,
     v[7][0]=(short)nb_dmem_s16(0x14eu);
     for (lane=0;lane<2u;lane++) {
         unsigned int shift=(1u-lane)*16u;
-        v[5][lane]=(short)(nb_read_u32(nb.dl+28u)>>shift);
-        v[8][lane]=(short)(nb_read_u32(nb.dl+24u)>>shift);
+        v[5][lane]=(short)(nb_cmd_u32(28u)>>shift);
+        v[8][lane]=(short)(nb_cmd_u32(24u)>>shift);
         v[10][lane]=(short)nb_dmem_s16(record+0x18u+lane*2u);
         v[11][lane]=(short)nb_dmem_s16(0x130u+lane*2u);
-        v[12][lane]=(short)(nb_read_u32(nb.dl+16u)>>shift);
-        v[13][lane]=(short)(nb_read_u32(nb.dl+20u)>>shift);
-        v[14][lane]=(short)((nb_read_u32(nb.dl+(lane?4u:0u))>>(lane?16u:0u))&0xffffu);
+        v[12][lane]=(short)(nb_cmd_u32(16u)>>shift);
+        v[13][lane]=(short)(nb_cmd_u32(20u)>>shift);
+        v[14][lane]=(short)((nb_cmd_u32(lane?4u:0u)>>(lane?16u:0u))&0xffffu);
         v[17][lane]=(short)nb_dmem_s16(0x480u+nb.dmem[((position+6u)&0xfffu)^3u]+lane*2u);
     }
     nb_vmudm(&acc,v[11],v[31],13,0,v[11]);
@@ -1398,7 +1446,7 @@ static int nb_sprite24_packet(unsigned int record, unsigned int position,
     for(lane=0;lane<8u;lane++) {
         unsigned int color=0x380u+nb.dmem[((position+7u)&0xfffu)^3u]+lane;
         v[16][lane]=(short)((unsigned int)nb.dmem[(color&0xfffu)^3u]<<7);
-        v[15][lane]=(short)((nb_read_u32(nb.dl+12u)>>(lane<4u?(3u-lane)*8u:0u)&0xffu)<<7);
+        v[15][lane]=(short)((nb_cmd_u32(12u)>>(lane<4u?(3u-lane)*8u:0u)&0xffu)<<7);
     }
     nb_vmulf8(&acc,v[16],v[15],0,0,v[16]);
     words[0]=0x2e000000u;
@@ -1415,12 +1463,12 @@ static int nb_sprite24_packet(unsigned int record, unsigned int position,
 }
 static int nb_ovl24(RdpFifo *fifo,unsigned int w0)
 {
-    unsigned int batches=(w0>>16)&0xffu,address=nb_read_u32(nb.dl+8u),batch;
-    unsigned int boxes=nb_read_u32(nb.dl+36u)&0xffu,packets=0;
+    unsigned int batches=(w0>>16)&0xffu,address=nb_cmd_u32(8u),batch;
+    unsigned int boxes=nb_cmd_u32(36u)&0xffu,packets=0;
     if (!batches || nb_call_splice(fifo)<0) return 0;
     nb_packet_drain();
     for(batch=0;batch<batches;batch++,address+=256u) {
-        unsigned int mask=nb_read_u32(nb.dl+32u),slot,box;
+        unsigned int mask=nb_cmd_u32(32u),slot,box;
         if(!mask) continue;
         nb_load(0x170u,address,256u);
         for(box=0;box<boxes;box++) for(slot=0;slot<32u;slot++) {
@@ -1438,7 +1486,7 @@ static int nb_ovl24(RdpFifo *fifo,unsigned int w0)
             nb_retain(1,row);
         }
         {
-            unsigned int value=nb_read_u32(nb.dl+16u);
+            unsigned int value=nb_cmd_u32(16u);
             nb_size_fraction_set((value>>16)|((value&0xffffu)<<16));
         }
         /* The transform reloads vector 9 from integer matrix row one.
@@ -1779,19 +1827,20 @@ static void nb_ovl09_morph(unsigned int r8, unsigned int r9,
  * stage latches the low slice before the next multiply-add changes it. */
 static unsigned int nb_ovl27(unsigned int w0, unsigned int w1)
 {
-    unsigned int positions = nb_read_u32(nb.dl + 8u);
-    unsigned int state = nb_read_u32(nb.dl + 12u);
+    unsigned int positions = nb_cmd_u32(8u);
+    unsigned int state = nb_cmd_u32(12u);
     unsigned int mask, removed = 0, slot, lane;
-    unsigned int flags = nb_read_u32(nb.dl + 20u) & 0xffffu;
+    unsigned int flags = nb_cmd_u32(20u) & 0xffffu;
     unsigned int step = w0 & 0xffffu;
     short velocity[4];
     nb_load(0xc10u, state, 8u);
     mask = nb_dmem_r32(0xc10u);
-    if (!mask) return 8u;
+    /* d7c advances the payload cursor in the zero-mask branch delay slot. */
+    if (!mask) return 24u;
     nb_size_fraction_set((unsigned short)(nb_dmem_s16(0xc00u)+nb_dmem_s16(0xc08u))|
         ((unsigned int)(unsigned short)(nb_dmem_s16(0xc02u)+nb_dmem_s16(0xc0au))<<16));
     for (lane = 0; lane < 4u; lane++) {
-        unsigned int word = nb_read_u32(nb.dl + 16u + (lane / 2u) * 4u);
+        unsigned int word = nb_cmd_u32(16u + (lane / 2u) * 4u);
         velocity[lane] = (short)(word >> ((1u - (lane & 1u)) * 16u));
     }
     nb_load(0x170u, positions, 256u);
@@ -2389,7 +2438,7 @@ static void nb_ovl2a(unsigned int cmd, unsigned int out_st[4])
     for(lane=0;lane<8u;lane++) v[30][lane]=(short)nb_dmem_s16(0x30u+lane*2u);
     v[22][0]=0xab;
     for(i=0;i<4u;i++) {
-        unsigned int src=0x170u+(nb_read_u32(cmd+16u+i*4u)&0xffu);
+        unsigned int src=0x170u+(nb_cmd_u32(cmd-nb.dl+16u+i*4u)&0xffu);
         unsigned int sum,rsq;
         for(lane=0;lane<4u;lane++) v[11][lane]=(short)nb_dmem_s16(src+lane*2u);
         nb_vmudn(&acc,v[5],v[11],4,0,v[9]);
@@ -2865,14 +2914,14 @@ static int nb_tri(RdpFifo *fifo, unsigned int w0, unsigned int w1, int quad)
     }
 
 
-    vc    = nb_read_u32(nb.dl + 12u) >> 16;
+    vc    = nb_cmd_u32(12u) >> 16;
     vc   &= 0xfff8u;
-    off_x = (nb_read_u32(nb.dl + 8u) >> 24) & 0xffu;
-    off_a = (nb_read_u32(nb.dl + 8u) >> 16) & 0xffu;
-    off_b = (nb_read_u32(nb.dl + 8u) >> 8) & 0xffu;
-    off_c =  nb_read_u32(nb.dl + 8u) & 0xffu;
+    off_x = (nb_cmd_u32(8u) >> 24) & 0xffu;
+    off_a = (nb_cmd_u32(8u) >> 16) & 0xffu;
+    off_b = (nb_cmd_u32(8u) >> 8) & 0xffu;
+    off_c =  nb_cmd_u32(8u) & 0xffu;
 
-    vd = nb_read_u32(nb.dl + 12u) & 0xfff8u;    /* halfword +14 */
+    vd = nb_cmd_u32(12u) & 0xfff8u;    /* halfword +14 */
 
     if (nb.geom & 0x10000u) {
         /* fog-into-alpha propagation (text 0xab8-0xad4); the extra
@@ -2903,7 +2952,9 @@ static int nb_tri(RdpFifo *fifo, unsigned int w0, unsigned int w1, int quad)
     if (quad)
         nb_dmem_w32(vd + 0x10u, nb_dmem_r32(0xd40u + off_x));
 
-    if (w0 & 0x800u) {
+    /* Resident af4 branches around both inline paths unless bit 9 is set;
+     * bit 11 selects environment mapping only inside that inline payload. */
+    if ((w0 & 0xa00u) == 0xa00u) {
         /* overlay 0x2a: environment-mapped S/T computed from the
          * vertex normals; the four index bytes ride the low byte of
          * each would-be inline S/T word (+19/+23/+27/+31), and the
@@ -2921,11 +2972,11 @@ static int nb_tri(RdpFifo *fifo, unsigned int w0, unsigned int w1, int quad)
         len = 32u;
         /* inline S/T: slv elements e0/e4/e8/e12 map words +16/+20/
          * +24/+28 to A/B/C/D */
-        nb_dmem_w32(va + 0x14u, nb_read_u32(nb.dl + 16u));
-        nb_dmem_w32(vb + 0x14u, nb_read_u32(nb.dl + 20u));
-        nb_dmem_w32(vc + 0x14u, nb_read_u32(nb.dl + 24u));
+        nb_dmem_w32(va + 0x14u, nb_cmd_u32(16u));
+        nb_dmem_w32(vb + 0x14u, nb_cmd_u32(20u));
+        nb_dmem_w32(vc + 0x14u, nb_cmd_u32(24u));
         if (quad)
-            nb_dmem_w32(vd + 0x14u, nb_read_u32(nb.dl + 28u));
+            nb_dmem_w32(vd + 0x14u, nb_cmd_u32(28u));
     }
     /* emit: (A,B,C), then (A,C,D) on the quad op.  The emitter's
      * jalr through DMEM 0x152 (the default 0x17b4 splice-check) runs
@@ -2954,12 +3005,8 @@ static int nb_tri(RdpFifo *fifo, unsigned int w0, unsigned int w1, int quad)
         if (g == 0) {
             unsigned int splice = nb_dmem_r32(0x58cu) & 0x00fffff8u;
             if (splice != 0u) {
-                if (nb.sp >= NB_DL_STACK)
-                    return -1;
                 nb_dmem_w32(0x58cu, 0u);
-                nb.stack[nb.sp * 2u] = nb.chunk;
-                nb.stack[nb.sp * 2u + 1u] = nb.off;
-                nb.sp++;
+                if(!nb_stack_push(nb.off))return -1;
                 nb_dl_enter(splice);
                 return 1;               /* re-enter after the list */
             }
@@ -2989,12 +3036,8 @@ static int nb_tri(RdpFifo *fifo, unsigned int w0, unsigned int w1, int quad)
         if (g == 0) {
             unsigned int splice = nb_dmem_r32(0x58cu) & 0x00fffff8u;
             if (splice != 0u) {
-                if (nb.sp >= NB_DL_STACK)
-                    return -1;
                 nb_dmem_w32(0x58cu, 0u);
-                nb.stack[nb.sp * 2u] = nb.chunk;
-                nb.stack[nb.sp * 2u + 1u] = nb.off;
-                nb.sp++;
+                if(!nb_stack_push(nb.off))return -1;
                 nb_dl_enter(splice);
                 return 1;
             }
@@ -3087,11 +3130,8 @@ static int nb_call_splice(RdpFifo *fifo)
     unsigned int splice = nb_dmem_r32(0x58cu) & 0x00fffff8u;
     unsigned int depth = nb.sp;
     if (!splice) return 0;
-    if (depth >= NB_DL_STACK) return -1;
     nb_dmem_w32(0x58cu, 0);
-    nb.stack[depth*2u] = nb.chunk;
-    nb.stack[depth*2u+1u] = nb.off;
-    nb.sp++;
+    if(!nb_stack_push(nb.off))return -1;
     nb_dl_enter(splice);
     return nb_walk(fifo, depth, 1);
 }
@@ -3247,6 +3287,22 @@ static int nb_ovl09(RdpFifo *fifo,unsigned int w0,unsigned int w1,int colored)
     return nb_morph_tail(fifo);
 }
 
+static int nb_native_yield(unsigned int consumed)
+{
+    nb_dmem_w16(0x16au,nb.link);
+    nb_packet_drain();
+    nb_dmem_w8(0x143u,0xffu);
+    nb_dmem_w32(0x378u,nb.geom);
+    nb_dmem_w16(0x37cu,0x270u+nb.off+consumed);
+    if(!nb_store(nb_dmem_r32(0x16cu),0,4096u))return NABOO_R_FALLBACK;
+    nb.yielded=1;
+    nb.off+=consumed;nb.dl=nb.chunk+nb.off;
+    nb.link=(nb_dmem_s16(0x68u)&0xfffu)==0xc70u
+        ?(nb.dmem[0x37eu^3u]?0xe78u:0xe40u)
+        :(nb.dmem[0x37eu^3u]?0xe80u:0xe48u);
+    return NABOO_R_YIELD;
+}
+
 static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
 {
     unsigned int guard = 0;
@@ -3255,6 +3311,19 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
 
     for (;;) {
         if(nested && nb.sp==stop_depth)return NABOO_R_DONE;
+        if(!nested && nb.defer) {
+            nb.defer=0;
+            int result=nb_native_yield(0);
+            return result==NABOO_R_YIELD?-2:result;
+        }
+        if(nb.poll) {
+            nb.poll=0;
+            if(nb_signal0 && !nb_dmem_r32(0x58cu)) {
+                if(nested){nb.defer=1;continue;}
+                int result=nb_native_yield(0);
+                return result==NABOO_R_YIELD?-2:result;
+            }
+        }
         if (++guard > 200000u || nb.dl > s_rdram_size ||
             s_rdram_size - nb.dl < 8u) {
             nb.active = 0;
@@ -3262,8 +3331,8 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
         }
         if(!nested && guard>1 && hle_timing_slice_limit() &&
             hle_timing_cycles()>=hle_timing_slice_limit())return 1;
-        unsigned int w0 = nb_read_u32(nb.dl);
-        unsigned int w1 = nb_read_u32(nb.dl + 4);
+        unsigned int w0 = nb_cmd_u32(0);
+        unsigned int w1 = nb_cmd_u32(4);
         hle_timing_command(w0 >> 24);
         {
             static int t = -1;
@@ -3288,14 +3357,11 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
                  * these CPU-built lists, not generated commands. */
                 unsigned int splice = nb_dmem_r32(0x58cu) & 0x00fffff8u;
                 if (splice != 0u) {
-                    if (nb.sp >= NB_DL_STACK) {
+                    if (!nb_stack_push(nb.off)) {
                         nb.active = 0;
                         return NABOO_R_FALLBACK;
                     }
                     nb_dmem_w32(0x58cu, 0u);
-                    nb.stack[nb.sp * 2u] = nb.chunk;
-                    nb.stack[nb.sp * 2u + 1u] = nb.off;
-                    nb.sp++;
                     nb_dl_enter(splice);
                     continue;
                 }
@@ -3306,8 +3372,8 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
             nb_rdp_append(fifo, words, 2);
             nb_dl_step(8u);
             if (op == 0xe4u || op == 0xe5u) {
-                words[0] = (int32_t)nb_read_u32(nb.dl);
-                words[1] = (int32_t)nb_read_u32(nb.dl + 4);
+                words[0] = (int32_t)nb_cmd_u32(0);
+                words[1] = (int32_t)nb_cmd_u32(4);
                 nb_rdp_append(fifo, words, 2);
                 nb_dl_step(8u);
             }
@@ -3322,7 +3388,14 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
         switch (op) {
         case 0x03: case 0x04:
         case 0x08: case 0x09: case 0x0a: case 0x17:
-        case 0x00:                              /* status poll / no-op aliases */
+            nb_dl_step(8u);
+            continue;
+        case 0x00:                              /* native entry 020 polls SIG0 */
+            if(nb_signal0 && nested){nb.defer=1;nb_dl_step(8u);continue;}
+            if(nb_signal0) {
+                int result=nb_native_yield(8u);
+                return result==NABOO_R_YIELD?-2:result;
+            }
             nb_dl_step(8u);
             continue;
         case 0x15:                              /* overlay-12 per-triangle S/T */
@@ -3331,6 +3404,39 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
             nb_dl_step(8u);
             continue;
         case 0x05:                              /* load+run overlay */
+            if ((w1 & 0x3fu) == 0x00u) {
+                if(nb_dmem_r32(0xfc4u)&1u) {
+                    if(!naboo_restore_yield(nb.dmem))return NABOO_R_FALLBACK;
+                } else {
+                    unsigned int lost=nb_packet_bytes;
+                    if(lost>fifo->used)return NABOO_R_FALLBACK;
+                    fifo->used-=lost;
+                    unsigned int link=nb.link;
+                    nb_dmem_w16(0x16au,link);
+                    nb_boot_init();
+                    nb_dl_enter(nb_dmem_r32(0xff0u));
+                    nb.link=link;
+                }
+                continue;
+            }
+            if ((w1 & 0x3fu) == 0x06u) {
+                if(nested){nb.defer=1;nb_dl_step(8u);continue;}
+                int result=nb_native_yield(8u);
+                return result==NABOO_R_YIELD?-2:result;
+            }
+            if ((w1 & 0x3fu) == 0x1eu) {
+                /* Overlay 1e drains and BREAKs with TASKDONE, independently
+                 * of display-list depth or the staged splice pointer. */
+                nb.active=0;
+                return NABOO_R_DONE;
+            }
+            if ((w1 & 0x3fu) == 0x12u) {
+                /* The loader enters the same two-bank morph-mask scanner
+                 * reached by the ordinary morph and per-triangle tails. */
+                if(nb_morph_tail(fifo)<0)return NABOO_R_FALLBACK;
+                nb_dl_step(8u);
+                continue;
+            }
             if ((w1 & 0x3fu) == 0x1bu) {
                 /* The resident color processor also enters this lighting
                  * overlay directly. The explicit loader command preserves
@@ -3399,13 +3505,10 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
         case 0x06:                              /* DisplayList: call w1,
              * push the return cursor (text 0x754: stack at DMEM 0xfe0,
              * depth byte at struct+0x32) */
-            if (nb.sp >= NB_DL_STACK) {
+            if (!nb_stack_push(nb.off+8u)) {
                 nb.active = 0;
                 return NABOO_R_FALLBACK;
             }
-            nb.stack[nb.sp * 2u] = nb.chunk;
-            nb.stack[nb.sp * 2u + 1u] = nb.off + 8u;
-            nb.sp++;
             nb_dl_enter(w1);
             continue;
         case 0x0f:                              /* EndDL (GBI 0xb8):
@@ -3416,11 +3519,8 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
              * overlay 0x1e and breaks immediately, even with a pending
              * splice at DMEM 0x58c. */
             if (nb.sp) {
-                nb.sp--;
-                nb.chunk = nb.stack[nb.sp * 2u];
-                nb.off = nb.stack[nb.sp * 2u + 1u];
-                nb.dl = nb.chunk + nb.off;
-                nb_chunk_shadow();
+                nb_stack_pop();
+                if(!w1)nb.poll=1;else nb.link=0x1010u;
                 if (nb.off >= 0x108u) {
                     nb.off -= 8u;
                     nb.dl = nb.chunk + nb.off;
@@ -3464,11 +3564,7 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
                 nb.active = 0;
                 return NABOO_R_FALLBACK;
             }
-            nb.sp--;
-            nb.chunk = nb.stack[nb.sp * 2u];
-            nb.off   = nb.stack[nb.sp * 2u + 1u];
-            nb.dl    = nb.chunk + nb.off;
-            nb_chunk_shadow();
+            nb_stack_pop();
             nb_dmem_w32(0x5a0u, nb.chunk);
             nb_packet_drain(); /* c4c */
             mode = nb_dmem_r32(0x120u) & 0xffcfffffu;
@@ -3521,27 +3617,25 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
                 }
             }
             continue;
-        case 0x0c:                              /* end-of-chunk marker:
-             * the dispatch entry (1:068) is the chunk-refill routine
-             * itself -- it reloads the ring window from the chain
-             * pointer and restarts the fetch at the new chunk's first
-             * command.  Bytes after this op in the current chunk are
-             * dead padding the microcode never walks.  Gated with the
-             * emitter on unverified builds. */
+        case 0x0c:                              /* explicit chunk refill:
+             * slot 0x0c contains 0x1068 in both programs. At local PC
+             * 068, RA=0x1010; 06c loads the cached link at DMEM 0x5a0.
+             * 070..088 DMA 0x108 bytes to 0x270, save the source at
+             * 0x5a4 and reset s1=0x278. After DMA_BUSY clears, 094
+             * returns to 010 to cache the new header and poll SIG0
+             * unless a splice is pending. Neither command word is a
+             * link operand; zero is a valid DMA source. The rest of
+             * the old command window is abandoned. */
             if (!nb_emit_on) {
                 nb.active = 0;
                 return NABOO_R_FALLBACK;
             }
             {
-                unsigned int next = nb_read_u32(nb.chunk) & 0x00fffff8u;
-                if (next == 0u) {
-                    nb.active = 0;
-                    return NABOO_R_FALLBACK;
-                }
+                unsigned int next = nb_next_chunk();
                 nb.chunk = next;
                 nb.off = 8u;
                 nb.dl = nb.chunk + nb.off;
-                nb_chunk_shadow();
+                nb_chunk_shadow();nb.poll=1;nb.link=0x1010u;
             }
             continue;
         case 0x0d:                              /* GeometryMode &= w1
@@ -3688,7 +3782,12 @@ int naboo_run_dl(RdpFifo *fifo, unsigned int dl_addr, int resume)
 {
     int result;
     if(!resume)naboo_task_reset(dl_addr);
+    nb.yielded=0;
     result = nb_walk(fifo,0,0);
+    /* A CPU yield inside a splice unwinds through the same negative helper
+     * exits as an abort. The completed native image makes it a successful
+     * task yield at the public walker boundary, never a native fallback. */
+    if(nb.yielded){nb.active=1;result=NABOO_R_YIELD;}
     if (result >= 0) nb_packet_drain();
     return result;
 }
