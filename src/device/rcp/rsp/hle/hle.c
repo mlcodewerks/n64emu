@@ -37,9 +37,11 @@
 #include "hle.h"
 #include "memory.h"
 #include "rdp_emit_f3d.h"
+#include "rdp_emit_zsort.h"
 #include <string.h>
 #include "ucodes.h"
 #include "hle_jpeg_rgb16.h"
+#include "hle_jpeg_stream.h"
 
 #define min(a,b) (((a) < (b)) ? (a) : (b))
 
@@ -137,6 +139,10 @@ void hle_init(struct hle_t* hle,
     l_naboo_gfx_running = 0;
     l_zboss_wait = 0;
     l_naboo_emit = 0;
+#ifndef N64EMU_USF
+    zsort_state_load(NULL);
+    jpeg_state_load(NULL);
+#endif
 }
 
 void rs_set_fog_block(unsigned int rdram_addr);
@@ -242,6 +248,28 @@ void rsp_break(struct hle_t* hle, unsigned int setbits)
     }
 }
 
+/* The SDK loader polls SIG0 before entering the task. This branch writes
+ * no resumable task context; resident-program yields are handled separately. */
+int hle_sdk_boot_yield(struct hle_t* hle)
+{
+    uint32_t bytes = *dmem_u32(hle, TASK_UCODE_DATA_SIZE);
+    uint32_t boot_bytes = *dmem_u32(hle, TASK_UCODE_BOOT_SIZE);
+    uint64_t boot;
+    if (!(*hle->sp_status & SP_STATUS_SIG0) ||
+        (*hle->sp_dma_full | *hle->sp_dma_busy | *hle->sp_semaphore) ||
+        (boot_bytes != 0xd0u && boot_bytes != 0x160u)) return 0;
+    boot = hle_timing_word_fingerprint((const uint32_t*)hle->imem, boot_bytes / 4u);
+    if (boot_bytes == 0xd0u && boot == UINT64_C(0x0f7c8dfaf9f62fc0))
+        hle_timing_override(45u + (bytes + 7u) / 8u);
+    else if (boot_bytes == 0x160u && boot == UINT64_C(0xc4de5b1f29d3b01d) &&
+             (*hle->sp_status & 0x4000u))
+        hle_timing_override(46u + (bytes + 7u) / 8u);
+    else return 0;
+    *hle->sp_status &= ~SP_STATUS_SIG0;
+    rsp_break(hle, SP_STATUS_SIG1 | SP_STATUS_TASKDONE);
+    return 1;
+}
+
 static void send_alist_to_audio_plugin(struct hle_t* hle)
 {
     HleProcessAlistList(hle->user_defined);
@@ -288,11 +316,31 @@ static void task_done(struct hle_t* hle)
  * SP_STATUS signal bits. A one-shot dlist walk with a forced TASKDONE
  * ends the server after its first slice, so the game's render loop
  * deadlocks. The streaming handlers below preserve that protocol and
- * use this native fallback when their walker cannot service a task. */
+ * report a rejected walk through HleForwardTask. In this core that reports
+ * a fatal HLE error; only pre-dispatch admission can select native RSP. */
 static void forward_gfx_task_to_lle(struct hle_t* hle)
 {
     if (HleForwardTask(hle->user_defined) != 0)
         send_dlist_to_gfx_plugin(hle);
+}
+
+int angrylion_zsort_dlist(int resume, unsigned *sp_status, unsigned *mi_intr);
+static void zsort_gfx_task(struct hle_t *hle)
+{
+    int result, resume = zsort_stream_active();
+    if (!resume && hle_sdk_boot_yield(hle)) return;
+    if (!resume) {
+        *hle->sp_status &= ~(SP_STATUS_SIG1 | SP_STATUS_TASKDONE);
+        *hle->sp_status |= SP_STATUS_SIG4;
+    }
+    result = angrylion_zsort_dlist(resume, hle->sp_status, hle->mi_intr);
+    if (result < 0) { zsort_state_load(NULL); forward_gfx_task_to_lle(hle); return; }
+    hle->rsp_vco = (uint16_t)zsort_result_vco();
+    hle->rsp_vco_written = 1;
+    if (result == 0) rsp_break(hle, SP_STATUS_TASKDONE);
+    else if (result == 2) rsp_break(hle, SP_STATUS_SIG1 | SP_STATUS_TASKDONE);
+    else if (!hle_timing_get().units[HLE_WORK_COMMAND]) hle_timing_override(48u);
+    if (*hle->mi_intr & MI_INTR_SP) HleCheckInterrupts(hle->user_defined);
 }
 
 /* Streaming graphics microcode (Gauntlet Legends): an F3DEX2 2.0xH
@@ -405,8 +453,8 @@ int angrylion_naboo_dlist(int resume, int emit);
 void naboo_set_status(unsigned int status);
 /* Naboo-era Factor 5 streaming server (Battle for Naboo, Indiana
  * Jones): same libultra yield protocol as Rogue Squadron; the walker
- * is incremental and returns negative on commands it does not yet
- * implement, in which case the slice reruns on the LLE fallback. */
+ * is incremental. A negative walker result reports a fatal HLE error through
+ * HleForwardTask; it does not switch this slice to native RSP execution. */
 static void naboo_gfx_task(struct hle_t* hle)
 {
     int resume;
@@ -632,7 +680,7 @@ enum hle_graphics_resume hle_graphics_resume_pending(struct hle_t* hle)
     uint32_t text, data, bytes;
     int i;
     if (!(l_zboss_running || l_streaming_gfx_running || l_rs_gfx_running ||
-          l_naboo_gfx_running || f3d_stream_active()) || !cache->count)
+          l_naboo_gfx_running || f3d_stream_active() || zsort_stream_active()) || !cache->count)
         return HLE_RESUME_NONE;
     text = *dmem_u32(hle, TASK_UCODE);
     data = *dmem_u32(hle, TASK_UCODE_DATA);
@@ -646,6 +694,7 @@ enum hle_graphics_resume hle_graphics_resume_pending(struct hle_t* hle)
         if (entry->uc_pfunc == f3d_gfx_task && f3d_stream_active()) return HLE_RESUME_F3D;
         if (entry->uc_pfunc == rs_gfx_task && l_rs_gfx_running) return HLE_RESUME_RS;
         if (entry->uc_pfunc == naboo_gfx_task && l_naboo_gfx_running) return HLE_RESUME_NABOO;
+        if (entry->uc_pfunc == zsort_gfx_task && zsort_stream_active()) return HLE_RESUME_ZSORT;
         break;
     }
     return HLE_RESUME_NONE;
@@ -661,6 +710,7 @@ void hle_resume_graphics(struct hle_t* hle, enum hle_graphics_resume resume,
     case HLE_RESUME_ZBOSS: handler = zboss_gfx_task; break;
     case HLE_RESUME_NABOO: handler = naboo_gfx_task; break;
     case HLE_RESUME_F3D: handler = f3d_gfx_task; break;
+    case HLE_RESUME_ZSORT: handler = zsort_gfx_task; break;
     default: hle_execute(hle); return;
     }
     hle_timing_begin();
@@ -782,6 +832,8 @@ static ucode_func_t try_normal_task_detection(struct hle_t* hle)
     }
 
     switch (sum) {
+    case 0x254ae: /* SGI ZSortp 0.33: Mia Hamm Soccer 64. */
+        return &zsort_gfx_task;
     /* Standard FIFO F3DEX GBI1 build (F1, Star Fox, Top Gear Rally).
      * Select by microcode identity, never by ROM or a frame-rate target. */
     case 0x237e9:
@@ -834,10 +886,9 @@ static ucode_func_t try_normal_task_detection(struct hle_t* hle)
         return &zboss_gfx_task;
     /* Factor 5's later engine revisions (Battle for Naboo, Indiana
      * Jones and the Infernal Machine): the same persistent streaming
-     * server family as Rogue Squadron. The naboo walker services what
-     * it implements and reruns anything else on the LLE fallback --
-     * never the one-shot dlist forward, whose forced TASKDONE kills
-     * the server after its first slice and deadlocks the game. */
+     * server family as Rogue Squadron. Admission in optional_rsp_execute
+     * selects native RSP before dispatch when HLE cannot import a task.
+     * Once dispatched, an unsupported command reports a fatal HLE error. */
     case 0x25c16:       /* Battle for Naboo */
         l_naboo_emit = 1;
         return &naboo_gfx_task;
@@ -933,6 +984,7 @@ static void timing_identify(ucode_func_t handler)
     if (handler == rs_gfx_task) { hle_timing_family("rs_gfx_task"); return; }
     if (handler == zboss_gfx_task) { hle_timing_family("zboss_gfx_task"); return; }
     if (handler == naboo_gfx_task) { hle_timing_family("naboo_gfx_task"); return; }
+    if (handler == zsort_gfx_task) { hle_timing_family("send_dlist_to_gfx_plugin"); return; }
 #endif
     if (handler == alist_process_audio) { hle_timing_family("alist_process_audio"); return; }
     if (handler == alist_process_audio_ge) { hle_timing_family("alist_process_audio_ge"); return; }
@@ -981,7 +1033,7 @@ enum hle_task_kind hle_get_task_kind(struct hle_t* hle)
 #ifndef N64EMU_USF
     if (handler == send_dlist_to_gfx_plugin || handler == streaming_gfx_task ||
         handler == rs_gfx_task || handler == zboss_gfx_task || handler == naboo_gfx_task ||
-        handler == f3d_gfx_task)
+        handler == f3d_gfx_task || handler == zsort_gfx_task)
         return HLE_TASK_GRAPHICS;
 #endif
     if (*dmem_u32(hle, TASK_TYPE) == 2 &&
@@ -1101,6 +1153,7 @@ int hle_stream_can_resume(unsigned int checksum)
     case 0x2095b: return l_rs_gfx_running;
     case 0x1f7bb: return l_zboss_running;
     case 0x25c16: case 0x25c53: return l_naboo_gfx_running;
+    case 0x254ae: return zsort_stream_active();
     default: return 0;
     }
 }

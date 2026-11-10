@@ -285,6 +285,7 @@ void rsp_sdk_triangle_xl(const int32_t *x)
     s_sdk_xl_active=x!=0;if(x)memcpy(s_sdk_xl,x,sizeof(s_sdk_xl));
 }
 void rsp_graphics_entry_carry(unsigned int carry){s_graphics_carry=carry;}
+unsigned int rsp_graphics_entry_vco(void){return s_graphics_carry;}
 void rsp_graphics_sdk_boot(int on)
 {
     unsigned int k;for(k=0;k<8;k++)s_sdk_ones[k]=1-(on?((s_graphics_carry>>k)&1u):0);

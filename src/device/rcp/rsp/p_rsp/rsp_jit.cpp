@@ -2,6 +2,7 @@
 #include "core/file.h"
 #endif
 #include "rsp_jit.hpp"
+#include "rsp_step.hpp"
 #include "rsp/timing.hpp"
 #include "rsp/quantize.hpp"
 #ifdef N64EMU_RSP_ENTRY_CAPTURE
@@ -2400,6 +2401,8 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 ReturnMode CPU::run(uint32_t cycle_limit)
 {
 	state.cycle_limit = cycle_limit;
+	if (*state.cp0.cr[CP0_REGISTER_SP_STATUS] & SP_STATUS_SSTEP)
+		return single_step(state, cycle_timing);
 	invalidate_code();
 	for (;;)
 	{

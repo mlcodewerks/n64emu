@@ -49,6 +49,7 @@ void hle_init(struct hle_t* hle,
     void* user_defined);
 
 void hle_execute(struct hle_t* hle);
+int hle_sdk_boot_yield(struct hle_t *hle);
 /* Active command servers keep their identity until their task completes. */
 enum hle_graphics_resume {
     HLE_RESUME_NONE,
@@ -56,7 +57,8 @@ enum hle_graphics_resume {
     HLE_RESUME_RS,
     HLE_RESUME_ZBOSS,
     HLE_RESUME_NABOO,
-    HLE_RESUME_F3D
+    HLE_RESUME_F3D,
+    HLE_RESUME_ZSORT
 };
 enum hle_graphics_resume hle_graphics_resume_pending(struct hle_t* hle);
 void hle_resume_graphics(struct hle_t* hle, enum hle_graphics_resume resume,

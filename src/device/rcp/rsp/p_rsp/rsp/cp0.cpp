@@ -115,6 +115,8 @@ extern "C"
 		//fprintf(stderr, "Writing 0x%x to status reg!\n", rt);
 
 		uint32_t status = *rsp->cp0.cr[CP0_REGISTER_SP_STATUS];
+		const uint32_t previous_status = status;
+		const uint32_t previous_irq = *rsp->cp0.irq;
 
 		if ((rt & (SP_CLR_HALT | SP_SET_HALT)) == SP_CLR_HALT)
 			status &= ~SP_STATUS_HALT;
@@ -180,7 +182,17 @@ extern "C"
 			status |= SP_STATUS_SIG7;
 
 		*rsp->cp0.cr[CP0_REGISTER_SP_STATUS] = status;
-		return ((*rsp->cp0.irq & 1) || (status & SP_STATUS_HALT)) ? MODE_CHECK_FLAGS : MODE_CONTINUE;
+		/* The CPU scheduler publishes signal writes at a slice boundary.
+		 * End the slice here so a later DPC FullSync cannot interrupt the
+		 * CPU while an earlier SP signal is still hidden until the end of
+		 * a long streaming invocation. MTC0 has no pending load result. */
+#ifdef PARALLEL_INTEGRATION
+		if (rsp->cycle_limit != UINT32_MAX && !(status & SP_STATUS_HALT) &&
+		    (((previous_status ^ status) & 0x7f80u) ||
+		     ((previous_irq ^ *rsp->cp0.irq) & 1u)))
+			return MODE_TIMESLICE;
+#endif
+		return ((*rsp->cp0.irq & 1) || (status & (SP_STATUS_HALT | SP_STATUS_SSTEP))) ? MODE_CHECK_FLAGS : MODE_CONTINUE;
 	}
 
 #ifdef PARALLEL_INTEGRATION

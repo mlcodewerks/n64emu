@@ -30,6 +30,7 @@ int rsp_tri_take_base_spill(unsigned int *packet_words, unsigned int *offset,
 
 int32_t rsp_rcp32(int32_t in32);
 void rsp_graphics_entry_carry(unsigned int carry);
+unsigned int rsp_graphics_entry_vco(void);
 void rsp_graphics_sdk_boot(int on);
 void rsp_vertex_pair_half(unsigned int half);
 int rsp_graphics_sdk_one(unsigned int lane);

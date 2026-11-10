@@ -59,6 +59,7 @@ void rdp_emit_hle_reset(void) {
     f3dex2_state_load(0); rs_state_load(0); naboo_state_load(0);
     zboss_state_load(0); rsp_emit_state_load(0);
     f3d_state_load(0);
+    zsort_state_load(0);
 }
 unsigned int rdp_emit_hle_state_size(void) { return sizeof(s_gsp) + sizeof(s_inited); }
 void rdp_emit_hle_save(void *p)
@@ -2214,6 +2215,34 @@ static int process_dlist(int sliced_f3d)
 
 void rdp_emit_hle_process_dlist(void) { (void)process_dlist(0); }
 
+/* ZSortp's signal commands are a cooperative server protocol. Incomplete
+ * slices keep the native command window and return stacks in the walker. */
+int angrylion_zsort_dlist(int resume, unsigned *sp_status, unsigned *mi_intr)
+{
+    unsigned char *ram, *dm;
+    unsigned size, dl;
+    int result;
+    if (!s_backend || !s_backend->get_rdram || !s_backend->get_dmem ||
+        !s_backend->get_rdram_size) return -1;
+    ram = s_backend->get_rdram(); dm = s_backend->get_dmem();
+    size = s_backend->get_rdram_size();
+    if (!ram || !dm || size < HLE_FIFO_CAP) return -1;
+    if (!resume) {
+        rdp_fifo_fullsync_reset();
+        if (!s_inited) { gsp_init(&s_gsp); s_inited = 1; }
+        gsp_task_reset(&s_gsp);
+    }
+    rdp_fifo_init(&s_fifo, s_fifo_storage, size - HLE_FIFO_CAP, HLE_FIFO_CAP);
+    s_fifo.diagnostic = s_backend->diagnostic;
+    s_fifo.flush = fifo_flush_to_rdp;
+    s_fifo.time = s_backend->time;
+    dl = read_dmem_u32(dm, 0xff0u) & 0xffffffu;
+    result = zsort_run_stream(&s_gsp, &s_fifo, ram, size, dm, dl, resume,
+                              sp_status, mi_intr);
+    fifo_flush_to_rdp(&s_fifo);
+    return result;
+}
+
 int angrylion_f3d_dlist(int resume)
 {
     unsigned char *ram, *dm;
@@ -2415,9 +2444,8 @@ int angrylion_naboo_dlist(int resume, int emit)
         }
     }
 
-    /* On fallback the LLE rerun re-executes the whole list from its
-     * head; anything this slice already appended would be emitted
-     * twice. Discard instead of flushing. */
+    /* A rejected Naboo walk reports a fatal HLE error to the caller.
+     * Discard its pending packets; there is no native rerun after dispatch. */
     if (r < 0) {
         s_fifo.used = 0;
         return r;

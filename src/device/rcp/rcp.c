@@ -152,6 +152,12 @@ static void do_dma(struct ai_controller* ai, struct ai_dma* dma, int64_t start)
         return;
     }
 #endif
+#ifndef N64EMU_USF
+    /* AI requests another descriptor when a buffer starts, including the
+     * first one. Waiting for its last sample delays the refill notification
+     * by an entire buffer. USF retains the ripper's completion convention. */
+    signal_rcp_interrupt(ai->mi, MI_INTR_AI);
+#endif
     add_interrupt_event_count(cp0, AI_INT, cp0->regs[CP0_COUNT_REG] +
         (uint32_t)(ai_count_deadline(ai, start + dma->duration) - cp0->count_clock));
 #ifdef AI_TIMING_OBSERVE
@@ -357,7 +363,9 @@ void ai_end_of_dma_event(void* opaque)
     }
 
     fifo_pop(ai);
+#ifdef N64EMU_USF
     raise_rcp_interrupt(ai->mi, MI_INTR_AI);
+#endif
 }
 
 static int update_mi_init_mode(uint32_t* mi_init_mode, uint32_t w)

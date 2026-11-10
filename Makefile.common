@@ -103,6 +103,7 @@ ifeq ($(USF),1)
 SOURCES_C := $(filter-out $(RSP_HLE_DIR)/rdp_emit%.c $(addprefix $(RSP_HLE_DIR)/,jpeg.c hvqm.c re2.c),$(SOURCES_C))
 SOURCES_C += $(CORE_DIR)/src/usf/rdp_stubs.c
 else
+SOURCES_CXX += $(RSP_HLE_DIR)/zsort_dsp.cpp
 SOURCES_C += $(addprefix $(CORE_DIR)/src/device/rcp/rdp/,fb.c rdp_core.c rdp_hle_fifo.c) \
              $(CORE_DIR)/src/device/rcp/rdp/performance_cores.c
 SOURCES_C += $(SOFTRDP_DIR)/worker_pool.c \

@@ -30,11 +30,13 @@
 #include "hle_simd.h"
 #include "hle_external.h"
 #include "hle_internal.h"
+#include "hle.h"
 #include <string.h>
 
 #include "memory.h"
 #include "hle_timing_jpeg.h"
 #include "hle_jpeg_rgb16.h"
+#include "hle_jpeg_stream.h"
 
 #define SUBBLOCK_SIZE 64
 
@@ -314,12 +316,6 @@ static void jpeg_decode_std(struct hle_t* hle,
     int16_t macroblock[6 * SUBBLOCK_SIZE];
     uint32_t data_ptr;
 
-    if (*dmem_u32(hle, TASK_FLAGS) & 0x1) {
-        HleWarnMessage(hle->user_defined,
-                       "jpeg_decode_%s: task yielding not implemented", version);
-        return;
-    }
-
     data_ptr = *dmem_u32(hle, TASK_DATA_PTR);
     address          = *dram_u32(hle, data_ptr);
     macroblock_count = *dram_u32(hle, data_ptr + 4);
@@ -486,20 +482,253 @@ static int jpeg_std_supported(struct hle_t* hle)
     return 1;
 }
 
-void jpeg_decode_PS0(struct hle_t* hle)
+/* PS resident 098..0b4 restores the seven scalar words saved by aa4..abc.
+ * The SDK has DMA-loaded the yield image as ucode_data: constants precede
+ * three quantizers and the context at 1e0. TASK_DATA_PTR is stale on resume. */
+static void jpeg_std_resume(struct hle_t* hle,
+                            subblock_transform_t transform_luma,
+                            subblock_transform_t transform_chroma,
+                            tile_line_emitter_t emit_line)
 {
-    if (!jpeg_std_supported(hle)) { HleForwardTask(hle->user_defined); return; }
-    jpeg_decode_std(hle, "PS0", RescaleYSubBlock, RescaleUVSubBlock, EmitYUVTileLine);
+    uint32_t data = *dmem_u32(hle, TASK_UCODE_DATA);
+    uint32_t count, input, output, mode, stride, mb;
+    int16_t tables[3][SUBBLOCK_SIZE], pixels[6 * SUBBLOCK_SIZE];
+    unsigned i;
+    if (!jpeg_range(data, 512u, 8u)) {
+        HleForwardTask(hle->user_defined); return;
+    }
+    count = *dram_u32(hle, data + 0x1e0u);
+    input = *dram_u32(hle, data + 0x1e4u);
+    mode = *dram_u32(hle, data + 0x1ecu);
+    stride = *dram_u32(hle, data + 0x1f8u);
+    output = *dram_u32(hle, data + 0x1e8u) + stride;
+    if ((mode != 0u && mode != 2u) || stride != (mode + 4u) * 128u ||
+        *dram_u32(hle, data + 0x1f0u) != stride - 1u ||
+        *dram_u32(hle, data + 0x1f4u) != (mode ? 511u : 255u) ||
+        !count || count > 0x800000u / stride ||
+        !jpeg_range(input, count * stride, 2u) ||
+        !jpeg_range(output, count * stride, 2u)) {
+        HleForwardTask(hle->user_defined); return;
+    }
+    for (i = 0; i < 3u; ++i)
+        dram_load_u16(hle, (uint16_t*)tables[i], data + 0x60u + i * 128u, SUBBLOCK_SIZE);
+    {
+        uint32_t code = *dmem_u32(hle, TASK_UCODE), cycles;
+        struct hle_jpeg_ps_timing_input timing;
+        timing.program = jpeg_range(code, 0xaf0u, 8u) ? dram_u32(hle, code) : NULL;
+        timing.boot = (const uint32_t*)hle->imem;
+        timing.boot_bytes = *dmem_u32(hle, TASK_UCODE_BOOT_SIZE);
+        timing.flags = *dmem_u32(hle, TASK_FLAGS);
+        timing.ucode_data_bytes = *dmem_u32(hle, TASK_UCODE_DATA_SIZE);
+        timing.parameter_bytes = *dmem_u32(hle, TASK_DATA_SIZE);
+        timing.status = *hle->sp_status;
+        timing.io_busy = *hle->sp_dma_full | *hle->sp_dma_busy | *hle->sp_semaphore;
+        timing.unaligned = (input | output | code | data) & 7u;
+        timing.macroblocks = count;
+        timing.mode = mode;
+        cycles = hle_timing_jpeg_ps(&timing);
+        if (cycles) hle_timing_override(cycles);
+    }
+    for (mb = 0; mb < count; ++mb) {
+        hle_timing_add(HLE_WORK_BLOCK, mode + 4u);
+        dram_load_u16(hle, (uint16_t*)pixels, input, (mode + 4u) * SUBBLOCK_SIZE);
+        decode_macroblock_std(transform_luma, transform_chroma, pixels, mode + 4u,
+                             (const int16_t (*)[SUBBLOCK_SIZE])tables);
+        if (mode) EmitTilesMode2(hle, emit_line, pixels, output);
+        else EmitTilesMode0(hle, emit_line, pixels, output);
+        input += stride;
+        output += stride;
+    }
     rsp_break(hle, SP_STATUS_TASKDONE);
 }
 
-/***************************************************************************
- * JPEG decoding ucode found in Ocarina of Time, Pokemon Stadium 1 and
- * Pokemon Stadium 2.
- **************************************************************************/
-void jpeg_decode_PS(struct hle_t* hle)
+
+/* A decoder can be preempted between completed macroblocks. Keep this
+ * continuation separate from a libultra yield image: a scheduling slice
+ * still owns the SP, whereas a SIG0 yield releases it for another task. */
+static struct {
+    uint32_t active, kind, code, data, data_bytes, parameters, flags;
+    uint32_t remaining, input, output, mode, stride, overhead, block_cycles;
+    int16_t tables[3][SUBBLOCK_SIZE];
+    int16_t prefetched[6 * SUBBLOCK_SIZE];
+    int16_t decoded[6 * SUBBLOCK_SIZE];
+    uint32_t pending_output, pending_address;
+    unsigned char image[512];
+} jpeg_stream;
+
+unsigned jpeg_state_size(void) { return sizeof(jpeg_stream); }
+void jpeg_state_save(void *out) { memcpy(out, &jpeg_stream, sizeof(jpeg_stream)); }
+void jpeg_state_load(const void *in)
 {
-    if (!jpeg_std_supported(hle)) { HleForwardTask(hle->user_defined); return; }
+    if (in) memcpy(&jpeg_stream, in, sizeof(jpeg_stream));
+    else memset(&jpeg_stream, 0, sizeof(jpeg_stream));
+}
+int jpeg_task_pending(const struct hle_t *hle)
+{
+    const uint32_t *task = (const uint32_t*)(hle->dmem + 0xfc0u);
+    return jpeg_stream.active && task[4] == jpeg_stream.code &&
+        task[6] == jpeg_stream.data && task[7] == jpeg_stream.data_bytes &&
+        task[12] == jpeg_stream.parameters && task[1] == jpeg_stream.flags;
+}
+
+static void EmitRGB16TileLine(struct hle_t*, const int16_t*, const int16_t*, uint32_t);
+
+static void jpeg_slice(struct hle_t *hle, unsigned kind)
+{
+    unsigned i, mb = 0, limit = hle_timing_slice_limit();
+    uint32_t cycles;
+    subblock_transform_t luma = kind == 2u ? RescaleYSubBlock : NULL;
+    subblock_transform_t chroma = kind == 2u ? RescaleUVSubBlock : NULL;
+    tile_line_emitter_t emit = kind == 2u ? EmitYUVTileLine :
+                              kind == 3u ? EmitRGB16TileLine : EmitRGBATileLine;
+    if (!jpeg_task_pending(hle)) {
+        uint32_t qt[3], total;
+        struct hle_jpeg_ps_timing_input timing;
+        jpeg_state_load(NULL);
+        if (hle_sdk_boot_yield(hle)) return;
+        if (kind == 2u) *hle->sp_status &= ~(SP_STATUS_SIG1 | SP_STATUS_TASKDONE);
+        jpeg_stream.kind = kind;
+        jpeg_stream.code = *dmem_u32(hle, TASK_UCODE);
+        jpeg_stream.data = *dmem_u32(hle, TASK_UCODE_DATA);
+        jpeg_stream.data_bytes = *dmem_u32(hle, TASK_UCODE_DATA_SIZE);
+        jpeg_stream.parameters = *dmem_u32(hle, TASK_DATA_PTR);
+        jpeg_stream.flags = *dmem_u32(hle, TASK_FLAGS);
+        if (jpeg_stream.flags & 1u) {
+            uint32_t data = jpeg_stream.data;
+            if (!jpeg_range(data, 512u, 8u)) goto bad;
+            jpeg_stream.remaining = *dram_u32(hle, data + 0x1e0u);
+            jpeg_stream.input = *dram_u32(hle, data + 0x1e4u);
+            jpeg_stream.mode = *dram_u32(hle, data + 0x1ecu);
+            jpeg_stream.stride = *dram_u32(hle, data + 0x1f8u);
+            jpeg_stream.output = *dram_u32(hle, data + 0x1e8u) + jpeg_stream.stride;
+            if (*dram_u32(hle, data + 0x1f0u) != jpeg_stream.stride - 1u ||
+                *dram_u32(hle, data + 0x1f4u) != (jpeg_stream.mode ? 511u : 255u)) goto bad;
+            for (i = 0; i < 3u; ++i) qt[i] = data + 0x60u + i * 128u;
+        }
+        else {
+            uint32_t p = jpeg_stream.parameters;
+            if (!jpeg_std_supported(hle)) goto bad;
+            jpeg_stream.remaining = *dram_u32(hle, p + 4u);
+            jpeg_stream.mode = *dram_u32(hle, p + 8u);
+            jpeg_stream.input = jpeg_stream.output = *dram_u32(hle, p);
+            jpeg_stream.stride = (jpeg_stream.mode + 4u) * 128u;
+            for (i = 0; i < 3u; ++i) qt[i] = *dram_u32(hle, p + 12u + i * 4u);
+        }
+        if ((jpeg_stream.mode != 0u && jpeg_stream.mode != 2u) ||
+            jpeg_stream.stride != (jpeg_stream.mode + 4u) * 128u ||
+            !jpeg_stream.remaining || jpeg_stream.remaining > 0x800000u / jpeg_stream.stride ||
+            !jpeg_range(jpeg_stream.input, jpeg_stream.remaining * jpeg_stream.stride, 2u) ||
+            !jpeg_range(jpeg_stream.output, jpeg_stream.remaining * jpeg_stream.stride, 2u)) goto bad;
+        memcpy(jpeg_stream.image, hle->dmem, 512u);
+        total = jpeg_stream.data_bytes < 512u ? jpeg_stream.data_bytes : 512u;
+        if (!jpeg_range(jpeg_stream.data, total, 8u)) goto bad;
+        memcpy(jpeg_stream.image, hle->dram + jpeg_stream.data, total);
+        for (i = 0; i < 3u; ++i) {
+            unsigned lane;
+            dram_load_u16(hle, (uint16_t*)jpeg_stream.tables[i], qt[i], SUBBLOCK_SIZE);
+            for (lane = 0; lane < SUBBLOCK_SIZE; ++lane) {
+                uint16_t value = (uint16_t)jpeg_stream.tables[i][lane];
+                memcpy(jpeg_stream.image + ((0x60u + i * 128u + lane * 2u) ^ 2u), &value, 2u);
+            }
+        }
+        timing.program = dram_u32(hle, jpeg_stream.code);
+        timing.boot = (const uint32_t*)hle->imem;
+        timing.boot_bytes = *dmem_u32(hle, TASK_UCODE_BOOT_SIZE);
+        timing.flags = jpeg_stream.flags;
+        timing.ucode_data_bytes = jpeg_stream.data_bytes;
+        timing.parameter_bytes = *dmem_u32(hle, TASK_DATA_SIZE);
+        timing.status = *hle->sp_status;
+        timing.io_busy = *hle->sp_dma_full | *hle->sp_dma_busy | *hle->sp_semaphore;
+        timing.unaligned = (jpeg_stream.input | jpeg_stream.output | jpeg_stream.code |
+                            jpeg_stream.data | qt[0] | qt[1] | qt[2]) & 7u;
+        timing.macroblocks = jpeg_stream.remaining;
+        timing.mode = jpeg_stream.mode;
+        total = kind == 3u ? hle_timing_jpeg_rgb16(&timing, dram_u32(hle, jpeg_stream.data)) :
+                            hle_timing_jpeg_ps(&timing);
+        jpeg_stream.block_cycles = kind == 2u ? (jpeg_stream.mode ? 2050u : 1443u) :
+                                   kind == 3u ? (jpeg_stream.mode ? 2519u : 1641u) :
+                                               (jpeg_stream.mode ? 2555u : 1657u);
+        jpeg_stream.overhead = total ? total - jpeg_stream.remaining * jpeg_stream.block_cycles : 80u;
+        dram_load_u16(hle, (uint16_t*)jpeg_stream.prefetched, jpeg_stream.input,
+                      (jpeg_stream.mode + 4u) * SUBBLOCK_SIZE);
+        jpeg_stream.active = 1u;
+    }
+    if (jpeg_stream.kind != kind) goto bad;
+    cycles = jpeg_stream.overhead;
+    jpeg_stream.overhead = 0;
+    /* Each suspended slice stopped at the resident's post-macroblock poll.
+     * Count zero bypasses that yield branch and completes normally. */
+    if (jpeg_stream.remaining && (*hle->sp_status & SP_STATUS_SIG0)) {
+        uint32_t context[7], destination = *dmem_u32(hle, TASK_YIELD_DATA_PTR) & 0x7ffff8u;
+        if (!jpeg_range(destination, 512u, 8u)) goto bad;
+        context[0] = jpeg_stream.remaining;
+        context[1] = jpeg_stream.input;
+        context[2] = jpeg_stream.output - jpeg_stream.stride;
+        context[3] = jpeg_stream.mode;
+        context[4] = jpeg_stream.stride - 1u;
+        context[5] = jpeg_stream.mode ? 511u : 255u;
+        context[6] = jpeg_stream.stride;
+        memcpy(jpeg_stream.image + 0x1e0u, context, sizeof(context));
+        /* The input DMA overlaps 0x1e0. Only seven words are replaced by
+         * the scalar context; the last word retains prefetched samples. */
+        {
+            uint32_t tail = (uint32_t)(uint16_t)jpeg_stream.prefetched[14] << 16 |
+                            (uint16_t)jpeg_stream.prefetched[15];
+            memcpy(jpeg_stream.image + 0x1fcu, &tail, 4u);
+        }
+        memcpy(hle->dram + destination, jpeg_stream.image, 512u);
+        if (jpeg_stream.pending_output) {
+            if (jpeg_stream.mode) EmitTilesMode2(hle, emit, jpeg_stream.decoded, jpeg_stream.pending_address);
+            else EmitTilesMode0(hle, emit, jpeg_stream.decoded, jpeg_stream.pending_address);
+            jpeg_stream.pending_output = 0;
+        }
+        jpeg_stream.active = 0;
+        hle_timing_override(cycles + hle_timing_jpeg_yield_delta(jpeg_stream.stride, kind == 2u));
+        rsp_break(hle, SP_STATUS_SIG1 | SP_STATUS_TASKDONE);
+        return;
+    }
+    while (jpeg_stream.remaining) {
+        int16_t pixels[6 * SUBBLOCK_SIZE];
+        if (mb && limit && cycles + jpeg_stream.block_cycles > limit) break;
+        /* The previous tile's output DMA starts at the next loop entry.
+         * At the post-tile SIG0 poll it still lives in the private buffer. */
+        if (jpeg_stream.pending_output) {
+            if (jpeg_stream.mode) EmitTilesMode2(hle, emit, jpeg_stream.decoded, jpeg_stream.pending_address);
+            else EmitTilesMode0(hle, emit, jpeg_stream.decoded, jpeg_stream.pending_address);
+        }
+        hle_timing_add(HLE_WORK_BLOCK, jpeg_stream.mode + 4u);
+        memcpy(pixels, jpeg_stream.prefetched, jpeg_stream.stride);
+        decode_macroblock_std(luma, chroma, pixels, jpeg_stream.mode + 4u,
+                             (const int16_t (*)[SUBBLOCK_SIZE])jpeg_stream.tables);
+        if (jpeg_stream.remaining > 1u)
+            dram_load_u16(hle, (uint16_t*)jpeg_stream.prefetched,
+                          jpeg_stream.input + jpeg_stream.stride,
+                          (jpeg_stream.mode + 4u) * SUBBLOCK_SIZE);
+        memcpy(jpeg_stream.decoded, pixels, jpeg_stream.stride);
+        jpeg_stream.pending_address = jpeg_stream.output;
+        jpeg_stream.pending_output = 1u;
+        jpeg_stream.input += jpeg_stream.stride;
+        jpeg_stream.output += jpeg_stream.stride;
+        --jpeg_stream.remaining;
+        ++mb;
+        cycles += jpeg_stream.block_cycles;
+    }
+    hle_timing_override(cycles);
+    if (!jpeg_stream.remaining) {
+        if (jpeg_stream.mode) EmitTilesMode2(hle, emit, jpeg_stream.decoded, jpeg_stream.pending_address);
+        else EmitTilesMode0(hle, emit, jpeg_stream.decoded, jpeg_stream.pending_address);
+        jpeg_stream.pending_output = 0;
+        jpeg_stream.active = 0;
+        rsp_break(hle, SP_STATUS_TASKDONE);
+    }
+    return;
+bad:
+    jpeg_stream.active = 0;
+    HleForwardTask(hle->user_defined);
+}
+
+static void jpeg_std_fresh_timing(struct hle_t *hle)
+{
     {
         uint32_t p = *dmem_u32(hle, TASK_DATA_PTR);
         uint32_t code = *dmem_u32(hle, TASK_UCODE);
@@ -522,6 +751,37 @@ void jpeg_decode_PS(struct hle_t* hle)
         cycles = hle_timing_jpeg_ps(&input);
         if (cycles) hle_timing_override(cycles);
     }
+}
+
+void jpeg_decode_PS0(struct hle_t* hle)
+{
+    if (jpeg_task_pending(hle) || hle_timing_slice_limit()) { jpeg_slice(hle, 2u); return; }
+    if (hle_sdk_boot_yield(hle)) return;
+    *hle->sp_status &= ~(SP_STATUS_SIG1 | SP_STATUS_TASKDONE);
+    if (*dmem_u32(hle, TASK_FLAGS) & 1u) {
+        jpeg_std_resume(hle, RescaleYSubBlock, RescaleUVSubBlock, EmitYUVTileLine);
+        return;
+    }
+    if (!jpeg_std_supported(hle)) { HleForwardTask(hle->user_defined); return; }
+    jpeg_std_fresh_timing(hle);
+    jpeg_decode_std(hle, "PS0", RescaleYSubBlock, RescaleUVSubBlock, EmitYUVTileLine);
+    rsp_break(hle, SP_STATUS_TASKDONE);
+}
+
+/***************************************************************************
+ * JPEG decoding ucode found in Ocarina of Time, Pokemon Stadium 1 and
+ * Pokemon Stadium 2.
+ **************************************************************************/
+void jpeg_decode_PS(struct hle_t* hle)
+{
+    if (jpeg_task_pending(hle) || hle_timing_slice_limit()) { jpeg_slice(hle, 1u); return; }
+    if (hle_sdk_boot_yield(hle)) return;
+    if (*dmem_u32(hle, TASK_FLAGS) & 1u) {
+        jpeg_std_resume(hle, NULL, NULL, EmitRGBATileLine);
+        return;
+    }
+    if (!jpeg_std_supported(hle)) { HleForwardTask(hle->user_defined); return; }
+    jpeg_std_fresh_timing(hle);
     jpeg_decode_std(hle, "PS", NULL, NULL, EmitRGBATileLine);
     rsp_break(hle, SP_STATUS_TASKDONE);
 }
@@ -556,7 +816,9 @@ void jpeg_decode_OB(struct hle_t* hle)
 {
     uint32_t count = *dmem_u32(hle, TASK_DATA_SIZE);
     int32_t scale = (int32_t)*dmem_u32(hle, TASK_YIELD_DATA_SIZE);
-    if ((*dmem_u32(hle, TASK_FLAGS) & 1) || count > 0x800000 / 768 ||
+    if (hle_sdk_boot_yield(hle)) return;
+    /* This program never reads TASK_FLAGS and has no decoder-yield branch. */
+    if (count > 0x800000 / 768 ||
         !jpeg_range(*dmem_u32(hle, TASK_DATA_PTR), count * 768, 2) || scale < -31) {
         HleForwardTask(hle->user_defined);
         return;
@@ -710,6 +972,7 @@ void jpeg_decode_OB(struct hle_t* hle)
  * then the scalar context saved by original a84..a9c. */
 void jpeg_decode_RGB16(struct hle_t *hle)
 {
+    if (jpeg_task_pending(hle) || hle_timing_slice_limit()) { jpeg_slice(hle, 3u); return; }
     uint32_t flags=*dmem_u32(hle,TASK_FLAGS),data=*dmem_u32(hle,TASK_UCODE_DATA);
     uint32_t data_size=*dmem_u32(hle,TASK_UCODE_DATA_SIZE),code=*dmem_u32(hle,TASK_UCODE);
     uint32_t p=*dmem_u32(hle,TASK_DATA_PTR),mode,count,address,output,stride;

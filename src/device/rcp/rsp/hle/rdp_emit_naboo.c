@@ -198,21 +198,25 @@ static unsigned int nb_next_chunk(void)
  * owns all native frames, including those beyond that mirror. */
 static int nb_stack_push(unsigned int off)
 {
-    if(nb.sp>=NB_NATIVE_STACK)return 0;
-    nb_dmem_w32(0xfe0u+nb.sp*8u,nb.chunk);
-    nb_dmem_w32(0xfe4u+nb.sp*8u,0x270u+off);
+    unsigned int depth=nb.dmem[0x142u^3u];
+    nb.sp=depth/8u;
+    nb_dmem_w32(0xfe0u+depth,nb.chunk);
+    nb_dmem_w32(0xfe4u+depth,0x270u+off);
     if(nb.sp<NB_DL_STACK){nb.stack[nb.sp*2u]=nb.chunk;nb.stack[nb.sp*2u+1u]=off;}
-    nb.sp=(nb.sp+1u)&(NB_NATIVE_STACK-1u);
-    nb_dmem_w8(0x142u,nb.sp*8u);
+    nb_dmem_w8(0x142u,depth+8u);
+    nb.sp=nb.dmem[0x142u^3u]/8u;
     return 1;
 }
 
 static void nb_stack_pop(void)
 {
-    nb.sp--;
-    nb_dmem_w8(0x142u,nb.sp*8u);
-    nb.chunk=nb_dmem_r32(0xfe0u+nb.sp*8u)&0x00fffff8u;
-    nb.off=(nb_dmem_r32(0xfe4u+nb.sp*8u)&0xfffu)-0x270u;
+    int frame=(int)nb.dmem[0x142u^3u]-8;
+    nb_dmem_w8(0x142u,(unsigned int)frame);
+    nb.sp=nb.dmem[0x142u^3u]/8u;
+    /* The address uses the signed subtraction before the depth byte wraps.
+     * In particular a state return at depth zero reads 0xfd8, not 0x0d8. */
+    nb.chunk=nb_dmem_r32(0xfe0u+frame)&0x00fffff8u;
+    nb.off=(nb_dmem_r32(0xfe4u+frame)&0xfffu)-0x270u;
     nb.dl=nb.chunk+nb.off;
     nb_chunk_shadow();
     nb.link=(nb_dmem_s16(0x68u)&0xfffu)==0xc70u?0x790u:0x794u;
@@ -262,13 +266,11 @@ void naboo_task_reset(unsigned int dl)
 static int nb_emit_on;
 static short nb_morph_v28[8], nb_morph_v29[8];
 
-/* Emission gate for native/HLE comparison runs. Both audited builds use
- * the emitter; unsupported overlay/register contexts return to LLE. */
+/* Both audited builds use the emitter. The diagnostic gate deliberately
+ * rejects emission; a dispatched HLE task cannot switch back to native. */
 void naboo_set_emit(int on)
 {
-    /* NABOO_NO_EMIT forces the fallback path on verified builds too:
-     * the pixel-exactness instrument (same backend, same pacing --
-     * emit vs LLE-rerun differ only by who rendered). */
+    /* NABOO_NO_EMIT is a rejection diagnostic, not an LLE comparison mode. */
     static int off = -1;
     if (off < 0)
         off = getenv("NABOO_NO_EMIT") != NULL;
@@ -3518,7 +3520,7 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
              * walker's resume covers both. A top-level return loads
              * overlay 0x1e and breaks immediately, even with a pending
              * splice at DMEM 0x58c. */
-            if (nb.sp) {
+            if (nb.dmem[0x142u^3u] >= 8u) {
                 nb_stack_pop();
                 if(!w1)nb.poll=1;else nb.link=0x1010u;
                 if (nb.off >= 0x108u) {
@@ -3560,12 +3562,9 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
                 nb_dl_step(8u);
                 continue;
             }
-            if (nb.sp == 0u) {
-                nb.active = 0;
-                return NABOO_R_FALLBACK;
-            }
             nb_stack_pop();
-            nb_dmem_w32(0x5a0u, nb.chunk);
+            /* c48/c50 save the header of the reloaded command window;
+             * nb_chunk_shadow already cached that link, not its source. */
             nb_packet_drain(); /* c4c */
             mode = nb_dmem_r32(0x120u) & 0xffcfffffu;
             nb_dmem_w32(0xe70u, mode);
@@ -3589,9 +3588,8 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
             nb_op02(w0, w1);
             nb_dl_step(8u);
             continue;
-        case 0x01:                              /* segmented load +
-             * subtype processor (state modeling; RDP output comes from
-             * the triangle path, which still falls back) */
+        case 0x01:                              /* segmented load and
+             * subtype processor; the draw slots consume its output */
             nb_op01(w0, w1);
             if (nb.active == 2u) {
                 nb.active = 0;
@@ -3714,6 +3712,7 @@ static int nb_walk(RdpFifo *fifo, unsigned int stop_depth, int nested)
                     fprintf(stderr, "[MW] %03x = %08x\n", w0 & 0xffcu, w1);
             }
             nb_dmem_w32(w0, w1);
+            nb.sp=nb.dmem[0x142u^3u]/8u;
             nb_dl_step(8u);
             continue;
         default:

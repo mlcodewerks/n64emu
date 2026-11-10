@@ -168,13 +168,6 @@ void alist_adpcm(
         uint32_t last_frame_address,
         uint16_t codebook_dmem);
 
-void alist_resample(
-        struct hle_t* hle, 
-        bool init,
-        bool flag2,
-        uint16_t dmemo, uint16_t dmemi, uint16_t count,
-        uint32_t pitch, uint32_t address);
-
 void alist_resample_nead(
         struct hle_t* hle,
         uint16_t slab,

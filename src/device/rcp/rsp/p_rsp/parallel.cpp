@@ -129,6 +129,14 @@ extern "C"
 	}
 #endif
 
+    void native_rsp_set_pc(uint32_t pc)
+    {
+        auto &state = RSP::cpu.get_state();
+        state.pc = pc & 0xffc;
+        state.has_delay_slot = 0;
+        state.branch_target = 0;
+        RSP::cpu.invalidate_imem();
+    }
 	unsigned int native_rsp_execute(unsigned int cycles)
 	{
         if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_HALT)
@@ -230,6 +238,7 @@ extern "C"
 		RSP::cpu.set_dmem(reinterpret_cast<uint32_t *>(Rsp_Info.DMEM));
 		RSP::cpu.set_imem(reinterpret_cast<uint32_t *>(Rsp_Info.IMEM));
 		RSP::cpu.set_rdram(reinterpret_cast<uint32_t *>(Rsp_Info.RDRAM));
+        native_rsp_set_pc(0);
 #if defined(__LIBRETRO__) && !defined(DEBUG_JIT)
         RSP::cpu.set_cycle_timing(renderer_component_timing());
         core_log(CORE_LOG_INFO,"RSP backend: %s; component timing %s",

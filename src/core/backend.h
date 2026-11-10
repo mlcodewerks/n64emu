@@ -132,6 +132,7 @@ int renderer_framebuffer_pages(uint8_t *pages, unsigned count);
 void renderer_framebuffer_read_range(unsigned address, unsigned size);
 void native_rsp_init(rsp_memory memory);
 void native_rsp_close(void);
+void native_rsp_set_pc(uint32_t pc);
 unsigned native_rsp_execute(unsigned cycles);
 #ifdef __cplusplus
 }

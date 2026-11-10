@@ -378,7 +378,17 @@ void read_cart_rom(void* opaque, uint32_t address, uint32_t* value)
     }
     else
     {
-        if (cart_rom->prototype_dongle && (address & UINT32_C(0x1ffffff8)) == UINT32_C(0x1c000000))
+        /* Conservative PI workaround: a ROM cannot drive a reliable read
+         * when both address latency and read pulse are at most three RCP
+         * clocks (registers encode clocks minus one). Leave the address
+         * phase on AD16 instead. Apply this to every ROM, independent of
+         * its header, page setting or release duration. This deliberately
+         * does not claim measured per-chip thresholds near normal timings. */
+        if ((address & UINT32_C(0x1c000000)) == UINT32_C(0x10000000) &&
+            cart_rom->pi->regs[PI_BSD_DOM1_LAT_REG] <= 2 &&
+            cart_rom->pi->regs[PI_BSD_DOM1_PWD_REG] <= 2)
+            *value = ((address & 0xfffeu) << 16) | (address & 0xfffeu);
+        else if (cart_rom->prototype_dongle && (address & UINT32_C(0x1ffffff8)) == UINT32_C(0x1c000000))
             /* The PI's 16-bit CPU reads select the upper halfword of each
              * successive bus word (BC000002 is delivered at 1C000004). */
             *value = (address & 4) ? UINT32_C(0x46534653) : UINT32_C(0x4c534653);

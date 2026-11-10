@@ -34,6 +34,7 @@ int angrylion_streaming_dlist(int resume);
 int angrylion_f3d_dlist(int resume);
 int angrylion_rs_dlist(int resume);
 int angrylion_naboo_dlist(int resume, int emit);
+int angrylion_zsort_dlist(int resume, unsigned *sp_status, unsigned *mi_intr);
 
 /* sliced ZSortBOSS service (WDC / Stunt Racer); see rdp_emit_hle.c */
 int angrylion_zboss_dlist(int resume, unsigned int *sp_status);

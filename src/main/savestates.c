@@ -42,7 +42,7 @@ _Static_assert(RDP_RASTER_STATE_OFFSET + 192 <= 20480,
     "RDP raster state overlaps optional HLE state");
 
 static const char* savestate_magic = "M64+SAVE";
-static const int savestate_latest_version = 0x00012200; /* 1.34: extended PC and DP pipe fence */
+static const int savestate_latest_version = 0x00012300; /* 1.35: ZSortp/JPEG HLE continuations */
 
 struct savestate_work {
     char *data;
@@ -878,7 +878,8 @@ int core_state_load(struct device* dev, const void *data)
     if (version < 0x00011100)
         dev->sp.rsp_completion_status &= SP_STATUS_HALT | SP_STATUS_BROKE;
 #ifdef __LIBRETRO__
-    if (version >= 0x00011c00) optional_rsp_load(data_0001_0200 + 20480);
+    if (version >= 0x00012300) optional_rsp_load(data_0001_0200 + 20480);
+    else if (version >= 0x00011c00) optional_rsp_load_v122(data_0001_0200 + 20480);
     else if (version >= 0x00011700) optional_rsp_load_v11b(data_0001_0200 + 20480);
     else if (version >= 0x00011600) optional_rsp_load_v116(data_0001_0200 + 20480);
     else if (version >= 0x00011000) optional_rsp_load_legacy_stream(data_0001_0200 + 20480);

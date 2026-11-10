@@ -110,9 +110,15 @@ void pif_bootrom_hle_execute(struct r4300_core* r4300)
 
     /* XXX: wait for SI_RD_BUSY to be cleared, set PIF_3c[4] */
 
-    /* configure ROM access
-     * XXX: we skip the first temporary configuration */
+    /* Use conservative PI timings for the header read, then install the
+     * cartridge's declared timings. Power-on PI registers are zero; reading
+     * with those values would now correctly select the short-window
+     * workaround rather than return a valid ROM signature. */
     uint32_t rom_base = (rom_type == 0) ? MM_CART_ROM : MM_DD_ROM;
+    r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_PI_REGS + 4*PI_BSD_DOM1_LAT_REG, 0xff, ~UINT32_C(0));
+    r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_PI_REGS + 4*PI_BSD_DOM1_PWD_REG, 0xff, ~UINT32_C(0));
+    r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_PI_REGS + 4*PI_BSD_DOM1_PGS_REG, 0x0f, ~UINT32_C(0));
+    r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_PI_REGS + 4*PI_BSD_DOM1_RLS_REG, 0x03, ~UINT32_C(0));
     r4300_read_aligned_word(r4300, R4300_KSEG1 + rom_base, &bsd_dom1_config);
     r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_PI_REGS + 4*PI_BSD_DOM1_LAT_REG, (bsd_dom1_config      ) & 0xff, ~UINT32_C(0));
     r4300_write_aligned_word(r4300, R4300_KSEG1 + MM_PI_REGS + 4*PI_BSD_DOM1_PWD_REG, (bsd_dom1_config >>  8) & 0xff, ~UINT32_C(0));

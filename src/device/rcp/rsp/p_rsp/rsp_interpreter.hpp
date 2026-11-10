@@ -10,7 +10,6 @@ class Interpreter {
     RSPTimingPipeline pipeline{};
     bool timed = true;
     bool paired = false;
-    ReturnMode step(uint32_t instruction);
 
   public:
     CPUState &get_state() { return state; }

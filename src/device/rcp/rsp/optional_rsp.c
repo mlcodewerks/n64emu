@@ -24,6 +24,7 @@
 #include "hle/nead_validation.h"
 #include "hle/hle_external.h"
 #include "hle/hle_timing.h"
+#include "hle/hle_jpeg_stream.h"
 #include "p_rsp/dpc_bridge.h"
 
 extern unsigned int native_rsp_execute(unsigned int);
@@ -74,9 +75,10 @@ static const char *graphics_capture_prefix;
 static unsigned int graphics_capture_started, graphics_capture_count;
 static unsigned long long graphics_tasks, audio_tasks, other_tasks, boot_tasks, lle_tasks;
 static unsigned long long native_fallback_slices;
+static unsigned long long jpeg_continuations;
 /* Only queried synchronously by do_SP_Task_at after this dispatch returns. */
 static int native_dispatch;
-static unsigned long long graphics_resumes[HLE_RESUME_F3D + 1];
+static unsigned long long graphics_resumes[HLE_RESUME_ZSORT + 1];
 static int timing_probe_active, timing_probe_failed;
 static uint32_t timing_probe_status;
 uint32_t optional_rsp_timing_status(void){return timing_probe_status;}
@@ -187,6 +189,7 @@ void optional_rsp_init(rsp_memory rsp_info)
     native_fallback_slices = 0;
     strict_hle_failed = 0;
     memset(graphics_resumes, 0, sizeof(graphics_resumes));
+    jpeg_continuations = 0;
     hle_init(&hle, info.RDRAM, info.DMEM, info.IMEM, info.MI_INTR_REG,
         info.SP_MEM_ADDR_REG, info.SP_DRAM_ADDR_REG, info.SP_RD_LEN_REG,
         info.SP_WR_LEN_REG, info.SP_STATUS_REG, info.SP_DMA_FULL_REG,
@@ -220,7 +223,8 @@ static int graphics_supported_memory(const uint32_t *task, unsigned char *ram, u
     if ((task[1] & 1u) && !hle_stream_can_resume(sum)) {
         int naboo_restore = (sum == 0x25c16 || sum == 0x25c53) &&
             naboo_yield_supported(ram,0x800000u,dmem);
-        if (!naboo_restore && !rdp_emit_hle_yield_supported(ram,0x800000u,task[4],task[14],task[15]))
+        int zsort_restore = sum == 0x254ae && zsort_yield_supported(ram,0x800000u,dmem);
+        if (!naboo_restore && !zsort_restore && !rdp_emit_hle_yield_supported(ram,0x800000u,task[4],task[14],task[15]))
             return 0;
     }
 
@@ -356,7 +360,7 @@ unsigned int optional_rsp_execute(unsigned int cycles)
     /* Some rips submit a display list during startup. Acknowledge the task
      * and its DP completion without running a graphics microcode or renderer,
      * including when the caller requests LLE audio. */
-    if (task[0] == 1u && task[3] <= 0x1000u) {
+    if (!(*info.SP_STATUS_REG & SP_STATUS_SSTEP) && task[0] == 1u && task[3] <= 0x1000u) {
         *info.SP_STATUS_REG |= SP_STATUS_HALT | SP_STATUS_BROKE | SP_STATUS_SIG2;
         if (*info.SP_STATUS_REG & SP_STATUS_INTR_BREAK) *info.MI_INTR_REG |= MI_INTR_SP;
         signal_rcp_interrupt(&g_dev.mi, MI_INTR_DP);
@@ -368,6 +372,15 @@ unsigned int optional_rsp_execute(unsigned int cycles)
      * Only the unfinished task that already owns the SP may reuse it. */
     enum hle_graphics_resume resume = g_dev.sp.rsp_task_locked
         ? hle_graphics_resume_pending(&hle) : HLE_RESUME_NONE;
+    int jpeg_resume = g_dev.sp.rsp_task_locked && jpeg_task_pending(&hle);
+    /* HLE consumes commands or blocks, not individual IMEM instructions.
+     * A task launched in hardware step mode must own the native state. An
+     * already committed HLE prefix cannot be replayed as native safely. */
+    if (*info.SP_STATUS_REG & SP_STATUS_SSTEP) {
+        if (resume || jpeg_resume)
+            return unsupported_hle_task();
+        goto native;
+    }
     if (!renderer_settings.rsp_hle)
         goto native;
     if (strict_hle_failed)
@@ -376,7 +389,7 @@ unsigned int optional_rsp_execute(unsigned int cycles)
      * While SP owns an unfinished slice, only an active HLE walker may
      * resume through HLE. This also covers a native loop that yields at PC
      * zero. Both ownership and walker state already survive save/load. */
-    if (!resume && ((*info.SP_PC_REG & 0xfff) != 0 || g_dev.sp.rsp_task_locked))
+    if (!resume && !jpeg_resume && ((*info.SP_PC_REG & 0xfff) != 0 || g_dev.sp.rsp_task_locked))
         goto native;
     /* Upstream identifies direct programs by boot size. Their DMEM tail is
      * not an OSTask and must not be subjected to guest-pointer checks.
@@ -389,6 +402,14 @@ unsigned int optional_rsp_execute(unsigned int cycles)
         (task[0] != 1u && task[13] > 0x800000 - task[12])))
         goto native;
     kind = resume ? HLE_TASK_GRAPHICS : hle_get_task_kind(&hle);
+    /* ZSort preflight executes its math against a reversible RAM journal.
+     * It must see the same entry vector/carry state as the committed walk. */
+    if (kind == HLE_TASK_GRAPHICS) {
+        uint16_t entry[32][8];
+        rsp_graphics_entry_carry(parallelRSPGetVCO());
+        parallelRSPGetGraphicsLatches(entry);
+        rsp_factor5_seed(entry);
+    }
     if (kind == HLE_TASK_UNKNOWN ||
         (kind == HLE_TASK_GRAPHICS && (renderer_settings.lle_graphics ||
             (!resume && !graphics_supported(task)))) ||
@@ -432,6 +453,7 @@ unsigned int optional_rsp_execute(unsigned int cycles)
     }
     else hle_execute(&hle);
     if (strict_hle_failed) return 0;
+    if (jpeg_resume) ++jpeg_continuations;
     if(nead_audio)nead_v31_end();
     if(hle.rsp_nead_vector_written)parallelRSPSetGraphicsLatches(hle.rsp_nead_vectors,hle.rsp_nead_vector_written&~(UINT32_C(1)<<31));
     if(kind==HLE_TASK_GRAPHICS)nead_v31_prefer_shadow=0;
@@ -512,6 +534,7 @@ void optional_rsp_report(void)
         graphics_resumes[HLE_RESUME_STREAMING], graphics_resumes[HLE_RESUME_RS],
         graphics_resumes[HLE_RESUME_ZBOSS], graphics_resumes[HLE_RESUME_NABOO]);
     core_log(CORE_LOG_INFO, "RSP F3D continuations: %llu", graphics_resumes[HLE_RESUME_F3D]);
+    core_log(CORE_LOG_INFO, "RSP JPEG continuations: %llu", jpeg_continuations);
 }
 
 int optional_rsp_native_dispatch(void) { return native_dispatch; }
@@ -527,7 +550,9 @@ void optional_rsp_dispatch_counts(uint64_t out[6])
 static unsigned int legacy_state_size(void) { return AUDIO_STATE_BYTES + rdp_emit_hle_state_size() + n64video_noise_state_size(); }
 static unsigned int nead_state_offset(void) { return legacy_state_size() + rdp_emit_stream_state_size() + hle_stream_state_size(); }
 static unsigned int f3d_state_offset(void) { return nead_state_offset() + sizeof(hle.nead_v31); }
-unsigned int optional_rsp_state_size(void) { return f3d_state_offset() + f3d_state_size(); }
+static unsigned int zsort_state_offset(void) { return f3d_state_offset() + f3d_state_size(); }
+static unsigned int jpeg_state_offset(void) { return zsort_state_offset() + zsort_state_size(); }
+unsigned int optional_rsp_state_size(void) { return jpeg_state_offset() + jpeg_state_size(); }
 void optional_rsp_save(void *buffer)
 {
     memcpy(buffer, (const unsigned char *)&hle + AUDIO_STATE_OFFSET, AUDIO_STATE_BYTES);
@@ -542,6 +567,8 @@ void optional_rsp_save(void *buffer)
         memcpy((unsigned char *)buffer + nead_state_offset(),lanes[31],sizeof(hle.nead_v31));
     }
     f3d_state_save((unsigned char *)buffer + f3d_state_offset());
+    zsort_state_save((unsigned char *)buffer + zsort_state_offset());
+    jpeg_state_save((unsigned char *)buffer + jpeg_state_offset());
 }
 void optional_rsp_load_legacy(const void *buffer)
 {
@@ -550,6 +577,8 @@ void optional_rsp_load_legacy(const void *buffer)
     rdp_emit_stream_load(NULL);
     hle_stream_state_load(NULL);
     f3d_state_load(NULL);
+    zsort_state_load(NULL);
+    jpeg_state_load(NULL);
     if (!buffer) {
         memset((unsigned char *)&hle + AUDIO_STATE_OFFSET, 0, AUDIO_STATE_BYTES);
         memset(&hle.cached_ucodes, 0, sizeof(hle.cached_ucodes));
@@ -575,10 +604,16 @@ void optional_rsp_load_v11b(const void *buffer)
     optional_rsp_load_v116(buffer);
     if (buffer) memcpy(hle.nead_v31, (const unsigned char *)buffer + nead_state_offset(), sizeof(hle.nead_v31));
 }
-void optional_rsp_load(const void *buffer)
+void optional_rsp_load_v122(const void *buffer)
 {
     optional_rsp_load_v11b(buffer);
     if (buffer) f3d_state_load((const unsigned char *)buffer + f3d_state_offset());
+}
+void optional_rsp_load(const void *buffer)
+{
+    optional_rsp_load_v122(buffer);
+    if (buffer) zsort_state_load((const unsigned char *)buffer + zsort_state_offset());
+    if (buffer) jpeg_state_load((const unsigned char *)buffer + jpeg_state_offset());
 }
 
 void optional_rsp_load_legacy_stream(const void *buffer)

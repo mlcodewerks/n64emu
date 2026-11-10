@@ -1832,75 +1832,6 @@ static int resample_hq_sample(struct hle_t* hle, unsigned ipos,
     return 1;
 }
 
-void alist_resample(
-        struct hle_t* hle,
-        bool init,
-        bool flag2,
-        uint16_t dmemo,
-        uint16_t dmemi,
-        uint16_t count,
-        uint32_t pitch,     /* Q16.16 */
-        uint32_t address)
-{
-    hle_timing_add(HLE_WORK_RESAMPLE, (count + 15u) / 16u);
-
-    uint32_t pitch_accu;
-
-    uint16_t ipos = dmemi >> 1;
-    uint16_t opos = dmemo >> 1;
-    count >>= 1;
-    ipos -= 4;
-
-    if (flag2)
-        HleWarnMessage(hle->user_defined, "alist_resample: flag2 is not implemented");
-
-    if (init)
-        alist_resample_reset(hle, ipos, &pitch_accu);
-    else
-        alist_resample_load(hle, address, ipos, &pitch_accu);
-
-    while (count != 0) {
-        const int16_t* lut = RESAMPLE_LUT + ((pitch_accu & 0xfc00) >> 8);
-
-        /* The microcode computes each tap with vmulf (independently
-         * rounded and clamped Q15 product: (2*a*b + 0x8000) >> 16) and
-         * combines them with a tree of saturating vadds:
-         * sat(sat(q0+q1) + sat(q2+q3)). Summing raw products and
-         * shifting once is up to a few LSBs off, which is audible as a
-         * DC bias on near-silent material and breaks bit-exactness
-         * against LLE. */
-        int16_t hq_out;
-
-        if (resample_hq_sample(hle, ipos, pitch, pitch_accu, &hq_out)) {
-            *sample(hle, opos++) = hq_out;
-            pitch_accu += pitch;
-            ipos       += (pitch_accu >> 16);
-            pitch_accu &= 0xffff;
-            --count;
-            continue;
-        }
-
-        int32_t q0 = (int32_t)(((int64_t)2 * *sample(hle, ipos    ) * lut[0] + 0x8000) >> 16);
-        int32_t q1 = (int32_t)(((int64_t)2 * *sample(hle, ipos + 1) * lut[1] + 0x8000) >> 16);
-        int32_t q2 = (int32_t)(((int64_t)2 * *sample(hle, ipos + 2) * lut[2] + 0x8000) >> 16);
-        int32_t q3 = (int32_t)(((int64_t)2 * *sample(hle, ipos + 3) * lut[3] + 0x8000) >> 16);
-
-        q0 = clamp_s16(q0);
-        q1 = clamp_s16(q1);
-        q2 = clamp_s16(q2);
-        q3 = clamp_s16(q3);
-
-        *sample(hle, opos++) = clamp_s16(clamp_s16(q0 + q1) + clamp_s16(q2 + q3));
-
-        pitch_accu += pitch;
-        ipos += (pitch_accu >> 16);
-        pitch_accu &= 0xffff;
-        --count;
-    }
-
-    alist_resample_save(hle, address, ipos, pitch_accu);
-}
-
 void alist_resample_audio(
         struct hle_t* hle,
         uint16_t slab,
@@ -1912,6 +1843,8 @@ void alist_resample_audio(
         uint32_t pitch,     /* Q16.16 */
         uint32_t address)
 {
+    /* SP DMA discards the state's low three address bits on both transfers. */
+    address &= 0xfffff8u;
     /* The native handler tests its remaining count after the first SQV. */
     if (count == 0) count = 16;
     hle_timing_add(HLE_WORK_RESAMPLE, (count + 15u) / 16u);
@@ -1931,7 +1864,7 @@ void alist_resample_audio(
     uint32_t pitch_accu;
     uint16_t in = dmemi;
     uint16_t ipos;
-    uint16_t opos = dmemo >> 1;
+    uint16_t output = dmemo;
     uint16_t residue;
     uint16_t aligned;
     unsigned i;
@@ -2010,8 +1943,13 @@ void alist_resample_audio(
             pitch_accu &= 0xffff;
             --count;
         }
-        for (lane = 0; lane < batch; ++lane)
-            *sample(hle, opos++) = block[lane];
+        /* Native ac4 uses SQV, which stops at the next 16-byte boundary.
+         * The following block still advances by 16, including an unaligned
+         * destination. Keep byte lanes so odd addresses work as well. */
+        for (lane = 0; lane < batch * 2u && lane < 16u - (output & 15u); ++lane)
+            *alist_u8(hle, output + lane) =
+                (uint16_t)block[lane >> 1] >> ((lane & 1u) ? 0 : 8);
+        output += 16u;
     }
 
     for (i = 0; i < 4; ++i)

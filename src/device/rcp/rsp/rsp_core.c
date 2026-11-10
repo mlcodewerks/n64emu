@@ -321,6 +321,10 @@ void write_rsp_regs2(void* opaque, uint32_t address, uint32_t value, uint32_t ma
     if (reg == SP_PC_REG)
         mask &= 0xffc;
     masked_write(&sp->regs2[reg], value, mask);
+    /* A CPU PC write redirects execution, including while halted between a
+     * single-stepped branch and its delay slot. Do not retain that branch. */
+    if (reg == SP_PC_REG && mask)
+        native_rsp_set_pc(sp->regs2[reg]);
 }
 
 static void do_SP_Task_at(struct rsp_core* sp, int64_t start_clock, uint32_t overhang)

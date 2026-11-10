@@ -108,6 +108,14 @@ void rdp_emit_stream_save(void* data) { (void)data; }
 void rdp_emit_stream_load(const void* data) { (void)data; }
 void rdp_emit_stream_load_legacy(const void* data) { (void)data; }
 unsigned int f3d_state_size(void) { return 0; }
+unsigned int zsort_state_size(void) { return 0; }
+void zsort_state_save(void *p) { (void)p; }
+void zsort_state_load(const void *p) { (void)p; }
+struct hle_t;
+int jpeg_task_pending(const struct hle_t *hle) { (void)hle; return 0; }
+unsigned int jpeg_state_size(void) { return 0; }
+void jpeg_state_save(void *p) { (void)p; }
+void jpeg_state_load(const void *p) { (void)p; }
 void f3d_state_save(void* data) { (void)data; }
 void f3d_state_load(const void* data) { (void)data; }
 unsigned int n64video_noise_state_size(void) { return 0; }
