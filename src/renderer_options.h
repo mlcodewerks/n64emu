@@ -1,17 +1,11 @@
 #pragma once
 #include <stdbool.h>
 #include <libretro.h>
-#include "device/rcp/rdp/glrdp/rdp_accuracy.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
-enum renderer_type { RENDERER_SOFTRDP, RENDERER_PARALLEL, RENDERER_GLRDP, RENDERER_DX11, RENDERER_GL2, RENDERER_D3D9, RENDERER_GLES2 };
-static inline bool renderer_legacy_gpu(enum renderer_type type) {
-    return type == RENDERER_GL2 || type == RENDERER_D3D9 || type == RENDERER_GLES2;
-}
-static inline bool renderer_native_gpu(enum renderer_type type) {
-    return type == RENDERER_GLRDP || type == RENDERER_DX11;
-}
+enum renderer_type { RENDERER_SOFTRDP, RENDERER_PARALLEL };
+
 enum hle_level { HLE_OFF, HLE_RSP };
 enum controller_pak_option { CONTROLLER_PAK_NONE, CONTROLLER_PAK_MEMORY,
     CONTROLLER_PAK_RUMBLE, CONTROLLER_PAK_TRANSFER };
@@ -24,7 +18,6 @@ struct renderer_settings {
     bool per_cycle_timing;
     bool component_timing;
     enum renderer_type renderer;
-    struct GLRDPConfig glrdp;
     unsigned threads, upscale, downscale;
     bool performance_only, vi_filter, dedither, blur, overscan, bob;
     bool native_lod, native_tex_rect, ss_readbacks, ss_dither;

@@ -25,6 +25,9 @@ processes. These are correctness checks, not host performance measurements.
 The larger FPU suites can take several minutes each. Serial execution avoids
 competition between their page-protection and memory-intensive fixtures.
 The test-only root target keeps the core's generated build configuration intact.
+The current manifest excludes GLRDP parser/binding tests because GLRDP and the
+legacy GPU renderers and their source files have been removed. Earlier validation
+reports retain those historical results.
 The generated AI fixture extracts the production AI implementation on each
 source change; it does not maintain a second FIFO implementation.
 The suite also verifies that the standalone RDP tests use the production timing

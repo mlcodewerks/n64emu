@@ -11,12 +11,9 @@ $(OUT)/signal-checks$(EXE): benchmarks/conformance/rsp_signal_checks.cpp $(SOURC
 	mkdir -p $(OUT)
 	$(CXX) $(CXXFLAGS) $(FLAGS) -DPARALLEL_INTEGRATION $< $(SOURCES) -Wl,--gc-sections $(LDFLAGS) -o $@
 $(OUT)/step-jit$(EXE) $(OUT)/step-interpreter$(EXE) $(OUT)/signal-checks$(EXE): $(wildcard $(RSP)/*.inc) src/jit32/assembler.hpp
-GPU := src/device/rcp/rdp/glrdp
-all: $(OUT)/gpu-parser$(EXE) $(OUT)/fb-notifications$(EXE) $(OUT)/rdp-portable$(EXE) $(OUT)/rdp-short-span$(EXE)
+all: $(OUT)/fb-notifications$(EXE) $(OUT)/rdp-portable$(EXE) $(OUT)/rdp-short-span$(EXE)
 $(OUT):
 	mkdir -p $@
-$(OUT)/gpu-parser$(EXE): benchmarks/gpu_parser_checks.cpp $(GPU)/rdp_parser.cpp $(GPU)/rdp_tmem.cpp $(wildcard $(GPU)/*.hpp) | $(OUT)
-	$(CXX) $(CXXFLAGS) -O2 -std=c++17 -fno-fast-math -Isrc -Ideps -Ideps/libretro-common/include $(filter %.cpp,$^) -o $@
 $(OUT)/fb-notifications$(EXE): benchmarks/fb_notification_checks.c src/device/rcp/rdp/fb.c | $(OUT)
 	$(CC) $(CFLAGS) -O2 -std=gnu11 -ffunction-sections -fdata-sections -Isrc -Icustom -Ideps/libretro-common/include $^ -Wl,--gc-sections -o $@
 $(OUT)/rdp-portable$(EXE): rdp_timing/tests/portable_checks.c $(wildcard rdp_timing/*.h) $(wildcard rdp_timing/tests/*.h) | $(OUT)

@@ -6,12 +6,9 @@ ifneq ($(strip $(MAKECMDGOALS)),test)
 DEBUG ?= 0
 .DEFAULT_GOAL := all
 HEADLESS_BENCHMARK ?= 0
-FORCE_GLES ?= 0
-FORCE_GLES3 ?= 0
 LLE ?= 0
 HAVE_PARALLEL_RSP ?= 1
 HAVE_PARALLEL_RDP ?= 1
-HAVE_GLRDP ?= 1
 CPU_BACKEND ?= auto
 RSP_BACKEND ?= auto
 USF ?= 0
@@ -32,7 +29,6 @@ DYNAFLAGS :=
 INCFLAGS  :=
 COREFLAGS :=
 CPUFLAGS  :=
-GLFLAGS   :=
 STRINGS   ?= strings
 TR        ?= tr
 
@@ -179,16 +175,6 @@ ifneq (,$(findstring unix,$(platform)))
    TARGET := $(TARGET_NAME)_libretro.so
    LDFLAGS += -shared -Wl,--version-script=$(ROOT_DIR)/src/link.T -Wl,--no-undefined
 
-   ifeq ($(FORCE_GLES),1)
-      GLES = 1
-      GL_LIB := -lGLESv2
-   else ifeq ($(FORCE_GLES3),1)
-      GLES3 = 1
-      GL_LIB := -lGLESv2
-   else
-      GL_LIB := -lGL
-   endif
-
    COREFLAGS += -DOS_LINUX
    ifeq ($(ARCH), x86_64)
       ASFLAGS = -f elf64 -d ELF_TYPE
@@ -220,8 +206,6 @@ ifneq (,$(findstring unix,$(platform)))
 else ifneq (,$(filter rpi4 rpi5 rpi4-aarch64 rpi5-aarch64,$(platform)))
    TARGET := $(TARGET_NAME)_libretro.so
    LDFLAGS += -shared -Wl,--version-script=$(ROOT_DIR)/src/link.T -Wl,--no-undefined -ldl
-   GLES3 = 1
-   GL_LIB := -lGLESv2
    HAVE_NEON = 0
    WITH_DYNAREC = aarch64
    ifneq (,$(findstring rpi5,$(platform)))
@@ -269,16 +253,8 @@ ifeq ($(STATIC_LINKING), 1)
    endif
 endif
 
-# Legacy devices can also be selected explicitly on a desktop build.
-HAVE_GLES2_RDP ?= $(if $(filter 1,$(GLES) $(GLES3) $(FORCE_GLES) $(FORCE_GLES3)),1,0)
-HAVE_GL2_RDP ?= $(if $(filter 1,$(GLES) $(GLES3) $(FORCE_GLES) $(FORCE_GLES3)),0,1)
-HAVE_D3D9 ?= 0
 ifeq ($(USF),1)
 override HAVE_PARALLEL_RDP := 0
-override HAVE_GLRDP := 0
-override HAVE_GL2_RDP := 0
-override HAVE_GLES2_RDP := 0
-override HAVE_D3D9 := 0
 COREFLAGS += -DN64EMU_USF
 TARGET := $(subst n64emu_libretro,n64emu_usf,$(TARGET))
 ifneq (,$(findstring win,$(platform)))
@@ -375,7 +351,7 @@ endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
 # n64emuJIT emitter, runtime layout and optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):cxx=$(CXX):$(CXX_MACHINE):$(CXX_VERSION):cxxstd=c++17:glrdp=$(HAVE_GLRDP):gl2=$(HAVE_GL2_RDP):gles2=$(HAVE_GLES2_RDP):d3d9=$(HAVE_D3D9):headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1:pic=$(PIC):tls=$(SHARED_TLS_FLAGS)
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):cxx=$(CXX):$(CXX_MACHINE):$(CXX_VERSION):cxxstd=c++17:renderers=softrdp,parallel-rdp:headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1:pic=$(PIC):tls=$(SHARED_TLS_FLAGS)
 # Wrapper invocations must leave the child's configuration stamp intact.
 CONFIG_WRAPPERS := x86 arm32 usf usf-x86 usf-arm32 rpi4 rpi5
 ifneq ($(strip $(MAKECMDGOALS)),)
@@ -389,8 +365,8 @@ $(file >$(CPU_JIT_CONFIG),$(CPU_JIT_CONFIG_VALUE))
 endif
 endif
 $(OBJECTS): $(CPU_JIT_CONFIG)
-CXXFLAGS    += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(GLFLAGS) $(DYNAFLAGS) $(SHARED_TLS_FLAGS)
-CFLAGS      += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(GLFLAGS) $(DYNAFLAGS) $(SHARED_TLS_FLAGS)
+CXXFLAGS    += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(DYNAFLAGS) $(SHARED_TLS_FLAGS)
+CFLAGS      += $(CPUOPTS) $(COREFLAGS) $(INCFLAGS) $(PLATCFLAGS) $(fpic) $(CPUFLAGS) $(DYNAFLAGS) $(SHARED_TLS_FLAGS)
 
 $(CORE_DIR)/src/device/r4300/cpu_ops.o $(CORE_DIR)/src/device/r4300/jit_runtime.o: CFLAGS += -O3
 # Keep precise host operations behind an integer ABI; dispatch and guest checks use fast-math.
@@ -410,9 +386,9 @@ rpi4 rpi5:
 	$(MAKE) platform=$@ all
 .PHONY: x86 arm32 usf usf-x86 usf-arm32
 x86:
-	$(MAKE) ARCH=x86 HAVE_GLRDP=0 HAVE_PARALLEL_RDP=0 all
+	$(MAKE) ARCH=x86 HAVE_PARALLEL_RDP=0 all
 arm32:
-	$(MAKE) platform=unix ARCH=arm FORCE_GLES=1 HAVE_GLRDP=0 HAVE_PARALLEL_RDP=0 all
+	$(MAKE) platform=unix ARCH=arm HAVE_PARALLEL_RDP=0 all
 usf:
 	$(MAKE) USF=1 all
 usf-x86:

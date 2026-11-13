@@ -11,9 +11,10 @@
 Personal N64 emulator code playset for anything with:
 
 * **x86/x86-64 CPUs with SSE2, or ARMv7/AArch64 CPUs with NEON**.
-* **Vulkan 1.1/DX9/DX11/GL2/GL3.3/GL4/GLES2/GLES 3.0**.
+* **Vulkan 1.1 for Parallel RDP (optional)**.
 * **Win7 and above/modern Linux**
 * **GCC/G++ 9 or newer with C++17 support**
+* CPU with 2 or more cores.
 
 ## How?
 
@@ -21,12 +22,14 @@ Making a garbage fire by hacking on parallel-n64 until almost nothing of the ori
 
 This includes:
 - Complete bit-exact HLE with cycle based-timing for **all** commercial game RSP tasks, based on disassembly of the entire NTSC N64 game library's tasks. Measurements have been done to count how long each RSP task takes to execute to fit in with a cycle-based timing system.
-- GL2+GL3.3+GL4/GLES2/GLES3/DX9+DX11 raster-based LLE RDP.
 - Vectorised+threaded LLE RDP (SoftRDP).
 - Compute shader-based LLE RDP (parallel-RDP). 
 - Cycle-based JITs for both RSP and main CPU.
 - Cycle-based timing of all components, including RDP stalls/delays.
 - USF playback support.
+
+The renderer options are **SoftRDP** (software, default) and **Parallel RDP**
+(Vulkan). Saved selections for removed renderers fall back to SoftRDP.
 
 Many bits of info was gleaned from CEN64, Simple64, Ares and MAME. \
 Many thanks to the authors of these emulators. \
@@ -37,8 +40,6 @@ Off executes all RSP programs natively in cycle-based LLE; On accelerates suppor
 with RSP LLE fallback for those ucodes not supported.
 
 **Cycle-based timing** selects **On** (default; complete CPU cache and pipeline timing) or **Off** (simplified CPU timing for higher performance). Component clocks and work-based RDP timing remain active in both settings.
-
-Both timing modes are included in the standard core build. **Off** uses seven-clock RAM access estimates and operand-dependent floating-point latency without simulating CPU caches or pipeline interlocks. Floating-point results and exception flags remain precise. **On** retains Accurate timing and is recommended for timing-sensitive demos and homebrew. Restart content after changing the option. USF builds retain their separate ripper compatibility timing.
 
 This emulator fork is based on  **very** extensive tests such as:
 - Lemmy's nemu64-test
