@@ -1099,7 +1099,8 @@ static void update_rtc_regs(struct mbc3_rtc* rtc)
         rtc->regs[MBC3_RTC_HOURS] += (int)(diff % 24);
         if (rtc->regs[MBC3_RTC_HOURS] >= 24) {
             rtc->regs[MBC3_RTC_HOURS] -= 24;
-            ++rtc->regs[MBC3_RTC_DAYS_L];
+            /* Carry into the full nine-bit day counter before narrowing. */
+            diff += 24;
         }
         diff /= 24;
 
@@ -1108,7 +1109,7 @@ static void update_rtc_regs(struct mbc3_rtc* rtc)
             + (int)diff;
 
         rtc->regs[MBC3_RTC_DAYS_L] = days & 0xff;
-        rtc->regs[MBC3_RTC_DAYS_H] = (rtc->regs[MBC3_RTC_DAYS_H] & ~0x01) | (days & 0x100);
+        rtc->regs[MBC3_RTC_DAYS_H] = (rtc->regs[MBC3_RTC_DAYS_H] & ~0x01) | ((days >> 8) & 1);
 
         /* set carry bit if days overflow */
         if (days > 511) { rtc->regs[MBC3_RTC_DAYS_H] |= 0x80; }

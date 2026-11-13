@@ -105,7 +105,7 @@ static int interp_ram_poll_advance(struct r4300_core* r, const struct interp_ram
      * reserves the issue clocks, while reads bypass stale D-cache contents. */
     const unsigned reservation = r4300_issue_reservation(r->compat_issue_clock);
     const unsigned cycles = 10 * (1 + reservation) +
-        (r->cache_timing ? 2 * (r4300_dcache_hit_cycles(reservation) + !reservation) : 0);
+        (r->cache_timing ? 2 * (r4300_dcache_hit_cycles(reservation) + !reservation) : 2 * R4300_OFF_RAM_CYCLES);
     uint64_t iterations = (uint64_t)(-(r->cp0.cycle_count + 1)) / (cycles / 2);
     if (iterations > UINT32_MAX / cycles) iterations = UINT32_MAX / cycles;
     if (!iterations) return 0;
@@ -172,7 +172,7 @@ static int interp_simple_poll_advance(struct r4300_core* r,const struct interp_s
     if(r->regs[rt]!=value || ((p->words[p->count-2]>>26)==4 ? value!=0 : value==0))return 0;
     const unsigned reservation=r4300_issue_reservation(r->compat_issue_clock);
     const unsigned clocks=p->count*(1+reservation+(r->cache_timing && !cached?40:0))+
-        (r->cache_timing?(cached?r4300_dcache_hit_cycles(reservation):31)+!reservation:0);
+        (r->cache_timing?(cached?r4300_dcache_hit_cycles(reservation):31)+!reservation:R4300_OFF_RAM_CYCLES);
     // COUNT advances on either half-clock phase. Retain the final partial
     // iteration for ordinary execution so interrupts keep their exact prefix.
     uint64_t budget=(uint64_t)(-(r->cp0.cycle_count+1))*2+(1-r->cp0.count_phase);

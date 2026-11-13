@@ -46,11 +46,11 @@ static int fpu_inputs(struct r4300_core* cpu, uint64_t a, uint64_t b, int single
         || ca == FP_SUBNORMAL || cb == FP_SUBNORMAL
 #endif
         ) {
-        if(!cpu->compat_issue_clock)cp0_step_cycles(&cpu->cp0,extra);
+        if(!r4300_fpu_compatibility_latency(cpu->cache_timing, cpu->compat_issue_clock))cp0_step_cycles(&cpu->cp0,extra);
         return fpu_unimplemented(cpu);
     }
     if (ca == FP_NAN || cb == FP_NAN) {
-        if(!cpu->compat_issue_clock && (cpu->cp1.fcr31&0x800))cp0_step_cycles(&cpu->cp0,extra);
+        if(!r4300_fpu_compatibility_latency(cpu->cache_timing, cpu->compat_issue_clock) && (cpu->cp1.fcr31&0x800))cp0_step_cycles(&cpu->cp0,extra);
         return fpu_flags(cpu, 16);
     }
     return 0;
@@ -87,7 +87,7 @@ static unsigned fpu_extra_cycles(struct r4300_core *cpu,uint32_t op,uint64_t res
 #else
     unsigned fmt=RS_OF(op),fn=op&63;
     unsigned extra=r4300_base_cycles(op,cpu->cp0.regs[CP0_STATUS_REG])-1;
-    if(cpu->compat_issue_clock)return extra;
+    if(r4300_fpu_compatibility_latency(cpu->cache_timing, cpu->compat_issue_clock))return extra;
     unsigned fs=(cpu->cp0.regs[CP0_STATUS_REG]&CP0_STATUS_FR)?FS_OF(op):(FS_OF(op)&~1u);
     uint64_t a=cpu->cp1.regs[fs].dword,b=cpu->cp1.regs[FT_OF(op)].dword;
     if((fmt==20 || fmt==21) && (fn==32 || fn==33)) {
@@ -118,7 +118,7 @@ static unsigned fpu_extra_cycles(struct r4300_core *cpu,uint32_t op,uint64_t res
 }
 static int fpu_prepare_unimplemented(struct r4300_core *cpu,unsigned extra)
 {
-    if(!cpu->compat_issue_clock)cp0_step_cycles(&cpu->cp0,extra);
+    if(!r4300_fpu_compatibility_latency(cpu->cache_timing, cpu->compat_issue_clock))cp0_step_cycles(&cpu->cp0,extra);
     return fpu_unimplemented(cpu);
 }
 
@@ -179,7 +179,7 @@ static N64EMU_FORCE_INLINE void fpu_finish(struct r4300_core* cpu, uint32_t op, 
     int single = fmt == 16, out_single = fn == 32 ? 1 : fn == 33 ? 0 : single;
     int to_integer = (fn >= 8 && fn <= 15) || fn == 36 || fn == 37;
     if (fn == 6) { cpu->cp1.regs[fd].dword = (int64_t)bits; cpu->instruction_pc.addr += 4; return; }
-    if(!cpu->compat_issue_clock)cp0_step_cycles(&cpu->cp0,extra);
+    if(!r4300_fpu_compatibility_latency(cpu->cache_timing, cpu->compat_issue_clock))cp0_step_cycles(&cpu->cp0,extra);
     if ((flags & 32)
 #ifndef N64EMU_USF
         || ((flags & 2) &&
@@ -191,7 +191,7 @@ static N64EMU_FORCE_INLINE void fpu_finish(struct r4300_core* cpu, uint32_t op, 
     if (fpu_flags(cpu, flags)) return;
     if (!to_integer && fpu_output(cpu, &bits, out_single)) return;
     cpu->cp1.regs[fd].dword = (int64_t)bits;
-    if(cpu->compat_issue_clock)cp0_step_cycles(&cpu->cp0,extra);
+    if(r4300_fpu_compatibility_latency(cpu->cache_timing, cpu->compat_issue_clock))cp0_step_cycles(&cpu->cp0,extra);
     cpu->instruction_pc.addr += 4;
 }
 

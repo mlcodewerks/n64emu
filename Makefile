@@ -1,3 +1,8 @@
+.PHONY: test
+test:
+	$(MAKE) -f tests/unit.mk check-unit
+# Component tests have their own build and must not rewrite core configuration.
+ifneq ($(strip $(MAKECMDGOALS)),test)
 DEBUG ?= 0
 .DEFAULT_GOAL := all
 HEADLESS_BENCHMARK ?= 0
@@ -452,3 +457,4 @@ clean:
 	rm -f $(TARGET)
 
 .PHONY: clean
+endif # core build (test-only invocations use tests/unit.mk)

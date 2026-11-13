@@ -1,0 +1,571 @@
+{
+  "date": "2026-11-13",
+  "platform": "Windows x64 / MinGW64 GCC 16.2.0",
+  "passed": 64,
+  "failed": 0,
+  "method": "Full 63-executable sweep, three serial FPU timeout rechecks, and a final 12-executable new-component sweep including the added RDP test.",
+  "initial_parallel_timeouts": [
+    "fp-environment-checks.exe",
+    "fpu-prepare-checks.exe",
+    "mapped-fpu-checks.exe"
+  ],
+  "default_execution": "Serial, 600 seconds per executable. Parallel correctness runs are optional.",
+  "source_checks": [
+    "Production/standalone RDP timing models match.",
+    "make test dry run covers all 64 executables and preserves generated core configuration."
+  ],
+  "tests": [
+    {
+      "test": "affinity-scope-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.12,
+      "log": "tests\\.build\\logs\\affinity-scope-checks.exe.log",
+      "sha256": "2ecaf468572f9b75bbd871ce2692a65494fd391e1ab0147e58c63f706b1cd3df",
+      "output": "Affinity scopes: 10,000 nested lane calls use one query; restoration, host masks, failures, TLS and disabled mode passed."
+    },
+    {
+      "test": "arm64-emit-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.016,
+      "log": "tests\\.build\\logs\\arm64-emit-checks.exe.log",
+      "sha256": "4978a87498e76e79ee043bc4b2049db382906bdd55c4fda4a439018035cb1636",
+      "output": "AArch64 encoder: 695 byte-identical branch/memory comparisons, 6 atomic failure checks passed."
+    },
+    {
+      "test": "boot-timing-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.299,
+      "log": "tests\\.build\\logs\\boot-timing-checks.exe.log",
+      "sha256": "fea9c23c0dc9905683c22b1d72c23e34106ed8fc04f2a4ea4ca0c2c041c76c9d",
+      "output": "Boot timing: first-VI clock, dirty-cache handoff and continued Fast dispatch passed."
+    },
+    {
+      "test": "cart-dongle-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.007,
+      "log": "tests\\.build\\logs\\cart-dongle-checks.exe.log",
+      "sha256": "9f36dcb88c917ca096e090b89db29b0effc428aadc189541113db5d2d0ff6ca7",
+      "output": "EEPROM: absent probe/read/write timeouts and present status/storage passed.\nPrototype cartridge: dongle, ordinary ROM reads, header guards and PI latch passed."
+    },
+    {
+      "test": "controllers.exe",
+      "exit_code": 0,
+      "seconds": 0.086,
+      "log": "tests\\.build\\logs\\controllers.exe.log",
+      "sha256": "32ed8d41a2ae87a15292d40cc6b9ff71b3b58450e75de3cb2956763c2b79aa50",
+      "output": "Controllers: input/status/errors, pak CRC/boundaries, rumble and Transfer Pak passed."
+    },
+    {
+      "test": "cpu-cache-checks.exe",
+      "exit_code": 0,
+      "seconds": 93.157,
+      "log": "tests\\.build\\logs\\cpu-cache-checks.exe.log",
+      "sha256": "b2a71d7c2afc677105defa7a9ff3e6082083bc768be381f3c943b0003a2ed929",
+      "output": "Accurate x64 JIT: 8768 pipeline/cache/write-buffer differential cases passed."
+    },
+    {
+      "test": "cpu-operations.exe",
+      "exit_code": 0,
+      "seconds": 0.223,
+      "log": "tests\\.build\\logs\\cpu-operations.exe.log",
+      "sha256": "ed388d3bcf1e66974a6692f9f6ed7adddee504ddf09bbc8f27f29525f1df31ba",
+      "output": "CPU operations: 142 independent timing-mode vectors passed."
+    },
+    {
+      "test": "cycle-pipeline-checks.exe",
+      "exit_code": 0,
+      "seconds": 115.042,
+      "log": "tests\\.build\\logs\\cycle-pipeline-checks.exe.log",
+      "sha256": "b944754251bf05a3f4faeb29ca6c5b421a83508ae070b6e8a2db666afa352120",
+      "output": "Accurate x64 JIT: 8768 pipeline/cache/write-buffer differential cases passed.\nDeferred pipeline: 1024 mixed sequences, 2628 precise resumes passed.\nFixed branch prefetch: 288 timing/state cases passed."
+    },
+    {
+      "test": "disk-geometry.exe",
+      "exit_code": 0,
+      "seconds": 0.446,
+      "log": "tests\\.build\\logs\\disk-geometry.exe.log",
+      "sha256": "1e5cf7c68fb4dd149f4efc87ed54a4447b0a6e64a1e81f5fb8d96ddc77a8316e",
+      "output": "64DD disks: 30212 logical/physical round trips and seven geometry size totals passed."
+    },
+    {
+      "test": "extra/ai-fifo-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.026,
+      "log": "tests\\.build\\logs\\extra_ai-fifo-checks.exe.log",
+      "sha256": "61e4efd80319c01f7151f6b3d798217ae60af9449c9f619a4c3b03fa11d4c69b",
+      "output": "AI: FIFO/start/drain IRQs, full rejection, DAC deadline, Count-write independence and single sample delivery passed."
+    },
+    {
+      "test": "extra/copy-ownership-s1.exe",
+      "exit_code": 0,
+      "seconds": 0.553,
+      "log": "tests\\.build\\logs\\extra_copy-ownership-s1.exe.log",
+      "sha256": "fc896bcc56abee9a08d7653713b53303acb66e38bdf9057b446aeee5aea28965",
+      "output": "SoftRDP scale 1: 2112 copy ownership/serial comparisons passed"
+    },
+    {
+      "test": "extra/copy-ownership-s2.exe",
+      "exit_code": 0,
+      "seconds": 0.474,
+      "log": "tests\\.build\\logs\\extra_copy-ownership-s2.exe.log",
+      "sha256": "2caa08b7db1fc4402fed4e4041394d4bd52216179ea9c5c5a3aecf3f95d567ce",
+      "output": "SoftRDP scale 2: 2112 copy ownership/serial comparisons passed"
+    },
+    {
+      "test": "extra/copy-ownership-s4.exe",
+      "exit_code": 0,
+      "seconds": 0.165,
+      "log": "tests\\.build\\logs\\extra_copy-ownership-s4.exe.log",
+      "sha256": "e7310c0b4932b5fc5cd70095f321b98b914e9128c3e3f39f9a92f7fcfe930533",
+      "output": "SoftRDP scale 4: 2112 copy ownership/serial comparisons passed"
+    },
+    {
+      "test": "extra/fb-notifications.exe",
+      "exit_code": 0,
+      "seconds": 0.226,
+      "log": "tests\\.build\\logs\\extra_fb-notifications.exe.log",
+      "sha256": "6e77001612b7b7fa395b1b7bd6dd3d31f3c7173741dd2928c3548b2963007652",
+      "output": "Core framebuffer notifications: depth pages, owner release, exact DMA/masked stores passed."
+    },
+    {
+      "test": "extra/fill-ownership-s1.exe",
+      "exit_code": 0,
+      "seconds": 0.461,
+      "log": "tests\\.build\\logs\\extra_fill-ownership-s1.exe.log",
+      "sha256": "90f5c16c9e9f5d4b36ef553f35ed5383f14755a0c57cb9f3b5846f040f223c60",
+      "output": "SoftRDP scale 1: 1188 fill ownership/serial comparisons passed"
+    },
+    {
+      "test": "extra/fill-ownership-s2.exe",
+      "exit_code": 0,
+      "seconds": 0.682,
+      "log": "tests\\.build\\logs\\extra_fill-ownership-s2.exe.log",
+      "sha256": "7b491fe3b1df40300314131c5bba49130c8c26ba2fd2d86af41c965f67a913eb",
+      "output": "SoftRDP scale 2: 1188 fill ownership/serial comparisons passed"
+    },
+    {
+      "test": "extra/fill-ownership-s4.exe",
+      "exit_code": 0,
+      "seconds": 1.33,
+      "log": "tests\\.build\\logs\\extra_fill-ownership-s4.exe.log",
+      "sha256": "bee08c317640130a6db51e31a45c79dd07fe349670ea71bf08735f213b2489f9",
+      "output": "SoftRDP scale 4: 1188 fill ownership/serial comparisons passed"
+    },
+    {
+      "test": "extra/gpu-parser.exe",
+      "exit_code": 0,
+      "seconds": 0.105,
+      "log": "tests\\.build\\logs\\extra_gpu-parser.exe.log",
+      "sha256": "34c56b7921d61925fd43c73aed1aa86b866740d7b1fd9ae0b552870e2b033f58",
+      "output": "RDP C++17: all 8 triangle layouts across 181 input chunk sizes and pending-state restore passed."
+    },
+    {
+      "test": "extra/rdp-portable.exe",
+      "exit_code": 0,
+      "seconds": 0.142,
+      "log": "tests\\.build\\logs\\extra_rdp-portable.exe.log",
+      "sha256": "99e15d8c132031a091dbe8c57b46c987fa648fbb0faa9a0dbcba2285db3327c6",
+      "output": "Buffered service: alignment, partial/bank boundaries, 1323 row proofs, VI phase and saturated grants passed.\nPortable API: clock carry, fences, packet sizes, endian input, restore, VI snapshots, invalidation and overflow passed."
+    },
+    {
+      "test": "extra/rdp-short-span.exe",
+      "exit_code": 0,
+      "seconds": 0.254,
+      "log": "tests\\.build\\logs\\extra_rdp-short-span.exe.log",
+      "sha256": "0ef8cf828a0099f749f1db07f638836562eb6e1589205cedc252a40fb39f5ee2",
+      "output": "Short-span VI overlap and topology boundaries: 160 checks passed"
+    },
+    {
+      "test": "extra/regressions.exe",
+      "exit_code": 0,
+      "seconds": 0.183,
+      "log": "tests\\.build\\logs\\extra_regressions.exe.log",
+      "sha256": "85ec28e70dc3a30f100abc2020a9a172a67a9ed63363c65c51c1a812930112d3",
+      "output": "RSP: 86 SLTIU/LWU native-JIT regressions passed.\nRSP: 2390 SLTIU/LWU/STV native-JIT regressions passed."
+    },
+    {
+      "test": "extra/scanlines-s1.exe",
+      "exit_code": 0,
+      "seconds": 0.489,
+      "log": "tests\\.build\\logs\\extra_scanlines-s1.exe.log",
+      "sha256": "ac09d0555cfac962432ab1b555ea2e07772e5d8e587f2679573d20e1aafd2b13",
+      "output": "SoftRDP scale 1: 89577 worker comparisons, 202162 spans, 22922 TEXEL1 peeks passed"
+    },
+    {
+      "test": "extra/scanlines-s2.exe",
+      "exit_code": 0,
+      "seconds": 0.535,
+      "log": "tests\\.build\\logs\\extra_scanlines-s2.exe.log",
+      "sha256": "656a9c7e336730e4a95afff6df0572b74987cd30e42ea5b64357c4562548fead",
+      "output": "SoftRDP scale 2: 89577 worker comparisons, 334309 spans, 45612 TEXEL1 peeks passed"
+    },
+    {
+      "test": "extra/scanlines-s4.exe",
+      "exit_code": 0,
+      "seconds": 0.817,
+      "log": "tests\\.build\\logs\\extra_scanlines-s4.exe.log",
+      "sha256": "5ede8bd424a5d34671fb8f489f7ac51af80f992beff67015992a40a16b0a0f84",
+      "output": "SoftRDP scale 4: 89577 worker comparisons, 548570 spans, 82859 TEXEL1 peeks passed"
+    },
+    {
+      "test": "extra/signal-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.148,
+      "log": "tests\\.build\\logs\\extra_signal-checks.exe.log",
+      "sha256": "28e2e9f8d3e6615993cd97f9f402eb90b913db5d7d4705e0854943f6a7077950",
+      "output": "RSP: 36 signal publication and delay-slot checks passed."
+    },
+    {
+      "test": "extra/step-interpreter.exe",
+      "exit_code": 0,
+      "seconds": 0.317,
+      "log": "tests\\.build\\logs\\extra_step-interpreter.exe.log",
+      "sha256": "fd36f6106e12ea8cc4e2817658cf19e22ae70809bec0121d9c790949d95b516f",
+      "output": "RSP single step: 8,100 differential instructions, control flow, DMA and production save/load passed."
+    },
+    {
+      "test": "extra/step-jit.exe",
+      "exit_code": 0,
+      "seconds": 0.169,
+      "log": "tests\\.build\\logs\\extra_step-jit.exe.log",
+      "sha256": "c8ecc69cb2f08851d4f187f5187fed61ce59098a872b8d0f89fe40d4e06559f0",
+      "output": "RSP single step: 8,100 differential instructions, control flow, DMA and production save/load passed."
+    },
+    {
+      "test": "fp-branch-checks.exe",
+      "exit_code": 0,
+      "seconds": 511.172,
+      "log": "tests\\.build\\logs\\fp-branch-checks.exe.log",
+      "sha256": "b3ff8595005975c33d2d8b13e37049d163ba21ecac5c62a75d97064ddc98fa6c",
+      "output": "Native FP branches: 46848 precise/native state, clocks, FCR31, CU1, annulment, event, ITLB and prefetch differentials passed; 864 cases confirmed native."
+    },
+    {
+      "test": "fp-delay-zero-checks.exe",
+      "exit_code": 0,
+      "seconds": 587.761,
+      "log": "tests\\.build\\logs\\fp-delay-zero-checks.exe.log",
+      "sha256": "ee4fa31d32fc419527b3824e431642cfcddd7de844a77ba6dd1f458cf1167610",
+      "output": "Native zero ADD.D delay: 81488 complete branch/value/clock/FCR31/FR/ITLB/RAM/MXCSR differentials; 5760 required-native cases."
+    },
+    {
+      "test": "fp-environment-checks.exe",
+      "exit_code": 0,
+      "seconds": 132.333,
+      "log": "tests\\.build\\logs\\serial-fp-environment-checks.exe.log",
+      "sha256": "978f0de94b8a5767e87fa18fe2ab0433b3a91399c2e8d48da59cdbc35d3f0bee",
+      "output": "FP host environment: 122880 complete sequence differentials and 29740 real prepare boundaries preserved unmasked and masked host MXCSR."
+    },
+    {
+      "test": "fp-exact-checks.exe",
+      "exit_code": 0,
+      "seconds": 526.456,
+      "log": "tests\\.build\\logs\\fp-exact-checks.exe.log",
+      "sha256": "4d8950f27e274141f6b2defb271d9545958fdc2bb688fdab1e89ec7ae545ce69",
+      "output": "Exact FP arithmetic: 51264 precise/native value, clock, FCR31, MXCSR and ITLB differentials passed."
+    },
+    {
+      "test": "fp-mixed-checks.exe",
+      "exit_code": 0,
+      "seconds": 304.32,
+      "log": "tests\\.build\\logs\\fp-mixed-checks.exe.log",
+      "sha256": "ddb9682455e74f196b874b6c6e1cf45860db3234215569ff120cf28e8c315b5a",
+      "output": "Mixed native COP1: 26112 precise/native state, clocks, FCR31, MXCSR and ITLB differentials passed; 51 sequences bypassed precise steps."
+    },
+    {
+      "test": "fpu-prepare-checks.exe",
+      "exit_code": 0,
+      "seconds": 296.293,
+      "log": "tests\\.build\\logs\\serial-fpu-prepare-checks.exe.log",
+      "sha256": "e5b89e62d513e8111dc523c273019fe0c0f8b66702020b7793942c882ef07ae7",
+      "output": "CPU FP preparation: 47616 precise/native state, clock, FCR31 and MXCSR differentials passed.\nCPU FP sequences: 61440 mapped/KSEG, cached/uncached, prefetch, FR, ITLB, event and exception differentials passed."
+    },
+    {
+      "test": "gb-clock.exe",
+      "exit_code": 0,
+      "seconds": 0.095,
+      "log": "tests\\.build\\logs\\gb-clock.exe.log",
+      "sha256": "06007f45e04832e7a4e3761567d41fff467e955914e122883767dde4c8301b90",
+      "output": "Game Boy: MBC1 bank/RAM protection/persistence and RTC rollover/latch passed."
+    },
+    {
+      "test": "gl-binding-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.028,
+      "log": "tests\\.build\\logs\\gl-binding-checks.exe.log",
+      "sha256": "a305ba7c45827693c5221871dc3a1de219a4c9a318f417f92f7bf2c93b2a626c",
+      "output": "GL binding cache: ownership, indexed buffers, VAOs, FBOs, images and deletion checks passed."
+    },
+    {
+      "test": "hle-timing-path-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.028,
+      "log": "tests\\.build\\logs\\hle-timing-path-checks.exe.log",
+      "sha256": "d039716427bed6ea9845b2b5d21c529429d7c75e9ed482e5c1ee70289b75af88",
+      "output": "HLE path counters: names, save/restore/reset and saturation passed."
+    },
+    {
+      "test": "hle-timing-policy-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.012,
+      "log": "tests\\.build\\logs\\hle-timing-policy-checks.exe.log",
+      "sha256": "90408b73a6b442dcd0822cb834bf5ba099e452c5f6293d3d81dc8d96dcddaace",
+      "output": "HLE policy: command identity, override, reset/restore and independent slice limit passed."
+    },
+    {
+      "test": "hle-timing-refine-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.01,
+      "log": "tests\\.build\\logs\\hle-timing-refine-checks.exe.log",
+      "sha256": "1bf4e0c87e837d414eb66b8b0f27859e3a5003a805376443cd03f4c214a87e19",
+      "output": "HLE refinement: admission, partition limits and saturation passed for every work kind."
+    },
+    {
+      "test": "interrupts.exe",
+      "exit_code": 0,
+      "seconds": 0.076,
+      "log": "tests\\.build\\logs\\interrupts.exe.log",
+      "sha256": "cb0460b23963f011160bcfc091543833ee5582b739034389459d352c779440de",
+      "output": "Interrupts: 531 queue/wrap/serialization/mask/delay cases passed."
+    },
+    {
+      "test": "jit-arena-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.08,
+      "log": "tests\\.build\\logs\\jit-arena-checks.exe.log",
+      "sha256": "b90ff228416642c40a9a90260165d35ee03bff75b699b9fa719c7f077e57f956",
+      "output": "CPU JIT arena: exact segment entry, wraparound, invalidation and execution passed."
+    },
+    {
+      "test": "jit-emit-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.011,
+      "log": "tests\\.build\\logs\\jit-emit-checks.exe.log",
+      "sha256": "9310a542c4c733543e29b3ae7446e85d1fc6f7d504802c9c5ef62ab024dd0d7f",
+      "output": "CPU JIT branches: 944 byte-identical Xbyak comparisons; 8 failure checks passed."
+    },
+    {
+      "test": "jit-memory-emit-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.039,
+      "log": "tests\\.build\\logs\\jit-memory-emit-checks.exe.log",
+      "sha256": "5e5aaee99b875628b282744601f22ec8c1e3f91a92dfdcd404eac5668e899441",
+      "output": "CPU JIT scalar/memory: 116880 byte-identical Xbyak comparisons; atomic overflow passed."
+    },
+    {
+      "test": "jit-source-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.179,
+      "log": "tests\\.build\\logs\\jit-source-checks.exe.log",
+      "sha256": "e89dde8bf2dd1c2579b5fa13db92748915865abb20ebd243f28265248a6aaf5e",
+      "output": "Dirty JIT source: 1279488 cached/uncached/alias/shadow/lookahead differentials passed.\nMapped attributes: 131072 overlapping/even/odd/ASID/global/cache-mode/wrap comparisons passed."
+    },
+    {
+      "test": "mapped-data-checks.exe",
+      "exit_code": 0,
+      "seconds": 21.284,
+      "log": "tests\\.build\\logs\\mapped-data-checks.exe.log",
+      "sha256": "79b84bdb7f468d279eb58868947eb1fd121a758c1e78eb3ad3ee8534120d4a33",
+      "output": "Resident admission RAM/branch: 512 state/timing/event differentials passed.\nMapped native data: 2048 cold/hot/collision/cache-rewrite timing/state/RAM differentials passed (38048 precise steps)."
+    },
+    {
+      "test": "mapped-fpu-checks.exe",
+      "exit_code": 0,
+      "seconds": 182.182,
+      "log": "tests\\.build\\logs\\serial-mapped-fpu-checks.exe.log",
+      "sha256": "af60e21271029f4af251d9399a233a65cccff64e1563c9e474ed7e4f1f2e6234",
+      "output": "Mapped isolated FP: 163840 precise/native state, clocks, FCR31, MXCSR, fetch metadata and micro-TLB differentials passed; 40 ordinary slot cases bypassed the precise preparation helper."
+    },
+    {
+      "test": "memory-mapping.exe",
+      "exit_code": 0,
+      "seconds": 0.027,
+      "log": "tests\\.build\\logs\\memory-mapping.exe.log",
+      "sha256": "0a45731acc90f6d1c42b50cc23fb074af0565dfcb33be10a4ebfcb7847925a60",
+      "output": "Memory: inclusive region boundaries, dispatch, masks, remapping and fastmem invalidation passed."
+    },
+    {
+      "test": "mixed-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.263,
+      "log": "tests\\.build\\logs\\mixed-checks.exe.log",
+      "sha256": "c9efdf9019022b9634b3cd506e2c02dba30679c35009a663e1483538313158ea",
+      "output": "2048 mixed scalar/vector RSP streams match interpreter state and exact cycles."
+    },
+    {
+      "test": "native-hot-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.109,
+      "log": "tests\\.build\\logs\\native-hot-checks.exe.log",
+      "sha256": "6304a515dc69aaebd403543d9d35d462cce8ddde3399b4ebf239ebd737e9ab97",
+      "output": "CPU native hot paths: 32 integer/FP memory state/timing differentials, zero precise exits passed."
+    },
+    {
+      "test": "nead-load-admission-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.028,
+      "log": "tests\\.build\\logs\\nead-load-admission-checks.exe.log",
+      "sha256": "2b588e7f2b0f582904838323c1bd0bd1c0d618127e948514940901d74647fa78",
+      "output": "NEAD admission: DMEM/IMEM bank, zero-row encoding, carry, alignment and bounds passed."
+    },
+    {
+      "test": "off-poll.exe",
+      "exit_code": 0,
+      "seconds": 0.08,
+      "log": "tests\\.build\\logs\\off-poll.exe.log",
+      "sha256": "6cf66c74b89e1dc652fc47f6fbf5d549dd2f22aa8a3b22c8d03cb2552eb82d8b",
+      "output": "Off SDK poll: 32 ordinary-execution/shortcut phase and deadline cases passed."
+    },
+    {
+      "test": "pif-channels.exe",
+      "exit_code": 0,
+      "seconds": 0.1,
+      "log": "tests\\.build\\logs\\pif-channels.exe.log",
+      "sha256": "cc63b7c7dae37fcd4d943343207cf33e60c9832e9f2978f21c27711398acb945",
+      "output": "PIF: valid Joybus processing and 2262 truncated packet/stale-channel cases passed."
+    },
+    {
+      "test": "precise-nop-checks.exe",
+      "exit_code": 0,
+      "seconds": 69.364,
+      "log": "tests\\.build\\logs\\precise-nop-checks.exe.log",
+      "sha256": "26ca32958c5f3b8f569260de554d2f4948d9b1ad10ea2fa5bc04b4c211de4b29",
+      "output": "Branch-created fill admission: 192 state/timing/event differentials passed.\nPrecise NOP replay: 2304 state/timing/event/cache differentials passed.\nResident native admission: 4608 ALU/NOP state/timing/event differentials passed."
+    },
+    {
+      "test": "rcp-devices.exe",
+      "exit_code": 0,
+      "seconds": 0.082,
+      "log": "tests\\.build\\logs\\rcp-devices.exe.log",
+      "sha256": "9739cc0ab0ee19a4d5be7d710fb8fd4c8d6b1da97633a05ebc0e62a764b779ee",
+      "output": "RCP: six MI IRQ masks, RI status, 1000 VI periods/Count independence, PI and SI DMA/busy/ack passed."
+    },
+    {
+      "test": "rdp-registers.exe",
+      "exit_code": 0,
+      "seconds": 0.083,
+      "log": "tests\\.build\\logs\\rdp-registers.exe.log",
+      "sha256": "5dcbc437cbe23ca827a1cfbdd1e0211841ea13c4efa0f490c7078974e552d784",
+      "output": "RDP: DPC flags/latches, unfreeze notifications, clock wrap/restore, DPS masks and frozen FIFO serialization/bounds passed."
+    },
+    {
+      "test": "rdram-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.017,
+      "log": "tests\\.build\\logs\\rdram-checks.exe.log",
+      "sha256": "e643a7640a503b74ac1564b9fdd333ef0442001292fc8e3a16aac20a9b4f013e",
+      "output": "RDRAM: cold command timing, delay readback, device IDs, MI upper reads and per-chip calibration passed."
+    },
+    {
+      "test": "resume-guard-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.133,
+      "log": "tests\\.build\\logs\\resume-guard-checks.exe.log",
+      "sha256": "fb5511d52442d9ae2341669e439bf2e64890d4056fefc7dbd764c9e16cf65727",
+      "output": "Accurate continuation admission: 65536 native/shared guard differentials passed."
+    },
+    {
+      "test": "rom-database-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.01,
+      "log": "tests\\.build\\logs\\rom-database-checks.exe.log",
+      "sha256": "2030aaa67612fc40fabee383aacbb53def1e06554b1aa0090cd59c226c0e158a",
+      "output": "ROM boards: 36 region/ID/save cases passed, including conversions, Pyoro and EverDrive."
+    },
+    {
+      "test": "rsp-checks.exe",
+      "exit_code": 0,
+      "seconds": 1.252,
+      "log": "tests\\.build\\logs\\rsp-checks.exe.log",
+      "sha256": "461ba20c32e8c6fa8b79a4632bdc2bb846d343774121c24cad2b64accae1ba3d",
+      "output": "21,504 full-width scalar peephole cases passed.\n98304 aligned/unaligned, constant/dynamic vector quad/packed transfers match reference helpers.\n36864 small vector transfers match reference helpers across elements and DMEM boundaries.\nRSP scalar, register-cache, branch, helper, timeslice and invalidation checks passed."
+    },
+    {
+      "test": "rsp-poll-checks.exe",
+      "exit_code": 0,
+      "seconds": 0.018,
+      "log": "tests\\.build\\logs\\rsp-poll-checks.exe.log",
+      "sha256": "4fbd3e5cbacba67bbaee27f08c091aa080a44bdf1135777a81490f80fd11500f",
+      "output": "RSP polling: 294 JIT/interpreter slice differentials passed."
+    },
+    {
+      "test": "storage-devices.exe",
+      "exit_code": 0,
+      "seconds": 0.107,
+      "log": "tests\\.build\\logs\\storage-devices.exe.log",
+      "sha256": "ee305063215f43575bca9a3a1b66765095517a0c5919a021fd4152e87355f3eb",
+      "output": "Cartridge saves: 7 EEPROM/FlashRAM/SRAM boundary and persistence cases passed."
+    },
+    {
+      "test": "timing.exe",
+      "exit_code": 0,
+      "seconds": 0.104,
+      "log": "tests\\.build\\logs\\timing.exe.log",
+      "sha256": "20c9da3c80be109225b0f9dc6766ea3d2518987b39636e142f0c16ebe591b679",
+      "output": "Timing: 92 On/Off latency, half-clock, wrap, RCP and pipeline contracts passed."
+    },
+    {
+      "test": "trapping-alu-checks.exe",
+      "exit_code": 0,
+      "seconds": 574.698,
+      "log": "tests\\.build\\logs\\trapping-alu-checks.exe.log",
+      "sha256": "d7619d7664d8142f85e405618aef2cdc4dd929d5f119423b097d5a73607ecdbd",
+      "output": "Guarded ADDI: 100800 precise/native overflow, prefix, memory, fetch and event differentials passed; 4680 ordinary cases bypassed the precise ADDI callback."
+    },
+    {
+      "test": "vector-checks.exe",
+      "exit_code": 0,
+      "seconds": 1.801,
+      "log": "tests\\.build\\logs\\vector-checks.exe.log",
+      "sha256": "cf28974256b3566b4eafd2524d10d58ffa14f84842c3a99c192f5cd79634ba9b",
+      "output": "Sequence code bytes: 1242626 fused / 1615801 separate; 32768 differential cases and 2048 integrated blocks passed.\nVU code bytes: 2627224 optimized / 2651200 original.\nNative vector differential tests passed: 786432 VU, 147456 COP2 transfer and 1024 scalar-cache/block cases."
+    },
+    {
+      "test": "worker-pool-checks.exe",
+      "exit_code": 0,
+      "seconds": 5.631,
+      "log": "tests\\.build\\logs\\worker-pool-checks.exe.log",
+      "sha256": "b43571a60f88f63f2b19949d57691fad6d2634f5392a95748c2457fd28896683",
+      "output": "Worker pool: 24,576 generations on 1/2/6 workers, idle waits, reinit/shutdown and widths 1..64 passed (WaitOnAddress)."
+    }
+  ],
+  "accurate_dk64_audit": {
+    "scope": "Compatibility/hash audit only. Concurrent component tests invalidate host throughput comparisons.",
+    "core_sha256": "92cc8e27a357a63a9f0b20e1b61204f7b6b3369f8fac884881d28a9580b59bc3",
+    "far_bank": true,
+    "fields": 4968,
+    "vine_trace_sha256": "ca2c050e0678060131ef69a8c14604d74f2d1df3ea35290430e8178c5b038602",
+    "image_sha256": "0772aaded8d2bdb6819abcbaca6b0b289dab05aa8a6d85b44a00f3d74d9ec623",
+    "reference_trace_and_image_identical": true,
+    "errors": []
+  },
+  "source_sha256": {
+    "benchmarks/conformance/ai_fifo_checks.c": "035344c8c55eb22ed827003391d723b135da102bf953ef660bc4cf0ca97db5ed",
+    "benchmarks/cpu_behavior.h": "3af66b623180d981f8d6a7f9c4aed3566ee0f338fa095f2f61578c62af0a238c",
+    "benchmarks/hle-calibration/nead_load_admission_checks.c": "756ffaaa75166fb6320be507758a3d10d62a250e9e67f8028aedb4e449fc12f0",
+    "benchmarks/hle-calibration/timing_path_checks.c": "c254a33fe891101172c4ccbed086017b896cbf71ebce1a3af2cf4032c227f268",
+    "benchmarks/hle-calibration/timing_policy_checks.c": "9a6afdead4c122619dc24e56b39754d38d7e696635c9ea1018c63779fc180272",
+    "benchmarks/hle-calibration/timing_refine_checks.c": "0650ec2a4ed43f09daf2f622cec00aa64c423ba31ac61e4d870734c2f0fc75e1",
+    "Makefile": "de98634d2b4edec45c408ef416d38b8618e2c549ed0b4ac5ab8c1abe308f3479",
+    "src/device/gb.c": "2ef6c84eced4d278da744425ea2a1b81e9d1b63cd20ce18b4b0f3fe83e43f079",
+    "src/device/pif.c": "534688de280541f60056a58dc2fdb6cbdad1fad1cc7e313c69993ded181b9e6c",
+    "src/device/r4300/interp_thread_poll.h": "bd996bf02c6ab0e9594977416e2c31764f3f93cdd3edb5a21b92fd5b1c37d908",
+    "tests/check_rdp_header.py": "c53c9954326e0a4413130557b35e602d709842ec9f2702173d40a19698b0c70b",
+    "tests/controllers.c": "e43344b5b8eb6a75aba5338d2a69ba8659e1aeac1ec29c82463e9eefd88ae29e",
+    "tests/cpu_operations.c": "30bc7c870bde99c531c7716d631e19baa53a8ef77047b7863b9ef9d0a5008fba",
+    "tests/disk_geometry.c": "cbec928397514c606660c59e10157f8d5f81f35e02466e78e5212671d94e8715",
+    "tests/extras.mk": "18251c8d4f540aa425bce7cfe7c9055d2af3786eda6e2a8416a67a65866ad226",
+    "tests/gb_clock.c": "b46d379113e235a7dde61288d74c0cfab980c55efa8500f2440da9ae45d085d2",
+    "tests/headless.h": "5b254ff232ab2b9acd0f77b75e264eb53deaef2a16a88f496b319c8b0c44b73c",
+    "tests/interrupts.c": "dae84c698b5c04e24fa8373be3421e60c0fb175d0fb5df44c1614471174ac8ea",
+    "tests/memory_mapping.c": "89375e59be93afb688530f4cfdba98654da8fae5f68196e74c21847794621b8a",
+    "tests/pif_channels.c": "9fa433c5f5fb9ad4f08bcede17d6d3c74ef0d21e6fd8f74a61b942f103f87dae",
+    "tests/rcp_devices.c": "f695d5bb6a3bc28fcd93b80b59d4d0cfc6a8969e7f4c227098cbc45a92b83c1f",
+    "tests/rdp_registers.c": "a4ee0d251912ee74976b83656a351c69d1fc15be2487307cb62ee2b94f05dc58",
+    "tests/run.py": "3725ae6589bb38b15c5c19ad4321b8af0b88ab2b7bab909fde7d75c83cea34ad",
+    "tests/storage_devices.c": "7bbf31d0f309fd2938073eaf689491ab7120dae1942adafa49d5d2ea4d4fc9a0",
+    "tests/support.c": "984ef79e7805a4ce5de7447f632d1c8ac8b42ccd198c26e12c224a23f74a493c",
+    "tests/support.h": "34b0ad53ce7670d2a9cf90c7b0c7668be7b5bcd37fe01896c518af46cc27fc68",
+    "tests/timing.c": "90fb8cdacdb79eeed364ae55adfa2e0789b5628757bd43a6ca6fd3f9d066d5b8",
+    "tests/unit.mk": "0d5d55386cdaad7c916423c48f9f378a37cdcf7d7e720f92d160c71021b46862"
+  }
+}

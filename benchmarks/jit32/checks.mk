@@ -15,11 +15,19 @@ RSP := src/device/rcp/rsp/p_rsp
 RSP_SOURCES := $(RSP)/rsp_jit.cpp $(RSP)/jit_vector.cpp $(RSP)/rsp_disasm.cpp $(RSP)/jit_allocator.cpp $(wildcard $(RSP)/rsp/*.cpp) $(wildcard $(RSP)/arch/simd/rsp/*.cpp)
 RSP_HEADERS := $(wildcard $(RSP)/*.hpp) $(wildcard $(RSP)/*.inc) src/jit32/assembler.hpp
 .PHONY: all check
-all: $(OUT)/cpu-checks$(EXE) $(OUT)/rsp-checks$(EXE) $(OUT)/vector-checks$(EXE)
+all: $(OUT)/cpu-checks$(EXE) $(OUT)/rsp-checks$(EXE) $(OUT)/vector-checks$(EXE) $(OUT)/fpu-transfer-checks$(EXE)
+all: $(OUT)/fpu-compare-abi-checks$(EXE)
+all: $(OUT)/fpu-cvt-abi-checks$(EXE)
 $(OUT):
 	mkdir -p $@
 $(OUT)/cpu-checks$(EXE): benchmarks/jit32/cpu_checks.cpp $(CPU_EMITTER) $(wildcard src/device/r4300/jit/pair32/*.inc) src/device/r4300/jit/n64emujit.h src/jit32/assembler.hpp | $(OUT)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 $< $(CPU_EMITTER) -o $@
+$(OUT)/fpu-transfer-checks$(EXE): benchmarks/jit32/fpu_transfer_checks.cpp $(CPU_EMITTER) $(wildcard src/device/r4300/jit/pair32/*.inc) src/device/r4300/jit/n64emujit.h src/jit32/assembler.hpp | $(OUT)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 $< $(CPU_EMITTER) -o $@
+$(OUT)/fpu-compare-abi-checks$(EXE): benchmarks/jit32/fpu_compare_abi_checks.cpp $(CPU_EMITTER) $(wildcard src/device/r4300/jit/pair32/*.inc) src/device/r4300/jit/n64emujit.h src/jit32/assembler.hpp | $(OUT)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 $< $(CPU_EMITTER) -o $@
+$(OUT)/fpu-cvt-abi-checks$(EXE): benchmarks/jit32/fpu_compare_abi_checks.cpp $(CPU_EMITTER) $(wildcard src/device/r4300/jit/pair32/*.inc) src/device/r4300/jit/n64emujit.h src/jit32/assembler.hpp | $(OUT)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -DFPU_ABI_COMPARE_TESTS=0 -std=c++17 $< $(CPU_EMITTER) -o $@
 $(OUT)/arm-immediate-checks$(EXE): benchmarks/jit32/arm_immediate_checks.cpp src/jit32/assembler.hpp | $(OUT)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 $< -o $@
 $(OUT)/emitter-checks$(EXE): $(RSP)/jit_tests.cpp $(RSP)/jit_allocator.cpp $(RSP_HEADERS) | $(OUT)
@@ -30,5 +38,8 @@ $(OUT)/vector-checks$(EXE): $(RSP)/vector_jit_tests.cpp $(RSP_SOURCES) $(RSP_HEA
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 -DN64EMU_RSP_TEST_SILENT $< $(RSP_SOURCES) -o $@
 check: all
 	$(OUT)/cpu-checks$(EXE)
+	$(OUT)/fpu-transfer-checks$(EXE)
+	$(OUT)/fpu-compare-abi-checks$(EXE)
+	$(OUT)/fpu-cvt-abi-checks$(EXE)
 	$(OUT)/rsp-checks$(EXE)
 	$(OUT)/vector-checks$(EXE)

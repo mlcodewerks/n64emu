@@ -4,7 +4,16 @@ static void execute_test_op(uint32_t op)
     code[0] = op;
     cpu.instruction_pc.addr = 0x80000000;
     r4300_jit_invalidate(&cpu, 0x80000000, 4);
-    cpu.execute_one(&cpu);
+    if ((cpu.cp0.regs[CP0_STATUS_REG] & CP0_STATUS_MODE_MASK) &&
+        !(cpu.cp0.regs[CP0_STATUS_REG] & (CP0_STATUS_EXL | CP0_STATUS_ERL))) {
+        /* Test prefetched instruction semantics. This fixture's KSEG0 PC is
+         * inaccessible to user mode; fetch permissions have separate tests. */
+        unsigned cycles=(op>>26)==17?1:r4300_base_cycles(op,0);
+        if(r4300_begin_prefetched_instruction_cycles(&cpu,op,cpu.instruction_pc.addr,cycles,cpu.cache_timing)) {
+            r4300_op_handler handler=r4300_ops_decode(op,0);assert(handler);handler(&cpu,op);
+        }
+        cpu.regs[0]=0;
+    } else cpu.execute_one(&cpu);
     assert(cpu.regs[0] == 0);
 }
 
@@ -59,7 +68,7 @@ static void check_integer_behavior(int cached)
 static void check_memory_behavior(int cached)
 {
     setup(cached);
-    cpu.regs[1] = 0x80000100;
+    cpu.regs[1] = (int64_t)(int32_t)0x80000100;
     code[64] = 0xdeadbeef;
     execute_test_op(0x8c200000); /* LW $zero must read */
     assert(reads == 1);
@@ -69,7 +78,7 @@ static void check_memory_behavior(int cached)
     assert(writes == 1 && code[64] == 0 && cpu.llbit == 1);
 
     setup(cached);
-    cpu.regs[1] = 0x80000100;
+    cpu.regs[1] = (int64_t)(int32_t)0x80000100;
     code[64] = 0x89abcdef; code[65] = 0x12345678;
     execute_test_op(0xd0220000); /* LLD r2 */
     assert((uint64_t)cpu.regs[2] == UINT64_C(0x89abcdef12345678));
@@ -80,7 +89,7 @@ static void check_memory_behavior(int cached)
     assert(cpu.llbit == 1); /* Ares only clears this at ERET. */
 
     setup(cached);
-    cpu.regs[1] = 0x80000100;
+    cpu.regs[1] = (int64_t)(int32_t)0x80000100;
     cpu.regs[2] = UINT64_C(0x1234567887654321);
     code[64] = 0xaabbccdd;
     execute_test_op(0x98220000); /* partial LWR preserves upper 32 bits */
@@ -91,7 +100,7 @@ static void check_memory_behavior(int cached)
     const unsigned int ops[] = {0x21, 0x25, 0x23, 0x27, 0x30, 0x34, 0x37, 0x29, 0x2b, 0x3f};
     for (unsigned i = 0; i < sizeof(ops)/sizeof(ops[0]); ++i) {
         setup(cached);
-        cpu.regs[1] = 0x80000101;
+        cpu.regs[1] = (int64_t)(int32_t)0x80000101;
         execute_test_op((ops[i] << 26) | (1 << 21));
         assert(test_exception_code() == ((ops[i] == 0x29 || ops[i] == 0x2b || ops[i] == 0x3f)
             ? CP0_CAUSE_EXCCODE_ADES : CP0_CAUSE_EXCCODE_ADEL));

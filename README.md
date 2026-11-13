@@ -38,6 +38,8 @@ with RSP LLE fallback for those ucodes not supported.
 
 **Cycle-based timing** selects **On** (default; complete CPU cache and pipeline timing) or **Off** (simplified CPU timing for higher performance). Component clocks and work-based RDP timing remain active in both settings.
 
+Both timing modes are included in the standard core build. **Off** uses seven-clock RAM access estimates and operand-dependent floating-point latency without simulating CPU caches or pipeline interlocks. Floating-point results and exception flags remain precise. **On** retains Accurate timing and is recommended for timing-sensitive demos and homebrew. Restart content after changing the option. USF builds retain their separate ripper compatibility timing.
+
 This emulator fork is based on  **very** extensive tests such as:
 - Lemmy's nemu64-test
 - Wiseguy's cache timing tests

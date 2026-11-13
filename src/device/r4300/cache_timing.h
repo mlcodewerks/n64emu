@@ -217,7 +217,16 @@ static osal_force_inline int r4300_data_access_cycles_explicit(struct r4300_core
 {
     uint32_t* tag;
     uint32_t key;
-    if (!r->cache_timing) return 0;
+    if (!r->cache_timing) {
+#ifndef N64EMU_USF
+        uint32_t physical = pa & UINT32_C(0x1fffffff);
+        if (!cached && physical >= UINT32_C(0x04000000) && physical < UINT32_C(0x05000000))
+            cp0_step_cycles(&r->cp0, write ? R4300_RCP_WRITE_CYCLES : R4300_RCP_READ_CYCLES);
+        else if (physical < UINT32_C(0x00800000))
+            cp0_step_cycles(&r->cp0, R4300_OFF_RAM_CYCLES);
+#endif
+        return 0;
+    }
     if (!cached) {
         /* CEN64 fault.h: distinguish RCP's posted handoff from RAM reads. */
         uint32_t physical = pa & 0x1fffffff;

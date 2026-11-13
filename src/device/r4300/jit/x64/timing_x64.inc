@@ -102,7 +102,8 @@ static void emit_region_guard(const struct n64emujit_config* config, unsigned st
      * interlock/compatibility clock per instruction, plus one for restored
      * simultaneous LDI/DCB history at entry. */
     unsigned compatibility = !config->cache_timing ? count * r4300_issue_reservation(config->compat_issue_clock) : 0;
-    unsigned cached_bound = base + compatibility, uncached_bound = base + compatibility;
+    unsigned ram = config->cache_timing ? 0 : memory_count * R4300_OFF_RAM_CYCLES;
+    unsigned cached_bound = base + compatibility + ram, uncached_bound = base + compatibility + ram;
     if (config->cache_timing && count) {
         uint32_t pc = config->virtual_pc + start * 4;
         unsigned lines = ((pc + (count - 1) * 4) >> 5) - (pc >> 5) + 1;

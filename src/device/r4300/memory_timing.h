@@ -27,4 +27,24 @@ enum {
     R4300_VI_BANK_CYCLES = 4
 };
 
+/* Off uses a fixed RAM service estimate without cache tags or interlocks.
+ * USF rips require their legacy instruction clock, with no added RAM cost. */
+#ifdef N64EMU_USF
+enum { R4300_OFF_RAM_CYCLES = 0 };
+#else
+enum { R4300_OFF_RAM_CYCLES = 7 };
+#endif
+
+static inline unsigned r4300_fpu_compatibility_latency(unsigned cache_timing, unsigned compatibility)
+{
+#ifdef N64EMU_USF
+    (void)cache_timing;
+    return compatibility != 0;
+#else
+    /* Off retains its issue reservation, but uses operand-dependent FP
+     * execution latency. Full timing keeps its existing compatibility policy. */
+    return cache_timing && compatibility;
+#endif
+}
+
 #endif

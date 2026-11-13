@@ -378,6 +378,9 @@ void read_cart_rom(void* opaque, uint32_t address, uint32_t* value)
     }
     else
     {
+#ifndef N64EMU_USF
+        /* USF snapshots can leave PI bus parameters unset. Preserve the
+         * ripper's direct cartridge reads for those audio-only snapshots. */
         /* Conservative PI workaround: a ROM cannot drive a reliable read
          * when both address latency and read pulse are at most three RCP
          * clocks (registers encode clocks minus one). Leave the address
@@ -388,7 +391,9 @@ void read_cart_rom(void* opaque, uint32_t address, uint32_t* value)
             cart_rom->pi->regs[PI_BSD_DOM1_LAT_REG] <= 2 &&
             cart_rom->pi->regs[PI_BSD_DOM1_PWD_REG] <= 2)
             *value = ((address & 0xfffeu) << 16) | (address & 0xfffeu);
-        else if (cart_rom->prototype_dongle && (address & UINT32_C(0x1ffffff8)) == UINT32_C(0x1c000000))
+        else
+#endif
+        if (cart_rom->prototype_dongle && (address & UINT32_C(0x1ffffff8)) == UINT32_C(0x1c000000))
             /* The PI's 16-bit CPU reads select the upper halfword of each
              * successive bus word (BC000002 is delivered at 1C000004). */
             *value = (address & 4) ? UINT32_C(0x46534653) : UINT32_C(0x4c534653);

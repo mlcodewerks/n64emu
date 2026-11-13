@@ -173,7 +173,7 @@ void renderer_register_options(retro_environment_t environment)
             if (!strcmp(d->key, "wtfn64_glrdp_vi_gamma_dither"))
                 d->info = "Allow gamma dithering when requested by the game. Independent of gamma correction. Applies immediately.";
             if (!strcmp(d->key, "wtfn64_timing"))
-                d->info = "On enables detailed CPU cache and pipeline timing. Off uses simplified CPU timing for higher performance. Component clocks and work-based RDP timing remain active. RSP HLE is selected separately. Restart content to apply.";
+                d->info = "On enables detailed CPU cache and pipeline timing. Off uses fixed RAM access costs and operand-dependent floating-point latency without cache simulation, for higher performance. Component clocks and work-based RDP timing remain active. RSP HLE is selected separately. Restart content to apply.";
             if (strstr(d->key, "-pak")) {
                 d->category_key = "input";
                 d->info = "Choose the accessory attached to this controller. A Memory Pak allows games to save progress.";

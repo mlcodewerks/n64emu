@@ -304,7 +304,7 @@ size_t setup_pif_channel(struct pif_channel* channel, uint8_t* buf)
     uint8_t tx = buf[0] & 0x3f;
     uint8_t rx = buf[1] & 0x3f;
 
-    /* XXX: check out of bounds accesses */
+    /* The packet parser validates the complete transfer before calling us. */
 
     channel->tx = buf;
     channel->rx = buf + 1;
@@ -425,8 +425,19 @@ void setup_channels_format(struct pif* pif)
                 continue;
             }
 
+            if (2u + (pif->ram[i] & 0x3f) + (pif->ram[i+1] & 0x3f) > PIF_RAM_SIZE - i) {
+                core_log(CORE_LOG_WARNING, "Truncated PIF payload ! Stopping PIF channel processing");
+                i = PIF_RAM_SIZE;
+                continue;
+            }
+
             i += setup_pif_channel(&pif->channels[k++], &pif->ram[i]);
         }
+    }
+
+    /* Truncation must also discard channels left from the previous packet. */
+    while (k < PIF_CHANNELS_COUNT) {
+        disable_pif_channel(&pif->channels[k++]);
     }
 
     /* Zilmar-Spec plugin expect a call with control_id = -1 when RAM processing is done */

@@ -74,7 +74,9 @@ static const uint32_t* interp_thread_poll_getter(const struct r4300_core* r,
 
 static int interp_thread_poll_advance(struct r4300_core* r, uint32_t pc)
 {
-    const unsigned cycles = 36 * (1 + r4300_issue_reservation(r->compat_issue_clock));
+    /* Both MTC0 STATUS writes cost two base clocks rather than one. */
+    const unsigned cycles = 36 * (1 + r4300_issue_reservation(r->compat_issue_clock)) +
+        2 * (r4300_base_cycles(UINT32_C(0x40896000), 0) - 1) + 9 * R4300_OFF_RAM_CYCLES;
     uint32_t status = r->cp0.regs[CP0_STATUS_REG];
     if (r->cache_timing || r->delay_slot || r->skip_jump || breakloop ||
         r->cp0.cycle_count >= -(int)(cycles / 2) || r->cp0.last_addr != pc ||
@@ -113,8 +115,9 @@ static int interp_thread_poll_advance(struct r4300_core* r, uint32_t pc)
         stack[6] != (uint32_t)r->regs[16] || stack[7] != pc + 8 || stack[8] != *id) return 0;
     /* All registers, stack words, STATUS/latch and IRQ state are already the
      * exact steady-state result. No instruction reads COUNT or a device.
-     * Advance whole even-clock iterations strictly before the next event. */
-    uint64_t iterations = (uint64_t)(-(r->cp0.cycle_count + 1)) / (cycles / 2);
+     * Retain odd RAM-service clocks across iterations and stop before events. */
+    uint64_t budget = (uint64_t)(-(r->cp0.cycle_count + 1)) * 2 + (1 - r->cp0.count_phase);
+    uint64_t iterations = budget / cycles;
     if (iterations > UINT32_MAX / cycles) iterations = UINT32_MAX / cycles;
     if (!iterations) return 0;
     cp0_step_cycles(&r->cp0, (unsigned)iterations * cycles);
