@@ -42,6 +42,8 @@ This emulator fork is based on  **very** extensive tests such as:
 
 ## Building
 
+### Libretro and USF libraries
+
 Linux builds require GNU Make and GCC/G++ 9 or newer. On Debian/Ubuntu, install
 `build-essential`.
 For an i686 build on an x86-64 host, also install `gcc-multilib g++-multilib`

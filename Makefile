@@ -11,6 +11,7 @@ HAVE_PARALLEL_RSP ?= 1
 CPU_BACKEND ?= auto
 RSP_BACKEND ?= auto
 USF ?= 0
+STANDALONE_CORE ?= 0
 ifeq (,$(filter $(CPU_BACKEND),auto interpreter))
 $(error CPU_BACKEND must be auto or interpreter)
 endif
@@ -328,7 +329,7 @@ endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
 # n64emuJIT emitter, runtime layout and optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):cxx=$(CXX):$(CXX_MACHINE):$(CXX_VERSION):cxxstd=c++17:renderers=softrdp:headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):software=softrdp:simd=sse2-dispatch-v1:pic=$(PIC):tls=$(SHARED_TLS_FLAGS)
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):cxx=$(CXX):$(CXX_MACHINE):$(CXX_VERSION):cxxstd=c++17:renderers=softrdp:headless=$(HEADLESS_BENCHMARK):usf=$(USF):standalone=$(STANDALONE_CORE):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):software=softrdp:simd=sse2-dispatch-v1:pic=$(PIC):tls=$(SHARED_TLS_FLAGS)
 # Wrapper invocations must leave the child's configuration stamp intact.
 CONFIG_WRAPPERS := x86 arm32 usf usf-x86 usf-arm32 rpi4 rpi5
 ifneq ($(strip $(MAKECMDGOALS)),)

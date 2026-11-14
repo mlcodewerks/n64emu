@@ -128,8 +128,14 @@ ifneq (,$(findstring win,$(platform)))
 else
 endif
 
-# Libretro
-SOURCES_C += $(ROOT_DIR)/src/libretro.c \
+# The native executable and optional libretro adapter share one runtime.
+SOURCES_C += $(ROOT_DIR)/src/core/runtime.c
+ifeq ($(STANDALONE_CORE),1)
+SOURCES_C += $(ROOT_DIR)/src/core/api.c
+else
+SOURCES_C += $(ROOT_DIR)/src/libretro.c
+endif
+SOURCES_C += \
 	$(LIBRETRO_COMM_DIR)/memmap/memalign.c \
 	$(ROOT_DIR)/src/core/input.c \
 	$(LIBRETRO_COMM_DIR)/audio/resampler/drivers/sinc_resampler.c \
