@@ -2,7 +2,8 @@
 #define PORT_TEST_OBSERVE_H
 #include <stdint.h>
 
-//License: WTFPL
+// SPDX-License-Identifier: BSD-3-Clause
+// See ../../LICENSE for the license terms.
 struct port_test_trace {
     uint64_t busy_hash;
     unsigned busy_count, fence_count;

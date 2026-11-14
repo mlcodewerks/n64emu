@@ -1,4 +1,4 @@
-/* Experimental fault-assisted CPU RAM lookup. SPDX-License-Identifier: GPL-2.0-or-later */
+/* Experimental fault-assisted CPU RAM lookup. SPDX-License-Identifier: BSD-3-Clause */
 #ifndef N64EMU_R4300_FASTMEM_H
 #define N64EMU_R4300_FASTMEM_H
 #include <stdint.h>

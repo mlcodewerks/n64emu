@@ -1,8 +1,8 @@
 /*
  * Copyright (c) 2026 PixelMechanic0
- * Licensed under the MIT License.
  *
- * Project: https://github.com/PixelMechanic0/softrdp
+ * SPDX-License-Identifier: BSD-3-Clause
+ * See ../../../../../../../LICENSE for the license terms.
  */
 
 #include "raster.h"

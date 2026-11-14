@@ -1,5 +1,9 @@
-/* Optional original-header differential, isolated in its own translation unit.
- * License: WTFPL */
+/*
+ *  Optional original-header differential, isolated in its own translation unit.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ * See ../../LICENSE for the license terms.
+ */
 #include RDP_TIMING_REFERENCE_HEADER
 #include "observe.h"
 static struct rdp_timing reference;

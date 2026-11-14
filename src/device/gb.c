@@ -1050,26 +1050,14 @@ int write_gb_cart(struct gb_cart* gb_cart, uint16_t address, const uint8_t* data
 
 /* ---- gb/mbc3_rtc.c ---- */
 
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - mbc3_rtc.c                                              *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2016 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+/*
+ *   Mupen64plus - mbc3_rtc.c
+ *   Mupen64Plus homepage: https://mupen64plus.org/
+ *   Copyright (C) 2016 Bobby Smiles
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ * See ../../LICENSE for the license terms.
+ */
 
 /* TODO: halt bit is not implemented */
 
@@ -1159,26 +1147,14 @@ void latch_mbc3_rtc_regs(struct mbc3_rtc* rtc, uint8_t data)
 
 /* ---- gb/m64282fp.c ---- */
 
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus - m64282fp.c                                              *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2017 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+/*
+ *   Mupen64plus - m64282fp.c
+ *   Mupen64Plus homepage: https://mupen64plus.org/
+ *   Copyright (C) 2017 Bobby Smiles
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ * See ../../LICENSE for the license terms.
+ */
 
 /* Most of the mappers information comes from
  * "Game Boy Camera Technical Information v1.1.1" by AntonioND

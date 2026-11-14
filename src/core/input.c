@@ -1,15 +1,11 @@
 #include "core/input.h"
 #include "core/backend.h"
-
-#include "core/backend.h"
 #include "device/controllers.h"
 #include <libretro.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-
-#define ROUND(x)    floor((x) + 0.5)
 
 /* snprintf not available in MSVC 2010 and earlier */
 #include "core/msvc_compat.h"
@@ -19,8 +15,6 @@ extern retro_input_state_t input_cb;
 extern struct retro_rumble_interface rumble;
 extern int pad_pak_types[4];
 extern int pad_present[4];
-int astick_deadzone = 15;
- int astick_sensitivity = 100;
 static bool libretro_supports_bitmasks = false;
 
 extern core_rom_header ROM_HEADER;
@@ -159,53 +153,73 @@ void core_input_command(int Control, unsigned char *Command)
         }
 }
 
-// System analog stick range is -0x8000 to 0x8000
-#define ASTICK_MAX 0x8000
-#define CSTICK_DEADZONE 0x4000
-
-#define CSTICK_RIGHT 0x200
-#define CSTICK_LEFT 0x100
-#define CSTICK_UP 0x800
-#define CSTICK_DOWN 0x400
-
-
-static void translate_analog_axes(int16_t analogX, int16_t analogY, int Control, core_buttons* Keys)
+/* Control-stick mapping adapted from kev4cards' ares algorithm.
+ * https://github.com/ares-emulator/ares/blob/master/ares/n64/controller/gamepad/gamepad.cpp
+ *
+ * Copyright (c) 2004-2025 ares team, Near et al
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+static double stick_axis_response(int16_t input, double saturation, double deadzone)
 {
-   double radius, angle;
-   //  Keys->Value |= input_cb(Control, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_XX)    ? 0x4000 : 0; // Mempak switch
-   //  Keys->Value |= input_cb(Control, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_XX)    ? 0x8000 : 0; // Rumblepak switch
+   double position = (double)input * saturation / 32767.0;
+   double magnitude = fabs(position);
+   if (magnitude <= deadzone)
+      return 0.0;
+   return copysign((magnitude - deadzone) * saturation / (saturation - deadzone), position);
+}
 
-   analogX = input_cb(Control, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
-   analogY = input_cb(Control, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y);
+static void translate_analog_axes(int Control, core_buttons* Keys)
+{
+   const double cardinal = 85.0;
+   const double diagonal = 69.0;
+   const double deadzone = 7.0;
+   const double sum = deadzone + diagonal;
+   const double saturation = (sum + sqrt(sum * sum - 2.0 * sqrt(2.0) * diagonal * deadzone)) / sqrt(2.0);
+   int16_t raw_x = input_cb(Control, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
+   int16_t raw_y = input_cb(Control, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y);
+   double x = stick_axis_response(raw_x, saturation, deadzone);
+   double y = stick_axis_response(raw_y, saturation, deadzone);
+   double length = hypot(x, y);
 
-   // Convert cartesian coordinate analog stick to polar coordinates
-   radius = sqrt(analogX * analogX + analogY * analogY);
-   angle = atan2(analogY, analogX);
-
-   if (radius > astick_deadzone)
+   /* Restrict square stick reports to the same radius as circular sticks. */
+   if (length > saturation)
    {
-      // Re-scale analog stick range to negate deadzone (makes slow movements possible)
-      radius = (radius - astick_deadzone)*((float)ASTICK_MAX/(ASTICK_MAX - astick_deadzone));
-      // N64 Analog stick range is from -80 to 80
-      radius *= 80.0 / ASTICK_MAX * (astick_sensitivity / 100.0);
-      // Convert back to cartesian coordinates
-      Keys->X_AXIS = +(int32_t)ROUND(radius * cos(angle));
-      Keys->Y_AXIS = -(int32_t)ROUND(radius * sin(angle));
+      x *= saturation / length;
+      y *= saturation / length;
    }
-   else
+
+   /* The two sloping edges in each quadrant join (85,0), (69,69), (0,85).
+    * Scaling by their half-plane limits is equivalent to ares' ray/gate
+    * intersection, without division by an axis close to zero. */
    {
-      Keys->X_AXIS = 0;
-      Keys->Y_AXIS = 0;
+      double gate_slope = (cardinal - diagonal) / diagonal;
+      double edge = fmax(fabs(x) + gate_slope * fabs(y), fabs(y) + gate_slope * fabs(x));
+      if (edge > cardinal)
+      {
+         x *= cardinal / edge;
+         y *= cardinal / edge;
+      }
    }
+
+   /* Match ares' truncation, correcting floating-point boundary noise. */
+   Keys->X_AXIS = (int)copysign(fabs(x) + 1e-9, x);
+   Keys->Y_AXIS = (int)copysign(fabs(y) + 1e-9, -y);
 }
 
 void core_input_keys( int Control, core_buttons *Keys )
 {
    unsigned i;
-   bool cbuttons_mode = false;
    int16_t ret        = 0;
-   int16_t analogX    = 0;
-   int16_t analogY    = 0;
    Keys->Value        = 0;
 
    if (libretro_supports_bitmasks)
@@ -236,7 +250,7 @@ void core_input_keys( int Control, core_buttons *Keys )
       Keys->R_TRIG    = !!((ret & (1 << RETRO_DEVICE_ID_JOYPAD_R2)));
    Keys->L_TRIG    = !!((ret & (1 <<RETRO_DEVICE_ID_JOYPAD_SELECT)));
 
-   translate_analog_axes(analogX, analogY, Control, Keys);
+   translate_analog_axes(Control, Keys);
 }
 
 void core_input_init(void)

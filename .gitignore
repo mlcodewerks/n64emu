@@ -436,3 +436,6 @@ build-unit-*.log
 !benchmarks/hle-calibration/
 benchmarks/hle-calibration/*
 !benchmarks/hle-calibration/*_checks.c
+
+# Manually supplied foobar2000 SDK, PFC, libPPUI and WTL dependencies.
+/deps/fb2k/

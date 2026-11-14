@@ -47,7 +47,6 @@
 
 #include <usf/usf.h>
 
-#include <psflib.h>
 
 #ifdef _new_dbg
 #define new _new_dbg

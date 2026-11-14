@@ -1,0 +1,6 @@
+.vs/
+/Bin/
+/Obj/
+/x64/
+/build-*.log
+*.vcxproj.user

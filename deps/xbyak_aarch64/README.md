@@ -695,17 +695,7 @@ To be written...
 
 Copyright FUJITSU LIMITED 2019-2020
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Licensed under the BSD 3-Clause License. See [LICENSE](LICENSE).
 
 ## Reference
 - Chapter C6:A64 Base Instruction Descriptions and C7:A64 Advanced SIMD and Floating-point Instruction Descriptions of "ARM(R) Architecture Reference Manual ARMv8, for ARMv8-A architecture profile", ARM DDI 0487D.b (ID042519)".

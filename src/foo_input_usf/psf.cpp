@@ -523,7 +523,7 @@ class input_usf : public input_stubs
 
         pfc::string msgbuf;
 
-        int ret = psf_load(p_path, &psf_file_system, 0x21, 0, 0, psf_info_meta, &info_state, 0, print_message, &msgbuf);
+        int ret = usf_load_psf(p_path, &psf_file_system, 0x21, 0, 0, psf_info_meta, &info_state, 0, print_message, &msgbuf);
 
         if (cfg_console) { USF_CONSOLE_INFO(msgbuf) }
         msgbuf.reset();
@@ -586,7 +586,7 @@ class input_usf : public input_stubs
 
                     pfc::string msgbuf;
 
-                    int ret = psf_load(m_path, &psf_file_system, 0x21, usf_loader, p_state, usf_info, p_state, 1, print_message, &msgbuf);
+                    int ret = usf_load_psf(m_path, &psf_file_system, 0x21, usf_loader, p_state, usf_info, p_state, 1, print_message, &msgbuf);
 
                     if (cfg_console) { USF_CONSOLE_INFO(msgbuf) }
                     msgbuf.reset();
@@ -646,7 +646,7 @@ class input_usf : public input_stubs
 
         pfc::string msgbuf;
 
-        int ret = psf_load(m_path, &psf_file_system, 0x21, usf_loader, m_state, usf_info, m_state, 1, print_message, &msgbuf);
+        int ret = usf_load_psf(m_path, &psf_file_system, 0x21, usf_loader, m_state, usf_info, m_state, 1, print_message, &msgbuf);
 
         if (cfg_console) { USF_CONSOLE_PRINT(msgbuf) }
         msgbuf.reset();

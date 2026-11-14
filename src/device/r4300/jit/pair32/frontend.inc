@@ -1,7 +1,7 @@
 // Paired-word host lowering. The precise frontend owns instruction ordering,
 // cache timing, exceptions and delay slots, as on the x64/AArch64 backends.
 // Generated entries use the same generation-validated, nonrecursive tail links.
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: BSD-3-Clause
 #include "jit32/assembler.hpp"
 #include <algorithm>
 #include <cstdlib>

@@ -1,4 +1,4 @@
-/* Synchronous JIT fault recovery. SPDX-License-Identifier: GPL-2.0-or-later
+/* Synchronous JIT fault recovery. SPDX-License-Identifier: BSD-3-Clause
  * Only an exact published instruction PC accessing our guard page is owned.
  * Recovery changes PC to the existing precise exit; no guest work, allocation,
  * locking or logging takes place inside the exception/signal handler. */

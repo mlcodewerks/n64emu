@@ -1,5 +1,5 @@
 /* Xbyak_aarch64 host emitter for the shared n64emuJIT frontend.
- * SPDX-License-Identifier: GPL-2.0-or-later */
+ * SPDX-License-Identifier: BSD-3-Clause */
 #include <xbyak_aarch64/xbyak_aarch64.h>
 #include <map>
 #include <memory>

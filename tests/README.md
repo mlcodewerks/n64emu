@@ -31,7 +31,7 @@ reports retain those historical results.
 The generated AI fixture extracts the production AI implementation on each
 source change; it does not maintain a second FIFO implementation.
 The suite also verifies that the standalone RDP tests use the production timing
-model, allowing only the standalone license annotation to differ.
+model, including its BSD 3-Clause license annotation.
 
 For just the new device/CPU checks:
 
@@ -53,6 +53,7 @@ make -f tests/unit.mk check-new -j6
 | AI | Existing two-entry FIFO, sample/deadline, register and monotonic clock conformance checks |
 | PIF/Joybus | Valid command processing, channel skipping/termination and 2,262 malformed packet/bounds/stale-channel cases |
 | Controllers/paks | Input/status/error handling, independent pak CRC oracle, final pak block, rumble and Transfer Pak control |
+| Libretro input | ares stick vectors, all four ports, bitmask and individual buttons, exhaustive axis sweep and octagonal gate bounds |
 | Cartridge saves | EEPROM sizes and boundary writes, FlashRAM program/erase/ID DMA and persistence, SRAM masked writes; existing dongle and ROM database tests |
 | Game Boy cartridge | MBC1 bank switching, RAM write protection/persistence, RTC 255/511-day rollover, elapsed days and latched reads |
 | 64DD | All 30,212 logical/physical address round trips across seven geometries, total sizes, controller reset buffers and ROM reads |

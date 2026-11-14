@@ -78,9 +78,8 @@ void n64video_update_screen(void)
     uint32_t height = info.height;
     if (!sr_field_output_compose(&fields, pixels, info.width, height, info.width,
             info.interlaced, info.field, config.vi.bob_deinterlace, &pixels, &height)) return;
-    if (!reserve((void **)&presentation, &presentation_capacity, (size_t)info.width * height * 4)) return;
-    sr_bgra_pixels((const uint8_t *)pixels, (uint8_t *)presentation, (size_t)info.width * height);
-    struct frame_buffer output = {presentation, info.width, height, height, info.width};
+    struct frame_buffer output = {NULL, info.width, height, height, info.width};
+    uint32_t crop_x = 0, crop_y = 0;
     if (config.vi.hide_overscan && info.active_x_end>info.active_x_begin &&
         info.active_y_end>info.active_y_begin) {
         const uint32_t yscale=info.interlaced?2:1;
@@ -89,10 +88,27 @@ void n64video_update_screen(void)
         const uint32_t y0=info.active_y_begin*yscale<height?info.active_y_begin*yscale:height;
         const uint32_t y1=info.active_y_end*yscale<height?info.active_y_end*yscale:height;
         if(x1>x0 && y1>y0) {
-            output.pixels+=y0*info.width+x0;
+            crop_x=x0;crop_y=y0;
             output.width=x1-x0;output.height=y1-y0;output.height_out=output.height;
         }
     }
+    /* Compose fields in core-owned memory, then convert only the visible area
+     * directly into this run's frontend buffer. Its contents need not persist. */
+    output.pixels = vdac_acquire(output.width, output.height, &output.pitch, false);
+    if (!output.pixels) {
+        output.pitch = output.width;
+        if (!reserve((void **)&presentation, &presentation_capacity,
+                (size_t)output.width * output.height * sizeof(*presentation))) return;
+        output.pixels = presentation;
+    }
+    const sr_rgba8 *source = pixels + (size_t)crop_y * info.width + crop_x;
+    if (output.width == info.width && output.pitch == info.width)
+        sr_bgra_pixels((const uint8_t *)source, (uint8_t *)output.pixels,
+                       (size_t)output.width * output.height);
+    else
+        for (uint32_t y = 0; y < output.height; ++y)
+            sr_bgra_pixels((const uint8_t *)(source + (size_t)y * info.width),
+                           (uint8_t *)(output.pixels + (size_t)y * output.pitch), output.width);
     if(config.vi.widescreen) output.height_out=output.height_out*3/4;
     vdac_write(&output); vdac_sync(false);
 }

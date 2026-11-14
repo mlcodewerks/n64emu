@@ -14,12 +14,24 @@ static unsigned width = 640, height = 480;
 
 void vdac_init(struct n64video_config *config) { (void)config; }
 void vdac_read(struct frame_buffer *fb, bool alpha) { (void)fb; (void)alpha; }
-/* Render into SoftRDP's own buffer, then copy at presentation time. This
- * preserves interlaced fields across frontend buffers with unspecified contents. */
 struct rgba *vdac_acquire(uint32_t w, uint32_t h, uint32_t *pitch, bool read)
 {
-    (void)w; (void)h; (void)pitch; (void)read;
-    return NULL;
+    struct retro_framebuffer fb = {0};
+    fb.width = w;
+    fb.height = h;
+    fb.access_flags = RETRO_MEMORY_ACCESS_WRITE |
+        (read ? RETRO_MEMORY_ACCESS_READ : 0);
+    if (!environ_cb ||
+        !environ_cb(RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER, &fb) ||
+        !fb.data || fb.width != w || fb.height != h ||
+        fb.format != RETRO_PIXEL_FORMAT_XRGB8888 ||
+        fb.pitch < (size_t)w * sizeof(struct rgba) ||
+        fb.pitch % sizeof(struct rgba) ||
+        fb.pitch / sizeof(struct rgba) > UINT32_MAX ||
+        (h && fb.pitch > SIZE_MAX / h))
+        return NULL;
+    *pitch = (uint32_t)(fb.pitch / sizeof(struct rgba));
+    return fb.data;
 }
 void vdac_write(struct frame_buffer *fb) { frame = *fb; }
 void vdac_sync(bool invalid)
@@ -37,35 +49,17 @@ void vdac_close(void)
 
 void softrdp_present(bool new_frame)
 {
-    struct retro_framebuffer fb = {0};
-    const void *pixels;
-    size_t pitch;
-    unsigned y;
     if (!new_frame || !frame.pixels)
     {
         video_cb(NULL, width, height, 0);
+        memset(&frame, 0, sizeof(frame));
         return;
     }
     width = frame.width;
     height = frame.height;
-    pixels = frame.pixels;
-    pitch = (size_t)frame.pitch * sizeof(struct rgba);
-    fb.width = width;
-    fb.height = height;
-    fb.access_flags = RETRO_MEMORY_ACCESS_WRITE;
-    if (environ_cb(RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER, &fb) &&
-        fb.data && fb.width == width && fb.height == height &&
-        fb.format == RETRO_PIXEL_FORMAT_XRGB8888 &&
-        fb.pitch >= (size_t)width * sizeof(struct rgba))
-    {
-        for (y = 0; y < height; ++y)
-            memcpy((uint8_t *)fb.data + y * fb.pitch,
-                   (const uint8_t *)pixels + y * pitch,
-                   (size_t)width * sizeof(struct rgba));
-        pixels = fb.data;
-        pitch = fb.pitch;
-    }
-    video_cb(pixels, width, height, pitch);
+    video_cb(frame.pixels, width, height, (size_t)frame.pitch * sizeof(struct rgba));
+    /* Frontend framebuffer storage expires when retro_run returns. */
+    memset(&frame, 0, sizeof(frame));
 }
 
 #define DEFINE_MESSAGE(name, level) \

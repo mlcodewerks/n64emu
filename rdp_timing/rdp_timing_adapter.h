@@ -1,9 +1,12 @@
-/* Standalone host adapter for rdp_timing.h. Repository LICENSE applies.
+/*
+ *  Standalone host adapter for rdp_timing.h. Repository LICENSE applies.
  * Header-only C99 / C++11 or later. No allocation, renderer or emulator APIs.
  * Timestamps: signed 64-bit monotonic CPU COUNT ticks (46.875 MHz).
  * Busy intervals: quarter COUNT ticks; masks 1=buffer, 2=pipe, 4=TMEM.
  * Callbacks may enqueue host events; they must not reenter this adapter.
- * License: WTFPL
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ * See ../LICENSE for the license terms.
  */
 #ifndef RDP_TIMING_ADAPTER_H
 #define RDP_TIMING_ADAPTER_H

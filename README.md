@@ -2,17 +2,12 @@
 
 ![n64emu](https://user-images.githubusercontent.com/56025978/170892431-f2e70f44-1a40-4dc6-975d-0a89d00a8589.png)
 
-**Use other libretro cores and N64 emulators for any use for gaming.** 
-
-**Please**
-
 ## What?
 
 Personal N64 emulator code playset for anything with:
 
 * **x86/x86-64 CPUs with SSE2, or ARMv7/AArch64 CPUs with NEON**.
-* **Vulkan 1.1 for Parallel RDP (optional)**.
-* **Win7 and above/modern Linux**
+* **Modern Windows/modern Linux**
 * **GCC/G++ 9 or newer with C++17 support**
 * CPU with 2 or more cores.
 
@@ -21,38 +16,36 @@ Personal N64 emulator code playset for anything with:
 Making a garbage fire by hacking on parallel-n64 until almost nothing of the original core remains.
 
 This includes:
-- Complete bit-exact HLE with cycle based-timing for **all** commercial game RSP tasks, based on disassembly of the entire NTSC N64 game library's tasks. Measurements have been done to count how long each RSP task takes to execute to fit in with a cycle-based timing system.
+- Native RSP execution for graphics, audio and custom microcode.
 - Vectorised+threaded LLE RDP (SoftRDP).
-- Compute shader-based LLE RDP (parallel-RDP). 
 - Cycle-based JITs for both RSP and main CPU.
 - Cycle-based timing of all components, including RDP stalls/delays.
 - USF playback support.
 
-The renderer options are **SoftRDP** (software, default) and **Parallel RDP**
-(Vulkan). Saved selections for removed renderers fall back to SoftRDP.
-
-Many bits of info was gleaned from CEN64, Simple64, Ares and MAME. \
+Many bits of info was gleaned from CEN64 and Ares. \
+SoftRDP is used for the RDP renderer. RSP emulator derived from parallel-rsp. \
 Many thanks to the authors of these emulators. \
 Thanks to [LongplayArchive](https://www.youtube.com/user/Longplayarchive) for the useful NTSC N64 hardware reference behaviour recordings.
 
-The **RSP HLE** option selects **Off** (default) or **On**, independently of cycle-based CPU timing.
-Off executes all RSP programs natively in cycle-based LLE; On accelerates supported graphics, audio and task microcode
-with RSP LLE fallback for those ucodes not supported.
-
-**Cycle-based timing** selects **On** (default; complete CPU cache and pipeline timing) or **Off** (simplified CPU timing for higher performance). Component clocks and work-based RDP timing remain active in both settings.
+**Cycle timing** selects **On** (default) or **Off**. On always enables full CPU
+cache and pipeline timing. Off uses Fast timing for known, untagged cartridges.
+Explicit Compatible tags and titles absent from the database use Compatible.
+Cycle timing overrides every database tag. RSP/RDP clocks remain active in all
+profiles, and changing the setting requires restarting content.
 
 This emulator fork is based on  **very** extensive tests such as:
 - Lemmy's nemu64-test
 - Wiseguy's cache timing tests
 - Thar0's RDP timing/CPU instruction tests
 - Dillonb's rsp-ruination
+- Various demoscene demos which exercise RDP/RSP/main CPU timing, and weird Nintendo 64 hardware quirks.
 
 ## Building
 
-Linux builds require GNU Make, GCC/G++ 9 or newer, and the OpenGL development
-headers/libraries. On Debian/Ubuntu, install `build-essential libgl-dev`.
+Linux builds require GNU Make and GCC/G++ 9 or newer. On Debian/Ubuntu, install
+`build-essential`.
 For an i686 build on an x86-64 host, also install `gcc-multilib g++-multilib`
-and the 32-bit OpenGL development libraries. Select GCC 9 explicitly with
+and the 32-bit C/C++ development libraries. Select GCC 9 explicitly with
 `CC=gcc-9 CXX=g++-9` when multiple compiler versions are installed.
 The build tracks both compiler versions and target triples and rebuilds objects
 when the selected toolchain changes.
@@ -75,3 +68,10 @@ Explicit `CC`, `CXX` and `CROSS_COMPILE` overrides remain supported.
 `platform=win ARCH=x86` and `platform=win ARCH=x86_64` remain available.
 The Linux aliases use the host compiler with `-m64` or `-m32`; the existing
 `platform=unix ARCH=x86_64` and `platform=unix ARCH=i686` forms also work.
+
+## foobar2000 USF component
+
+`src/foo_input_usf` builds the foobar2000 component against the USF player.
+PSF loading is integrated in `src/usf/usf.cpp` and uses bundled miniz.
+The foobar2000 SDK and WTL must be supplied manually; see the
+[component build instructions](src/foo_input_usf/README.md).

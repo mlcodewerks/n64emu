@@ -58,11 +58,6 @@ std::string disassemble(uint32_t pc, uint32_t instr)
 			DISASM("cop2 %u reserved", op);
 	}
 
-	// TODO: Meaningful register allocation.
-	// For now, always flush register state to memory after an instruction for simplicity.
-	// Should be red-hot in L1 cache, so probably won't be that bad.
-	// On x86 and x64, we unfortunately have an anemic register bank to work with in Lightning.
-
 	uint32_t type = instr >> 26;
 
 #define NOP_IF_RD_ZERO() if (instr == 0) { DISASM_NOP(); break; }

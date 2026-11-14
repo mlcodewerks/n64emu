@@ -1,4 +1,4 @@
-/* Project64 USF state import. SPDX-License-Identifier: GPL-2.0-or-later */
+/* Project64 USF state import. SPDX-License-Identifier: BSD-3-Clause */
 #include "device/device.h"
 #include "device/r4300/cpu_ops.h"
 #include "device/r4300/interrupt.h"

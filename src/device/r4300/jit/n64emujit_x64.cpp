@@ -1,6 +1,6 @@
 /* Xbyak host emitter for n64emuJIT's shared precise frontend.
  * Derived from Ari64's emitter, Copyright (C) 2009-2011 Ari64.
- * SPDX-License-Identifier: GPL-2.0-or-later */
+ * SPDX-License-Identifier: BSD-3-Clause */
 #define XBYAK_NO_OP_NAMES
 #include <xbyak/xbyak.h>
 extern "C" {

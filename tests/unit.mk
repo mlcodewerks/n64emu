@@ -13,6 +13,12 @@ UNIT_EXES += $(OUT)/memory-mapping$(EXE) $(OUT)/pif-channels$(EXE) $(OUT)/disk-g
 UNIT_EXES += $(OUT)/rcp-devices$(EXE)
 UNIT_EXES += $(OUT)/rdp-registers$(EXE)
 UNIT_EXES += $(OUT)/timing-policy$(EXE) $(OUT)/usf-timing-policy$(EXE)
+UNIT_EXES += $(OUT)/software-framebuffer$(EXE)
+UNIT_EXES += $(OUT)/input$(EXE)
+$(OUT)/input$(EXE): tests/input.c src/core/input.c src/core/input.h src/core/backend.h deps/libretro-common/include/libretro.h | $(OUT)
+	$(CC) $(CFLAGS) $(INCLUDES) -O2 -std=gnu99 $(filter %.c,$^) -lm -o $@
+$(OUT)/software-framebuffer$(EXE): tests/software_framebuffer.c src/device/rcp/rdp/softrdp/adapter.c src/device/rcp/rdp/softrdp/presenter.c src/device/rcp/rdp/softrdp/upstream/present/sr_field_output.c $(wildcard src/device/rcp/rdp/softrdp/*.h) $(wildcard src/device/rcp/rdp/softrdp/upstream/core/*.h) src/device/rcp/rdp/softrdp/upstream/present/sr_field_output.h deps/libretro-common/include/libretro.h | $(OUT)
+	$(CC) $(CFLAGS) -Ideps/libretro-common/include -O2 -std=c17 -flto -fwhole-program $(filter-out %/adapter.c,$(filter %.c,$^)) -o $@
 $(OUT)/timing-policy$(EXE): tests/timing_policy.c src/device/r4300/memory_timing.h | $(OUT)
 	$(CC) $(CFLAGS) $(INCLUDES) -O2 -std=gnu99 $< -o $@
 $(OUT)/usf-timing-policy$(EXE): tests/timing_policy.c src/device/r4300/memory_timing.h | $(OUT)

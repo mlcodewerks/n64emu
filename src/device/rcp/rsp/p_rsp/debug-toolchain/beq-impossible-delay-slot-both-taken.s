@@ -1,4 +1,4 @@
-# This works on the Lightning JIT, but hangs the reference.
+# This branch-delay-slot case hangs the reference implementation.
 
 .text
 .set noreorder

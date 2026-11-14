@@ -50,8 +50,7 @@ def main():
                        'compiler':run([cc,'--version']).splitlines()[0]}
     source=HERE.parent/'src/device/rcp/rdp/rdp_timing.h'
     digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
-    # The standalone copy carries its existing license annotation.
-    body=lambda path:path.read_text().replace('requirements. \n * License: WTFPL */','requirements. */')
+    body=lambda path:path.read_text()
     if source.exists():assert body(source)==body(HERE/'rdp_timing.h')
     result={'date':datetime.date.today().isoformat(),'timezone':'Australia/Sydney','results':results,
             'model_sha256':digest(HERE/'rdp_timing.h'),

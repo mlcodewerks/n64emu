@@ -49,7 +49,8 @@ INCFLAGS += \
 	-I$(CORE_DIR)/src/device/rcp/rdp
 
 ifeq ($(USF),1)
-SOURCES_USF = $(CORE_DIR)/src/usf/usf.cpp $(CORE_DIR)/src/usf/pj64_state.c
+SOURCES_USF = $(CORE_DIR)/src/usf/usf.cpp $(CORE_DIR)/src/usf/pj64_state.c $(ROOT_DIR)/deps/miniz/miniz.c
+COREFLAGS += -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_STDIO -DMINIZ_NO_ZLIB_COMPATIBLE_NAMES
 endif
 
 ifneq (,$(findstring win,$(platform)))

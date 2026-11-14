@@ -6,8 +6,9 @@ cycle accounting and timeslice exits. Its scalar register cache retains locking,
 LRU eviction, dirty writeback, sign/zero extension and caller-save flushing.
 `jit_emitter.hpp` replaces GNU Lightning with the vendored Xbyak backends;
 `jit_vector.cpp` adds native SIMD and COP2 data/control transfers. GNU Lightning
-is no longer built or linked. The migration also fixes `SRAV rd=0` marking zero
-dirty and tripping the register cache's writeback assertion.
+has been removed from the source tree and is no longer built or linked. The
+migration also fixes `SRAV rd=0` marking zero dirty and tripping the register
+cache's writeback assertion.
 
 | Host | State / DMEM / indirect PC | Volatile scalar cache | Preserved scalar cache | Scratch |
 | --- | --- | --- | --- | --- |
