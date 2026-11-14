@@ -31,7 +31,7 @@ struct State {
     std::vector<int16_t> audio, resampled;
     size_t audio_read = 0, resampled_read = 0, goal = 0;
     int32_t rate = 0, output_rate = 0;
-    bool compare = false, fifo = false, hle = false, trimming = false;
+    bool compare = false, fifo = false, trimming = false;
     char error[512]{};
     uint64_t budget = 0;
     const retro_resampler_t *resampler = nullptr;
@@ -84,18 +84,12 @@ bool environment(unsigned command, void *data) {
         return true;
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
         auto *v = static_cast<retro_variable *>(data);
-        if (!std::strcmp(v->key, "wtfn64_renderer"))
-            v->value = "softrdp";
-        else if (!std::strcmp(v->key, "wtfn64_hle"))
-            v->value = active && active->hle ? "on" : "off";
-        else if (!std::strcmp(v->key, "wtfn64_timing")) {
+        if (!std::strcmp(v->key, "wtfn64_timing")) {
             // USF snapshots require the ripper's legacy instruction clock.
             v->value = "off";
         }
         else if (!std::strcmp(v->key, "wtfn64_angrylion_threads"))
             v->value = "1";
-        else if (!std::strcmp(v->key, "wtfn64_performance_cores"))
-            v->value = "disabled";
         else if (std::strstr(v->key, "-pak"))
             v->value = "none";
         else
@@ -393,7 +387,7 @@ USF_API void usf_restart(void *memory) {
     }
 SETTER(usf_set_compare, compare)
 SETTER(usf_set_fifo_full, fifo)
-SETTER(usf_set_hle_audio, hle)
+void usf_set_hle_audio(void *state, int enable) { (void)state; (void)enable; }
 SETTER(usf_set_trimming_mode, trimming)
 #undef SETTER
 USF_API void *usf_get_rom_coverage_barray(void *) { return nullptr; }

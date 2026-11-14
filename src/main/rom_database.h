@@ -17,7 +17,11 @@ static inline void rom_database_settings(const uint8_t header[64], core_rom_sett
         /* Cartridge conversions/translations can retain the original game's
          * board ID with a C prefix (CD6 and CPY). Explicit C-board records
          * and the EverDrive header retain their original settings. */
-        if (fallback.savetype != SAVETYPE_NONE) *settings = fallback;
+        if (fallback.savetype != SAVETYPE_NONE) {
+            /* Preserve the exact ID's timing policy, including unknown fallback. */
+            fallback.timing_compatible = settings->timing_compatible;
+            *settings = fallback;
+        }
     }
     /* Pyoro's original NTSC/PAL releases predate the EverDrive header. */
     if (memcmp(header + 0x3b, "BPY", 3) == 0)

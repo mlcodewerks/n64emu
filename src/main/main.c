@@ -1000,7 +1000,6 @@ void main_stop(void)
     }
 
     stop_device(&g_dev);
-    rdp_hle_frozen_reset(&g_dev.dp);
 }
 
 core_result open_pif(const unsigned char* pifimage, unsigned int size)

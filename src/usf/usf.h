@@ -21,6 +21,7 @@ USF_API size_t usf_get_state_size(void);
 USF_API void usf_clear(void *state);
 USF_API void usf_set_compare(void *state, int enable);
 USF_API void usf_set_fifo_full(void *state, int enable);
+/* Legacy lazyusf2 ABI: retained as a no-op; all RSP audio executes natively. */
 USF_API void usf_set_hle_audio(void *state, int enable);
 USF_API void usf_set_trimming_mode(void *state, int enable);
 USF_API void *usf_get_rom_coverage_barray(void *state);

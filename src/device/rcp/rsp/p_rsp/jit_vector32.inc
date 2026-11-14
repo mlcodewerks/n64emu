@@ -40,6 +40,11 @@ void Emitter::simd_node(unsigned operation,unsigned d,unsigned a,unsigned b,unsi
     if(op==VOp::Store){simd_memory(a,STATE,int32_t(immediate),true);return;}
     if(op==VOp::Shuffle) {
         if(immediate<2){if(d!=a)code.movdqa(dd,aa);return;}
+        if(rsp_simd_level()>=3) {
+            code.mov(code.eax,uint32_t(uintptr_t(element_masks[immediate].data())));
+            if(d!=a)code.movdqa(dd,aa);
+            code.pshufb(dd,code.ptr[code.eax]);return;
+        }
         unsigned lane=immediate&(immediate<4?1u:immediate<8?3u:7u);
         unsigned mask=immediate<4?(lane?0xf5:0xa0):(lane&3)*0x55;
         if(immediate<8||lane<4)code.pshuflw(dd,aa,mask);else code.pshufhw(dd,aa,mask);
@@ -60,6 +65,7 @@ void Emitter::simd_node(unsigned operation,unsigned d,unsigned a,unsigned b,unsi
     case VOp::Shl:code.psllw(dd,immediate);break;case VOp::Shr:code.psrlw(dd,immediate);break;case VOp::Sar:code.psraw(dd,immediate);break;
     case VOp::Blend:
         code.movdqa(code.xmm0,Xbyak::Xmm(c));
+        if(rsp_simd_level()>=41){code.pblendvb(dd,bb);break;}
         // SSE2 implementation has the same byte-sign semantics as PBLENDVB.
         code.mov(code.eax,uint32_t(uintptr_t(blend_byte_sign_bits)));
         code.pminub(code.xmm0,code.ptr[code.eax]);code.pcmpeqb(code.xmm0,code.ptr[code.eax]);

@@ -62,6 +62,7 @@ typedef struct
    unsigned char transferpak; /* 0 - No, 1 - Yes boolean for transfer pak support. */
    unsigned char mempak; /* 0 - No, 1 - Yes boolean for memory pak support. */
    unsigned char biopak; /* 0 - No, 1 - Yes boolean for bio pak support. */
+   unsigned char timing_compatible; /* Compatible tag or unknown-title fallback. */
 } core_rom_settings;
 
 enum core_accessory { ACCESSORY_NONE = 1, ACCESSORY_MEMPAK = 2,

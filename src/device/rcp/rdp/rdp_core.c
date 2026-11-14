@@ -21,17 +21,6 @@
 #include "softrdp/softrdp_video.h"
 #endif
 
-static const uint32_t *hle_words;
-static uint32_t hle_base, hle_bytes;
-static uint32_t hle_rsp_cycles;
-static int hle_submission;
-static int hle_from_unfreeze;
-static int64_t hle_unfreeze_clock;
-/* HLE runs synchronously, so these milestones cannot span a CPU yield or a
- * savestate. Persistent DP work and packet phase stay in dp->timing. */
-static int hle_timed;
-static struct rdp_timing_sync hle_sync;
-
 static void observe_busy(void *context, int64_t begin, int64_t end, unsigned mask)
 {
     rdp_counters_work(&((struct rdp_core *)context)->counters, begin, end, mask);
@@ -66,113 +55,6 @@ static void attach_timing(struct rdp_core *dp)
     }
 }
 
-void rdp_time_hle(struct rdp_core *dp, const uint32_t *words, uint32_t count, uint32_t rsp_cycles)
-{
-    if (!dp->instruction_timing || (dp->dpc_regs[DPC_STATUS_REG] & DPC_STATUS_FREEZE)) return;
-    cp0_update_count(dp->mi->r4300);
-    int64_t submitted = dp->sp->slice_start_clock + rsp_count_ticks(rsp_cycles, dp->sp->slice_overhang);
-    attach_timing(dp);
-    rdp_timing_words_sync(&dp->timing, words, count, submitted, &hle_sync);
-    hle_timed = 1;
-}
-const uint32_t *rdp_hle_command_buffer(uint32_t address)
-{
-    return hle_words && address >= hle_base && address - hle_base < hle_bytes
-        ? hle_words + ((address - hle_base) >> 2) : NULL;
-}
-#ifdef __LIBRETRO__
-void rdp_publish_hle_fifo(struct rdp_core *dp, uint32_t base, uint32_t bytes, int xbus)
-{
-    if (!bytes) return;
-    write_rsp_dpc_regs(dp, DPC_STATUS_REG * 4,
-        xbus ? DPC_SET_XBUS_DMEM_DMA : DPC_CLR_XBUS_DMEM_DMA, ~0u);
-    if (dp->dpc_regs[DPC_CURRENT_REG] == dp->dpc_regs[DPC_END_REG])
-        write_rsp_dpc_regs(dp, DPC_START_REG * 4, base, ~0u);
-    write_rsp_dpc_regs(dp, DPC_END_REG * 4, base + bytes, ~0u);
-}
-void rdp_submit_hle(struct rdp_core *dp, const uint32_t *words, uint32_t base, uint32_t bytes, uint32_t rsp_cycles)
-{
-    if (!bytes) return;
-    if (dp->dpc_regs[DPC_STATUS_REG] & DPC_STATUS_FREEZE) {
-        if (words) {
-            /* A long synchronous HLE list can wrap its guest FIFO before
-             * CLR_FREEZE. Retain the actual stream, rather than re-reading
-             * overwritten RAM when the CPU permits the DP to consume it. */
-            rdp_hle_frozen_append(dp, words, bytes);
-        } else {
-            /* Native FIFO DMA publication while rendering is frozen. The
-             * emitter has already written RAM. CURRENT remains at the first
-             * unread command until DPC_CLR_FREEZE runs the normal consumer. */
-            rdp_publish_hle_fifo(dp, base, bytes, 0);
-        }
-        return;
-    }
-    hle_words = words; hle_base = base; hle_bytes = bytes;
-    /* The CPU has not advanced while the synchronous HLE walker runs. Feed
-     * the producer's elapsed work to the same DP timeline used by native
-     * RSP writes; a zero offset can deliver DP-done before SP even produced
-     * its FullSync (Conker's opening scheduler then stops submitting frames). */
-    hle_submission = 1;
-    hle_rsp_cycles = dp->instruction_timing ? rsp_cycles : 0;
-    n64video_set_hle_cmd_buffer(words, base, bytes);
-    /* Generated commands use a host FIFO, leaving guest RDRAM intact. */
-    write_rsp_dpc_regs(dp, DPC_STATUS_REG * 4, DPC_CLR_XBUS_DMEM_DMA, ~0u);
-    write_rsp_dpc_regs(dp, DPC_START_REG * 4, base, ~0u);
-    write_rsp_dpc_regs(dp, DPC_END_REG * 4, base + bytes, ~0u);
-    n64video_set_hle_cmd_buffer(NULL, 0, 0);
-    hle_words = NULL; hle_bytes = 0;
-    hle_submission = 0;
-    hle_timed = 0;
-    memset(&hle_sync, 0, sizeof(hle_sync));
-}
-
-static void consume_frozen_hle(struct rdp_core *dp, int from_rsp)
-{
-    uint32_t bytes = dp->hle_frozen_bytes, at = 0;
-    uint32_t start = dp->dpc_regs[DPC_START_REG], end = dp->dpc_regs[DPC_END_REG];
-    uint32_t status = dp->dpc_regs[DPC_STATUS_REG] & (DPC_STATUS_XBUS_DMEM_DMA | DPC_STATUS_START_VALID);
-    uint32_t guest_end = dp->hle_frozen_guest_end;
-    hle_unfreeze_clock = dp->mi->r4300->cp0.count_clock;
-#if defined(HAVE_PARALLEL_RSP)
-    if (from_rsp) hle_unfreeze_clock = dp->sp->slice_start_clock +
-        rsp_count_ticks(parallelRSPExecutedCycles(), dp->sp->slice_overhang);
-#else
-    (void)from_rsp;
-#endif
-    dp->hle_frozen_bytes = 0;
-    hle_from_unfreeze = 1;
-    /* Keep submissions inside every backend's FIFO limit, without splitting
-     * a native triangle or texture rectangle between batches. */
-    while (at < bytes) {
-        uint32_t batch = at;
-        while (at < bytes) {
-            static const uint32_t triangle_words[8] = {8,12,24,28,24,28,40,44};
-            uint32_t op = (dp->hle_frozen_words[at/4]>>24)&63u;
-            uint32_t count = op>=8 && op<=15 ? triangle_words[op-8] : op==0x24 || op==0x25 ? 4 : 2;
-            uint32_t packet = count*4;
-            if (packet > bytes-at) packet=bytes-at;
-            if (at>batch && at-batch+packet>131072u) break;
-            at += packet;
-        }
-        dp->dpc_regs[DPC_STATUS_REG] &= ~DPC_STATUS_START_VALID;
-        rdp_submit_hle(dp, dp->hle_frozen_words+batch/4, 0x7e0000, at-batch, 0);
-    }
-    hle_from_unfreeze = 0;
-    dp->dpc_regs[DPC_START_REG]=start;
-    dp->dpc_regs[DPC_CURRENT_REG]=guest_end;
-    dp->dpc_regs[DPC_END_REG]=end;
-    dp->dpc_regs[DPC_STATUS_REG]=(dp->dpc_regs[DPC_STATUS_REG]&
-        ~(DPC_STATUS_XBUS_DMEM_DMA | DPC_STATUS_START_VALID)) | status;
-}
-#endif
-#if defined(HAVE_PARALLEL_RSP)
-static uint32_t rsp_submission_cycles(void)
-{
-    return hle_submission ? hle_rsp_cycles : parallelRSPExecutedCycles();
-}
-#endif
-
-
 uint32_t rdp_dpc_clock_value(const struct rdp_core* dp, uint32_t count)
 {
     uint32_t elapsed = count - dp->clock_base;
@@ -200,7 +82,7 @@ static uint32_t dpc_clock_now(struct rdp_core* dp, int from_rsp)
         uint32_t start = cp0_regs[CP0_COUNT_REG];
         if (dp->instruction_timing)
             start += (uint32_t)(dp->sp->slice_start_clock - dp->mi->r4300->cp0.count_clock);
-        clock = rdp_dpc_clock_value(dp, start) + rsp_submission_cycles();
+        clock = rdp_dpc_clock_value(dp, start) + parallelRSPExecutedCycles();
     }
 #else
     (void)from_rsp;
@@ -213,7 +95,7 @@ static int64_t busy_now(struct rdp_core *dp, int from_rsp)
     cp0_update_count(dp->mi->r4300);
 #if defined(HAVE_PARALLEL_RSP)
     if (from_rsp) return dp->sp->slice_start_clock * 4 +
-        (int64_t)rsp_submission_cycles() * 3 - dp->sp->slice_overhang;
+        (int64_t)parallelRSPExecutedCycles() * 3 - dp->sp->slice_overhang;
 #else
     (void)from_rsp;
 #endif
@@ -277,44 +159,26 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
 
     attach_timing(dp);
     dp_pending = dp->mi->regs[MI_INTR_REG] & MI_INTR_DP;
-    if (hle_submission && hle_timed) sync = hle_sync;
-    else if (dp->vi_regs && dp->instruction_timing) {
+    if (dp->vi_regs && dp->instruction_timing) {
         int64_t submitted = dp->mi->r4300->cp0.count_clock;
-        if (hle_from_unfreeze) submitted = hle_unfreeze_clock;
 #if defined(HAVE_PARALLEL_RSP)
-        if (from_rsp && !hle_from_unfreeze) submitted = dp->sp->slice_start_clock +
-            rsp_count_ticks(rsp_submission_cycles(), dp->sp->slice_overhang);
+        if (from_rsp) submitted = dp->sp->slice_start_clock +
+            rsp_count_ticks(parallelRSPExecutedCycles(), dp->sp->slice_overhang);
 #endif
         uint32_t begin = dp->dpc_regs[DPC_CURRENT_REG] & 0xfffff8;
         uint32_t end = dp->dpc_regs[DPC_END_REG] & 0xfffff8;
         for (uint32_t at = begin; at < end;) {
             uint32_t count = (end - at) / 4;
-            const uint32_t *synthetic = rdp_hle_command_buffer(at);
             const uint32_t *source;
-            if (synthetic) {
-                uint32_t available = (hle_bytes - (at - hle_base)) / 4;
-                if (count > available) count = available;
-                source = synthetic;
-            } else if (dp->dpc_regs[DPC_STATUS_REG] & DPC_STATUS_XBUS_DMEM_DMA) {
+            if (dp->dpc_regs[DPC_STATUS_REG] & DPC_STATUS_XBUS_DMEM_DMA) {
                 uint32_t available = (4096 - (at & 4095)) / 4;
                 if (count > available) count = available;
                 source = dp->sp->mem + ((at & 4095) >> 2);
             } else if (at < 0x800000) {
                 uint32_t available = (0x800000 - at) / 4;
                 if (count > available) count = available;
-                /* A synthetic FIFO may begin within a guest command window. */
-                if (hle_words && at < hle_base && hle_base - at < count * 4)
-                    count = (hle_base - at) / 4;
                 source = dp->fb.rdram->dram + (at >> 2);
             } else {
-                const uint32_t zero = 0;
-                rdp_timing_words_sync(&dp->timing, &zero, 1, submitted, &sync);
-                at += 4;
-                continue;
-            }
-            if (!count) {
-                /* A malformed unaligned synthetic window must not stall
-                 * command progress. Valid backend FIFOs are word-aligned. */
                 const uint32_t zero = 0;
                 rdp_timing_words_sync(&dp->timing, &zero, 1, submitted, &sync);
                 at += 4;
@@ -352,7 +216,7 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
                 uint32_t delay = rdp_sync_full_delay(dp);
 #if defined(HAVE_PARALLEL_RSP)
                 if (from_rsp)
-                    delay += (uint32_t)(((uint64_t)rsp_submission_cycles() * 3 + 3) / 4);
+                    delay += (uint32_t)(((uint64_t)parallelRSPExecutedCycles() * 3 + 3) / 4);
 #endif
                 /* Work after the first FullSync belongs to the next fence.
                  * Keep a fallback for backends that raise DP without a
@@ -391,7 +255,6 @@ static void update_dpc_status(struct rdp_core* dp, uint32_t w, int from_rsp)
             renderer_present();
         dp->do_on_unfreeze = 0;
 #ifdef __LIBRETRO__
-        if (dp->hle_frozen_bytes) consume_frozen_hle(dp, from_rsp);
 #endif
         process_dpc_commands(dp, from_rsp);
     }
@@ -425,7 +288,7 @@ static void update_dpc_status(struct rdp_core* dp, uint32_t w, int from_rsp)
         if (from_rsp) {
             if (dp->instruction_timing)
                 dp->clock_base += (uint32_t)(dp->sp->slice_start_clock - dp->mi->r4300->cp0.count_clock);
-            dp->clock_offset = -rsp_submission_cycles();
+            dp->clock_offset = -parallelRSPExecutedCycles();
         }
 #endif
         dp->dpc_regs[DPC_CLOCK_REG] = 0;
@@ -442,8 +305,6 @@ void init_rdp(struct rdp_core* dp,
 {
     dp->sp = sp;
     dp->mi = mi;
-    dp->hle_frozen_words = NULL;
-    dp->hle_frozen_bytes = dp->hle_frozen_capacity = dp->hle_frozen_guest_end = 0;
     dp->vi_regs = NULL;
     dp->instruction_timing = 1;
 #ifdef __LIBRETRO__
@@ -456,9 +317,6 @@ void init_rdp(struct rdp_core* dp,
 
 void poweron_rdp(struct rdp_core* dp)
 {
-    rdp_hle_frozen_reset(dp);
-    hle_timed = 0;
-    memset(&hle_sync, 0, sizeof(hle_sync));
     memset(dp->dpc_regs, 0, DPC_REGS_COUNT*sizeof(uint32_t));
     memset(dp->dps_regs, 0, DPS_REGS_COUNT*sizeof(uint32_t));
     dp->dpc_regs[DPC_STATUS_REG] |= DPC_STATUS_START_GCLK;
@@ -500,7 +358,7 @@ void read_rsp_dpc_regs(void* opaque, uint32_t address, uint32_t* value)
     *value = dp->dpc_regs[dpc_reg(address)];
 #if defined(RDP_TIMING_OBSERVE_READ) && defined(HAVE_PARALLEL_RSP)
     RDP_TIMING_OBSERVE_READ(dpc_reg(address), 1, dp->sp->slice_start_clock +
-        rsp_count_ticks(rsp_submission_cycles(), dp->sp->slice_overhang),
+        rsp_count_ticks(parallelRSPExecutedCycles(), dp->sp->slice_overhang),
         dp->timing.deadline, *value);
 #endif
 }

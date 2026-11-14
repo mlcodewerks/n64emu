@@ -1,7 +1,8 @@
 # Keep the emitter and dispatch safe on SSE2. Only the leaf implementations
-# carry higher ISA flags; calls are resolved when machine code is generated.
+# carry higher SSE compiler ISA flags. Helper calls are resolved while
+# generating code.
 RSP_SIMD_OBJECTS :=
-ifneq (,$(filter x86_64 amd64,$(ARCH)))
+ifneq (,$(filter x86 x86_64 amd64,$(ARCH)))
 RSP_SIMD_BASE := -mno-avx -mno-avx2 -mno-fma -mno-sse4.2 -mno-sse4.1 -mno-ssse3 -mno-sse3 -msse2
 RSP_SIMD_BASE_OBJECTS := $(patsubst %.cpp,%.o,$(filter $(RSPDIR_PARALLEL)/%.cpp,$(SOURCES_CXX)))
 $(RSP_SIMD_BASE_OBJECTS): CXXFLAGS += $(RSP_SIMD_BASE) -DN64EMU_RSP_SIMD_DISPATCH

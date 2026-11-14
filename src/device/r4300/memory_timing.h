@@ -7,12 +7,12 @@
  * and refresh latency distributions are not completely modeled.
  */
 enum {
-    /* Empirical shared-memory service estimate: a pending RDP deadline
-     * selects the contended instruction-fill cost. Keep the maximum as the
-     * native region/event bound; actual fills select the cost at runtime.
-     * See benchmarks/hle-calibration/DEMO_REPAIR.md for joint DK64/demo checks.
+    /* Empirical shared-memory service estimate, including idle bus handoff.
+     * Pending RDP work selects the contention estimate. Keep the maximum
+     * as the native region/event bound. Compatibility and audio checks:
+     * benchmarks/fast-timing-study/DK64_ACCURATE_REGRESSION.md.
      * This is an approximation of contention, not measured bus arbitration. */
-    R4300_ICACHE_FILL_IDLE_CYCLES = 32,
+    R4300_ICACHE_FILL_IDLE_CYCLES = 36,
     R4300_ICACHE_FILL_BUSY_CYCLES = 128,
     R4300_ICACHE_FILL_CYCLES = R4300_ICACHE_FILL_BUSY_CYCLES,
     R4300_DCACHE_FILL_CYCLES = 41,
@@ -34,6 +34,28 @@ enum { R4300_OFF_RAM_CYCLES = 0 };
 #else
 enum { R4300_OFF_RAM_CYCLES = 7 };
 #endif
+
+/* Cycle is the user override. Off uses the database policy: known untagged
+ * titles use Fast; Compatible tags and unknown titles use Compatible. */
+static inline unsigned r4300_use_fast_timing(unsigned cycle, unsigned compatible_policy)
+{
+#ifdef N64EMU_USF
+    (void)cycle; (void)compatible_policy;
+    return 0;
+#else
+    return !cycle && !compatible_policy;
+#endif
+}
+
+static inline unsigned r4300_off_ram_cycles(unsigned faster)
+{
+#ifdef N64EMU_USF
+    (void)faster;
+    return 0;
+#else
+    return faster ? 3 : R4300_OFF_RAM_CYCLES;
+#endif
+}
 
 static inline unsigned r4300_fpu_compatibility_latency(unsigned cache_timing, unsigned compatibility)
 {

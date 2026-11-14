@@ -12,18 +12,7 @@ all: benchmark
 usf_checks: usf_checks.c ../src/usf/usf.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ usf_checks.c $(LDLIBS)
 
-# Requires EGL and GLES2 headers/libraries; runs shader and device checks on a pbuffer.
-legacy_gles2_checks: legacy_gles2_checks.cpp $(wildcard ../src/device/rcp/rdp/legacygpu/*.hpp) ../src/device/rcp/rdp/legacygpu/gles2_gpu.cpp ../src/device/rcp/rdp/legacygpu/legacy_shaders.cpp ../src/device/rcp/rdp/legacygpu/raster_shaders.cpp
-	$(CXX) -std=c++17 -O2 -fno-fast-math -o $@ legacy_gles2_checks.cpp ../src/device/rcp/rdp/legacygpu/gles2_gpu.cpp ../src/device/rcp/rdp/legacygpu/legacy_shaders.cpp ../src/device/rcp/rdp/legacygpu/raster_shaders.cpp -lEGL -lGLESv2
-
-# Windows-only process sampler; not part of a core or ordinary harness build.
-win_cpu_sample: win_cpu_sample.cpp
-	$(CXX) -O2 -std=c++17 -o $@ $<
-
-input_script_checks: input_script_checks.c input_script.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ input_script_checks.c
-
-gameplay_benchmark: benchmark.c gl_context.h input_script.h ../deps/libretro-common/include/libretro.h
+benchmark: benchmark.c gl_context.h input_script.h ../deps/libretro-common/include/libretro.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ benchmark.c $(LDLIBS)
 
 # Separate executable so existing recorded replays keep their original harness.

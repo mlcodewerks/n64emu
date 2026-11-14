@@ -63,21 +63,26 @@ target_include_directories(parallel-rsp PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/arch/
 target_compile_options(parallel-rsp PRIVATE ${PARALLEL_RSP_CXX_FLAGS})
 
 get_filename_component(N64EMU_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
-target_include_directories(parallel-rsp PUBLIC ${N64EMU_ROOT}/deps)
+target_include_directories(parallel-rsp PUBLIC ${N64EMU_ROOT}/deps ${N64EMU_ROOT}/src)
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
 	target_include_directories(parallel-rsp PUBLIC ${N64EMU_ROOT}/deps/xbyak_aarch64
 		${N64EMU_ROOT}/deps/xbyak_aarch64/xbyak_aarch64)
 	target_sources(parallel-rsp PRIVATE ${N64EMU_ROOT}/deps/xbyak_aarch64/src/xbyak_aarch64_impl.cpp)
-elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|x86|i[3-6]86)$")
 	target_include_directories(parallel-rsp PUBLIC ${N64EMU_ROOT}/deps/xbyak)
+elseif (CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|ARM|armv[5-8].*|armhf)$")
+	# A32 uses the shared scalar assembler and native NEON vector lowering.
+	if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+		target_compile_options(parallel-rsp PUBLIC -mfpu=neon -mfloat-abi=hard)
+	endif()
 else()
-	message(FATAL_ERROR "The RSP Xbyak JIT requires x64 or AArch64.")
+	message(FATAL_ERROR "The RSP JIT requires x86, x64, ARMv7/NEON or AArch64.")
 endif()
 target_compile_definitions(parallel-rsp PUBLIC DEBUG_JIT)
 
-# The emitter stays on the x64 baseline. Compile only vector/memory helpers
+# The emitter stays on the SSE2 baseline for both x86 ABIs. Compile only vector/memory helpers
 # again for higher ISAs and bind their addresses while generating each block.
-if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|x86|i[3-6]86)$" AND
     (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     set(RSP_SIMD_BASE_FLAGS -mno-avx -mno-avx2 -mno-fma -mno-sse4.2
         -mno-sse4.1 -mno-ssse3 -mno-sse3 -msse2)
@@ -142,6 +147,9 @@ if (PARALLEL_RSP_TESTS)
 	add_executable(rsp-jit-tests jit_tests.cpp)
 	target_link_libraries(rsp-jit-tests PRIVATE parallel-rsp)
 	add_test(NAME rsp-jit-checks COMMAND $<TARGET_FILE:rsp-jit-tests>)
+	add_executable(rsp-simd-checks ${N64EMU_ROOT}/benchmarks/rsp_simd_checks.cpp)
+	target_link_libraries(rsp-simd-checks PRIVATE parallel-rsp)
+	add_test(NAME rsp-simd-checks COMMAND $<TARGET_FILE:rsp-simd-checks>)
 	add_executable(rsp-vector-jit-tests vector_jit_tests.cpp)
 	target_link_libraries(rsp-vector-jit-tests PRIVATE parallel-rsp)
 	add_test(NAME rsp-vector-jit-checks COMMAND $<TARGET_FILE:rsp-vector-jit-tests>)

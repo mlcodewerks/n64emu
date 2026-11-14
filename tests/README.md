@@ -56,9 +56,8 @@ make -f tests/unit.mk check-new -j6
 | Cartridge saves | EEPROM sizes and boundary writes, FlashRAM program/erase/ID DMA and persistence, SRAM masked writes; existing dongle and ROM database tests |
 | Game Boy cartridge | MBC1 bank switching, RAM write protection/persistence, RTC 255/511-day rollover, elapsed days and latched reads |
 | 64DD | All 30,212 logical/physical address round trips across seven geometries, total sizes, controller reset buffers and ROM reads |
-| RSP | Existing scalar/vector interpreter and JIT suites, polling, signal and single-step conformance |
-| RSP HLE | Work/path saturation, save/restore/reset, refinement admission, override/slice policy and NEAD load bounds/bank admission |
-| RDP/rendering | DPC flag commands, start latch/alignment, read-only registers, unfreeze notifications, clock wrap/restore, DPS masks and frozen FIFO serialization/bounds; portable timing/short spans, command parser/TMEM, framebuffer notifications, scanline/fill/copy ownership at 1x/2x/4x and mocked GL state bindings |
+| RSP | Scalar/vector interpreter and JIT suites, polling, signal and single-step conformance; 442,368 AVX2 pair, element-selection, alias and dependency cases |
+| RDP/rendering | DPC flag commands, start latch/alignment, read-only registers, unfreeze notifications, clock wrap/restore, DPS masks; portable timing/short spans, command parser/TMEM, framebuffer notifications, scanline/fill/copy ownership at 1x/2x/4x and mocked GL state bindings |
 | Host scheduling | Worker pool and Windows affinity scope |
 
 This is broad component regression coverage, not exhaustive opcode or hardware

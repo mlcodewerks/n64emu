@@ -44,17 +44,6 @@ int main(void)
     dp.dpc_regs[DPC_BUFBUSY_REG]=dp.dpc_regs[DPC_PIPEBUSY_REG]=dp.dpc_regs[DPC_TMEM_REG]=99;
     write_dpc_regs(&dp,DPC_STATUS_REG*4,DPC_CLR_CMD_CTR|DPC_CLR_PIPE_CTR|DPC_CLR_TMEM_CTR,UINT32_MAX);
     assert(!dp.dpc_regs[DPC_BUFBUSY_REG] && !dp.dpc_regs[DPC_PIPEBUSY_REG] && !dp.dpc_regs[DPC_TMEM_REG]);
-    const uint32_t packet[]={0x29000000,0x12345678};uint8_t saved[30];
-    rdp_hle_frozen_append(&dp,packet,sizeof(packet));rdp_hle_frozen_append(&dp,packet,sizeof(packet));
-    memset(saved,0xa5,sizeof(saved));assert(!rdp_hle_frozen_save(&dp,saved+1,27));
-    assert(saved[0]==0xa5 && saved[1]==0xa5 && saved[29]==0xa5);
-    assert(rdp_hle_frozen_save(&dp,saved+1,28) && saved[0]==0xa5 && saved[29]==0xa5);
-    rdp_hle_frozen_reset(&dp);assert(rdp_hle_frozen_load(&dp,saved+1,28));
-    assert(dp.hle_frozen_bytes==16 && dp.hle_frozen_guest_end==0x1000);
-    assert(!memcmp(dp.hle_frozen_words,packet,8) && !memcmp(dp.hle_frozen_words+2,packet,8));
-    saved[5]=7;assert(!rdp_hle_frozen_load(&dp,saved+1,28) && dp.hle_frozen_bytes==16);
-    saved[1]^=1;assert(!rdp_hle_frozen_load(&dp,saved+1,28) && dp.hle_frozen_bytes==16);
-    assert(rdp_hle_frozen_load(&dp,NULL,0) && !dp.hle_frozen_words && !dp.hle_frozen_bytes);
     poweron_rdp(&dp);
-    puts("RDP: DPC flags/latches, unfreeze notifications, clock wrap/restore, DPS masks and frozen FIFO serialization/bounds passed.");return 0;
+    puts("RDP: DPC flags/latches, unfreeze notifications, clock wrap/restore, DPS masks passed.");return 0;
 }

@@ -1,0 +1,119 @@
+/*
+ * version.h - Defines common version information for the DLL's version
+ *             resource and the component version shown in foobar2000.
+ *             Note: Newline at EOF required for resource compiler (RC1004).
+ *
+ * Copyright (c) 2023-2026 Jimmy Cassis
+ */
+
+#pragma once
+
+#define APPLICATION_FILE_NAME "foo_input_usf"
+#define APPLICATION_PRODUCT_NAME "USF Decoder"
+#define APPLICATION_AUTHOR_NAME "KernelOops" //"Jimmy Cassis"
+#define APPLICATION_FILE_IS_DLL 1
+#define APPLICATION_DESCRIPTION "game music from the Nintendo 64 console"
+//#define APPLICATION_SOURCE_URL "https://github.com/jecassis/foo_input_usf"
+#define APPLICATION_RELEASE_URL "https://www.foobar2000.org/components/view/foo_input_usf"
+
+#define APPLICATION_VERSION_MAJOR 4
+#define APPLICATION_VERSION_MINOR 3
+#define APPLICATION_VERSION_REVISION 7
+#define APPLICATION_VERSION_BUILD 0 // alpha: -3|[4096,8192), beta: -2|[8192,12288), release candidate: -1|[16384,20480), not development or prerelease version: [32768,65533)
+#define APPLICATION_VERSION_PRERELEASE 0
+
+#define LIBRARY_VERSION_MAJOR APPLICATION_VERSION_MAJOR
+#define LIBRARY_VERSION_MINOR APPLICATION_VERSION_MINOR
+#define LIBRARY_VERSION_REVISION APPLICATION_VERSION_REVISION
+#define LIBRARY_VERSION_BUILD APPLICATION_VERSION_BUILD
+#define LIBRARY_VERSION_PRERELEASE APPLICATION_VERSION_PRERELEASE
+
+#define COMPONENT_NAME APPLICATION_PRODUCT_NAME
+#define COMPONENT_DESCRIPTION "Decoder for " APPLICATION_DESCRIPTION ", in USF or miniUSF formats.\n\n" \
+                              "Based on foo_input_usf by Christopher Snowhill (kode54).\n" \
+                              "USF specification by Adam Gashlin (hcs64) and original library by Josh Ware (JoshW)."
+#define LIBRARY_DESCRIPTION "Decodes " APPLICATION_DESCRIPTION
+
+#define APPLICATION_COPYRIGHT "2026 " APPLICATION_AUTHOR_NAME
+#define LIBRARY_COPYRIGHT APPLICATION_COPYRIGHT
+
+#if !defined(APPLICATION_VERSION_MAJOR) || APPLICATION_VERSION_MAJOR > 65535
+#error Invalid APPLICATION_VERSION_MAJOR
+#endif
+
+#if !defined(APPLICATION_VERSION_MINOR) || APPLICATION_VERSION_MINOR > 65535
+#error Invalid APPLICATION_VERSION_MINOR
+#endif
+
+#if !defined(APPLICATION_VERSION_REVISION) || APPLICATION_VERSION_REVISION > 65535
+#error Invalid APPLICATION_VERSION_REVISION
+#endif
+
+#if !defined(APPLICATION_VERSION_BUILD) || APPLICATION_VERSION_BUILD > 65535
+#error Invalid APPLICATION_VERSION_BUILD
+#endif
+
+#ifndef APPLICATION_FILE_NAME
+#error Expected APPLICATION_FILE_NAME
+#endif
+
+#if !defined(APPLICATION_FILE_IS_DLL) == !defined(APPLICATION_FILE_IS_EXE)
+#error Expected either APPLICATION_FILE_IS_DLL or APPLICATION_FILE_IS_EXE to be defined
+#endif
+
+#ifndef APPLICATION_PRODUCT_NAME
+#error Expected APPLICATION_PRODUCT_NAME
+#endif
+
+#ifndef APPLICATION_AUTHOR_NAME
+#error Expected APPLICATION_AUTHOR_NAME
+#endif
+
+#ifndef APPLICATION_COPYRIGHT
+#error Expected APPLICATION_COPYRIGHT
+#endif
+
+#define _APPLICATION_FILEFLAGSMASK VS_FFI_FILEFLAGSMASK // 0x3fL
+
+#if (APPLICATION_VERSION_BUILD >= -3 && APPLICATION_VERSION_BUILD < 0) || \
+    (APPLICATION_VERSION_BUILD >= 4096 && APPLICATION_VERSION_BUILD < 32768)
+#ifdef _DEBUG
+#define _APPLICATION_FILEFLAGS VS_FF_DEBUG | VS_FF_PRERELEASE // 0x3L
+#else
+#define _APPLICATION_FILEFLAGS VS_FF_PRERELEASE // 0x2L
+#endif
+#else
+#ifdef _DEBUG
+#define _APPLICATION_FILEFLAGS VS_FF_DEBUG // 0x1L
+#else
+#define _APPLICATION_FILEFLAGS 0x0L
+#endif
+#endif
+
+#define _APPLICATION_FILEOS VOS_NT_WINDOWS32 // (VOS_NT | VOS__WINDOWS32) -> 0x40004L
+
+#ifdef APPLICATION_FILE_IS_DLL
+#define _APPLICATION_EXTENSION ".dll"
+#define _APPLICATION_FILETYPE VFT_DLL // 0x2L
+#endif
+
+#ifdef APPLICATION_FILE_IS_EXE
+#define _APPLICATION_EXTENSION ".exe"
+#define _APPLICATION_FILETYPE VFT_APP // 0x1L
+#endif
+
+#define _APPLICATION_FILESUBTYPE VFT2_UNKNOWN // 0x0L
+
+#ifndef BUILD_TIMEZONE
+#define BUILD_TIMEZONE -0800
+#endif
+
+#ifndef STR
+#define STR_QUOTE(x) #x
+#define STR(x) STR_QUOTE(x)
+#endif
+
+// clang-format off
+#define APPLICATION_VERSION STR(APPLICATION_VERSION_MAJOR) "." STR(APPLICATION_VERSION_MINOR) "." STR(APPLICATION_VERSION_REVISION) "." STR(APPLICATION_VERSION_BUILD)
+#define LIBRARY_VERSION STR(LIBRARY_VERSION_MAJOR) "." STR(LIBRARY_VERSION_MINOR) "." STR(LIBRARY_VERSION_REVISION) "." STR(LIBRARY_VERSION_BUILD)
+// clang-format on

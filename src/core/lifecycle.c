@@ -3,7 +3,6 @@
 #include "main/main.h"
 #include "main/rom.h"
 #include "device/memory.h"
-#include "device/rcp/rsp/optional_rsp.h"
 static bool content_open;
 bool core_open_content(const void *data, unsigned size)
 {
@@ -22,7 +21,6 @@ void core_close_content(void)
 {
     if (!g_mem_base) return;
     main_stop();
-    optional_rsp_shutdown();
     if (content_open) close_rom();
     content_open = false;
     release_mem_base(g_mem_base);

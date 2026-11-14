@@ -18,6 +18,7 @@ RSP_HEADERS := $(wildcard $(RSP)/*.hpp) $(wildcard $(RSP)/*.inc) src/jit32/assem
 all: $(OUT)/cpu-checks$(EXE) $(OUT)/rsp-checks$(EXE) $(OUT)/vector-checks$(EXE) $(OUT)/fpu-transfer-checks$(EXE)
 all: $(OUT)/fpu-compare-abi-checks$(EXE)
 all: $(OUT)/fpu-cvt-abi-checks$(EXE)
+all: $(OUT)/rsp-simd-checks$(EXE)
 $(OUT):
 	mkdir -p $@
 $(OUT)/cpu-checks$(EXE): benchmarks/jit32/cpu_checks.cpp $(CPU_EMITTER) $(wildcard src/device/r4300/jit/pair32/*.inc) src/device/r4300/jit/n64emujit.h src/jit32/assembler.hpp | $(OUT)
@@ -36,7 +37,10 @@ $(OUT)/rsp-checks$(EXE): $(RSP)/jit_tests.cpp $(RSP_SOURCES) $(RSP_HEADERS) | $(
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 -DN64EMU_RSP_TEST_SILENT $< $(RSP_SOURCES) -o $@
 $(OUT)/vector-checks$(EXE): $(RSP)/vector_jit_tests.cpp $(RSP_SOURCES) $(RSP_HEADERS) | $(OUT)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 -DN64EMU_RSP_TEST_SILENT $< $(RSP_SOURCES) -o $@
+$(OUT)/rsp-simd-checks$(EXE): benchmarks/rsp_simd_checks.cpp $(RSP_SOURCES) $(RSP_HEADERS) | $(OUT)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 -DN64EMU_RSP_TEST_SILENT $< $(RSP_SOURCES) -o $@
 check: all
+	$(OUT)/rsp-simd-checks$(EXE)
 	$(OUT)/cpu-checks$(EXE)
 	$(OUT)/fpu-transfer-checks$(EXE)
 	$(OUT)/fpu-compare-abi-checks$(EXE)

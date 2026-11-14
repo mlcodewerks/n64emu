@@ -3,6 +3,7 @@
 #include "r4300_core.h"
 #ifdef __LIBRETRO__
 #include "renderer_options.h"
+#include "main/rom.h"
 #endif
 #include "jit_runtime.h"
 #if defined(COUNT_INSTR)
@@ -75,6 +76,7 @@ void poweron_r4300(struct r4300_core* r4300)
     r4300->branch_target=r4300->branch_sequence=0;
     r4300->irq_writeback_deadline=0;r4300->irq_writeback_pending=0;
     r4300->icache_fill_end=0;r4300->icache_fill_index=0;
+    r4300->fast_memory_timing=0;
     memset(r4300->random_wired_deadline,0,sizeof(r4300->random_wired_deadline));memset(r4300->random_wired_value,0,sizeof(r4300->random_wired_value));
     r4300->cache_timing = 1;
     r4300->compat_issue_clock = 1;
@@ -82,6 +84,7 @@ void poweron_r4300(struct r4300_core* r4300)
     r4300->cache_timing = renderer_settings.per_cycle_timing ? 1 : 0;
     /* Only timing Off keeps the compatibility issue envelope. */
     r4300->compat_issue_clock = r4300->cache_timing == 0;
+    r4300->fast_memory_timing = r4300_use_fast_timing(r4300->cache_timing, ROM_SETTINGS.timing_compatible);
 #endif
 
     r4300_jit_invalidate(r4300, 0, 0);

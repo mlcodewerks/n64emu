@@ -65,8 +65,6 @@ typedef struct sr_host_interface {
                               uint32_t id, const uint32_t *words,
                               uint32_t word_count);
     void *userdata;
-    /* Optional host-owned HLE command FIFO. False falls back to guest memory. */
-    bool (*read_command_word)(void *userdata, uint32_t word_index, uint32_t *word);
 } sr_host_interface;
 
 #endif

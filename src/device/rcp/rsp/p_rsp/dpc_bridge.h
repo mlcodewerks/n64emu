@@ -22,8 +22,6 @@ enum { PARALLEL_RSP_STATE_WORDS = 369 };
 enum { PARALLEL_RSP_STATE_VECTOR_OFFSET = 38, PARALLEL_RSP_STATE_FLAGS_OFFSET = 294 };
 void parallelRSPSaveState(uint32_t* words);
 void parallelRSPLoadState(const uint32_t* words);
-uint32_t parallelRSPHleBootProbe(const uint32_t *imem,const uint32_t *dmem,
-    uint32_t *state,uint16_t *vco);
 
 #ifdef __cplusplus
 }

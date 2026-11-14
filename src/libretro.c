@@ -31,11 +31,7 @@
 #include "core/frontend.h"
 #include "device/rcp/rdp/softrdp/softrdp_video.h"
 #include "renderer_options.h"
-#include "device/rcp/rsp/optional_rsp.h"
 #include "device/rcp/rdp/performance_cores.h"
-#ifdef HAVE_PARALLEL_RDP
-#include "device/rcp/rdp/para_intf.h"
-#endif
 
 #ifdef HAVE_LIBNX
 #include <switch.h>
@@ -432,46 +428,6 @@ unsigned retro_get_region(void)
     return ((ROM_PARAMS.systemtype == SYSTEM_PAL) ? RETRO_REGION_PAL : RETRO_REGION_NTSC);
 }
 
-#ifdef HAVE_PARALLEL_RDP
-static struct retro_hw_render_callback hw_render;
-static struct retro_hw_render_context_negotiation_interface_vulkan hw_negotiation;
-
-static void context_reset(void)
-{
-    const struct retro_hw_render_interface *iface = NULL;
-    if (!environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, &iface) || !iface ||
-        iface->interface_type != RETRO_HW_RENDER_INTERFACE_VULKAN ||
-        iface->interface_version < RETRO_HW_RENDER_INTERFACE_VULKAN_VERSION)
-        return;
-    vk_set_hw_render_interface((const struct retro_hw_render_interface_vulkan *)iface);
-    if (renderer_open && renderer_settings.renderer == RENDERER_PARALLEL)
-    {
-        vk_destroy();
-        if (!vk_init() && log_cb)
-            log_cb(RETRO_LOG_ERROR, "paraLLEl-RDP: failed to restore Vulkan renderer.\n");
-    }
-}
-static void context_destroy(void) { vk_context_destroy(); }
-static bool request_vulkan_context(void)
-{
-    memset(&hw_render, 0, sizeof(hw_render));
-    memset(&hw_negotiation, 0, sizeof(hw_negotiation));
-    hw_render.context_type = RETRO_HW_CONTEXT_VULKAN;
-    hw_render.context_reset = context_reset;
-    hw_render.context_destroy = context_destroy;
-    hw_render.cache_context = false;
-    if (!environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw_render)) return false;
-    hw_negotiation.interface_type = RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN;
-    hw_negotiation.interface_version = RETRO_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE_VULKAN_VERSION;
-    hw_negotiation.get_application_info = vk_get_application_info;
-    hw_negotiation.create_device = vk_create_device;
-    /* RetroArch retains this optional callback beyond core DLL unload.
-     * Release auxiliary resources via context_destroy and retro_deinit. */
-    hw_negotiation.destroy_device = NULL;
-    return environ_cb(RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE,
-            &hw_negotiation);
-}
-#endif
 
 
 void retro_init(void)
@@ -504,10 +460,6 @@ void retro_deinit(void)
     if (load_game_successful)
         retro_unload_game();
 
-#ifdef HAVE_PARALLEL_RDP
-    /* The frontend still owns a live VkDevice at this point. */
-    vk_context_destroy();
-#endif
     deinit_audio_libretro();
 
     if (perf_cb.perf_log)
@@ -564,18 +516,10 @@ bool retro_load_game(const struct retro_game_info *game)
     void *file_data = NULL;
     renderer_read_options(environ_cb);
     if (log_cb)
-        log_cb(RETRO_LOG_INFO, "Renderer: %s, upscale %ux, performance cores %s.\n",
-                renderer_settings.renderer == RENDERER_SOFTRDP ? "SoftRDP" : "paraLLEl-RDP",
-                renderer_settings.upscale, renderer_settings.performance_only ? "only" : "unrestricted");
+        log_cb(RETRO_LOG_INFO, "Renderer: SoftRDP, upscale %ux, automatic performance-core affinity.\n",
+                renderer_settings.upscale);
     performance_cores_init();
-    performance_cores_set_enabled(renderer_settings.performance_only);
-#ifdef HAVE_PARALLEL_RDP
-    if (renderer_settings.renderer == RENDERER_PARALLEL && !request_vulkan_context())
-    {
-        if (log_cb) log_cb(RETRO_LOG_ERROR, "paraLLEl-RDP requires a Vulkan frontend; content load rejected.\n");
-        return false;
-    }
-#endif
+    performance_cores_set_enabled(true);
     initializing = true;
 
     // Workaround for broken subsystem on static platforms
@@ -604,6 +548,10 @@ bool retro_load_game(const struct retro_game_info *game)
         if (log_cb) log_cb(RETRO_LOG_ERROR, "Failed to load content.\n");
         goto load_failed;
     }
+    if (log_cb)
+        log_cb(RETRO_LOG_INFO, "Timing: %s.\n", renderer_settings.per_cycle_timing ?
+                "Cycle (user override)" : ROM_SETTINGS.timing_compatible ?
+                "Compatible (tagged or unknown title)" : "Fast (known untagged title)");
     format_saved_memory();
     deinit_audio_libretro();
     init_audio_libretro(audio_buffer_size);
@@ -622,7 +570,6 @@ load_failed:
 
 void retro_unload_game(void)
 {
-    optional_rsp_report();
     sync_close();
 
     /* Release backends and decoded CPU code before unmapping guest memory. */
@@ -655,7 +602,7 @@ void update_variables(bool startup)
     else
     {
         renderer_read_live_options(environ_cb);
-        if (renderer_open && renderer_settings.renderer == RENDERER_SOFTRDP)
+        if (renderer_open)
         {
             n64video_set_vi_options(renderer_settings.vi_filter, renderer_settings.dedither,
                     renderer_settings.blur, renderer_settings.overscan, renderer_settings.bob);
@@ -706,13 +653,6 @@ void retro_run(void)
     sync_end();
     performance_core_leave(&emulation_affinity);
 
-#ifdef HAVE_PARALLEL_RDP
-    if (renderer_settings.renderer == RENDERER_PARALLEL)
-        video_cb(libretro_swap_buffer ? RETRO_HW_FRAME_BUFFER_VALID : NULL,
-                vk_frame_width() ? vk_frame_width() : 640,
-                vk_frame_height() ? vk_frame_height() : 480, 0);
-    else
-#endif
     {
 #ifndef N64EMU_USF
         extern void softrdp_present(bool new_frame);
@@ -876,9 +816,6 @@ void renderer_process_display_list(void)
 
 void renderer_process_commands(void)
 {
-#ifdef HAVE_PARALLEL_RDP
-    if (renderer_settings.renderer == RENDERER_PARALLEL) { vk_process_commands(); return; }
-#endif
     n64video_process_list();
 }
 
@@ -886,23 +823,11 @@ void renderer_close_content(void)
 {
     if (!renderer_open) return;
     renderer_open = false;
-#ifdef HAVE_PARALLEL_RDP
-    if (renderer_settings.renderer == RENDERER_PARALLEL) { vk_destroy(); return; }
-#endif
     n64video_close();
 }
 
 int renderer_open_content(void)
 {
-#ifdef HAVE_PARALLEL_RDP
-    if (renderer_settings.renderer == RENDERER_PARALLEL)
-    {
-        renderer_open = true;
-        if (vk_init()) return 1;
-        if (log_cb) log_cb(RETRO_LOG_ERROR, "paraLLEl-RDP: Vulkan renderer initialization failed.\n");
-        return 0;
-    }
-#endif
     struct n64video_config config;
     n64video_config_init(&config);
     config.parallel = true;
@@ -940,9 +865,6 @@ int renderer_open_content(void)
 
 void renderer_present(void)
 {
-#ifdef HAVE_PARALLEL_RDP
-    if (renderer_settings.renderer == RENDERER_PARALLEL) { vk_rasterize(); return; }
-#endif
     n64video_update_screen();
 }
 

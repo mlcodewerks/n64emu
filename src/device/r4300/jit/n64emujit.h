@@ -73,6 +73,7 @@ struct n64emujit_config {
     struct r4300_fastmem* fastmem;
     struct n64emujit_fetch_cache* data_cache;
     unsigned alu_regions; /* Step callback implements phase 12. */
+    unsigned fast_memory_timing;
 };
 struct n64emujit* n64emujit_create(void);
 void n64emujit_destroy(struct n64emujit*);

@@ -1,43 +1,35 @@
 #include "renderer_options.h"
-#include <stdlib.h>
+#ifndef N64EMU_USF
+#include "device/rcp/rdp/performance_cores.h"
+#endif
 #include <string.h>
 
 struct renderer_settings renderer_settings;
-#ifdef HAVE_PARALLEL_RDP
-#define RENDERERS "softrdp|parallel-rdp"
-#else
-#define RENDERERS "softrdp"
-#endif
 /* Legacy options are supported by every libretro frontend; first value is default.
  * Renderer resources are latched at content load; shared VI controls update live. */
 static const struct retro_variable options[] = {
-    {"wtfn64_renderer", "Renderer (restart required); " RENDERERS},
-    {"wtfn64_timing", "Cycle-based timing (restart required); on|off"},
-    {"wtfn64_hle", "RSP HLE (restart required); off|on"},
-    {"wtfn64_angrylion_threads", "CPU RDP rendering threads (restart required); 6|2|4|8|10|auto"},
-    {"wtfn64_performance_cores", "Performance cores only (restart required); enabled|disabled"},
-    {"wtfn64_angrylion_upscale", "SoftRDP upscaling (restart required); 1|2|4"},
-#ifdef HAVE_PARALLEL_RDP
-    {"wtfn64_parallel_upscale", "paraLLEl-RDP upscaling (restart required); 1|2|4|8"},
-#endif
+    {"wtfn64_timing", "Cycle timing (restart required); on|off"},
+    {"wtfn64_angrylion_deinterlace", "Deinterlacing; weave|bob"},
     {"wtfn64_vi_filter", "VI filtering; enabled|disabled"},
     {"wtfn64_vi_dedither", "VI dedithering; enabled|disabled"},
     {"wtfn64_vi_blur", "VI divot filter; enabled|disabled"},
     {"wtfn64_crop_overscan", "Crop overscan; disabled|enabled"},
-    {"wtfn64_angrylion_deinterlace", "SoftRDP deinterlacing; weave|bob"},
-    {"wtfn64_native_lod", "Native texture LOD; enabled|disabled"},
     {"mupen64plus-pak1", "Player 1 controller pak; memory|none|rumble|transfer"},
     {"mupen64plus-pak2", "Player 2 controller pak; none|memory|rumble|transfer"},
     {"mupen64plus-pak3", "Player 3 controller pak; none|memory|rumble|transfer"},
     {"mupen64plus-pak4", "Player 4 controller pak; none|memory|rumble|transfer"},
-#ifdef HAVE_PARALLEL_RDP
-    {"wtfn64_parallel_downscale", "paraLLEl-RDP downsampling steps; 0|1|2|3"},
-    {"wtfn64_native_tex_rect", "paraLLEl-RDP native texture rectangles; enabled|disabled"},
-    {"wtfn64_ss_readbacks", "paraLLEl-RDP supersampled readbacks (restart required); disabled|enabled"},
-    {"wtfn64_ss_dither", "paraLLEl-RDP supersampled dithering (restart required); disabled|enabled"},
-#endif
     {NULL, NULL}
 };
+
+static unsigned rendering_thread_count(void)
+{
+#ifdef N64EMU_USF
+    return 1; /* Audio-only builds do not contain renderer topology support. */
+#else
+    unsigned cores = performance_cores_count();
+    return cores > 6 ? 6 : cores ? cores : 1;
+#endif
+}
 
 void renderer_register_options(retro_environment_t environment)
 {
@@ -45,13 +37,9 @@ void renderer_register_options(retro_environment_t environment)
     static struct retro_core_option_definition legacy_definitions[64];
     static char descriptions[64][160], values[64][256];
     static struct retro_core_option_v2_category categories[] = {
-        {"emulation", "Emulation", "CPU core, RSP task routing and accuracy controls. Changes require restarting content."},
-        {"video", "Video", "Renderer selection and shared presentation options."},
+        {"emulation", "Emulation", "CPU core and accuracy controls. Changes require restarting content."},
+        {"video", "Video", "Rendering and presentation options."},
         {"input", "Controllers", "Controller accessories."},
-        {"angrylion", "SoftRDP", "Software RDP rendering and synchronization."},
-#ifdef HAVE_PARALLEL_RDP
-        {"parallel", "paraLLEl-RDP", "Vulkan RDP rendering."},
-#endif
         {NULL, NULL, NULL}
     };
     unsigned version = 0, i;
@@ -74,16 +62,12 @@ void renderer_register_options(retro_environment_t environment)
                 "Changes take effect when content is restarted." :
                 "Changes take effect while content is running.";
             d->category_key = "video";
-            if (strstr(d->key, "angrylion")) d->category_key = "angrylion";
-            else if (strstr(d->key, "parallel") || strstr(d->key, "ss_") || strstr(d->key, "native_tex_rect")) d->category_key = "parallel";
-            else if (strstr(d->key, "rsp_") || strstr(d->key, "lle_") || strstr(d->key, "_timing") || strstr(d->key, "wtfn64_cpu_") || !strcmp(d->key, "wtfn64_hle")) d->category_key = "emulation";
-            if (!strcmp(d->key, "wtfn64_hle"))
-                d->info = "On accelerates supported graphics, audio and task microcode, with native RSP fallback for unsupported programs. Off executes all RSP programs natively. Independent of cycle-based timing. Restart content to apply.";
+            if (!strcmp(d->key, "wtfn64_timing")) d->category_key = "emulation";
             if (!strcmp(d->key, "wtfn64_vi_filter") || !strcmp(d->key, "wtfn64_vi_dedither") ||
                 !strcmp(d->key, "wtfn64_vi_blur"))
-                d->info = "Applies immediately to SoftRDP and paraLLEl-RDP.";
+                d->info = "Applies immediately to SoftRDP.";
             if (!strcmp(d->key, "wtfn64_timing"))
-                d->info = "On enables detailed CPU cache and pipeline timing. Off uses fixed RAM access costs and operand-dependent floating-point latency without cache simulation, for higher performance. Component clocks and work-based RDP timing remain active. RSP HLE is selected separately. Restart content to apply.";
+                d->info = "On always enables full CPU cache and pipeline timing. Off uses Fast timing for known untagged cartridges, and Compatible timing for tagged cartridges or titles absent from the database. Restart content to apply.";
             if (strstr(d->key, "-pak")) {
                 d->category_key = "input";
                 d->info = "Choose the accessory attached to this controller. A Memory Pak allows games to save progress.";
@@ -93,7 +77,7 @@ void renderer_register_options(retro_environment_t environment)
                 next = strchr(p, '|');
                 if (next) *next++ = 0;
                 d->values[j++].value = p;
-                if (!strcmp(d->key, "wtfn64_timing") || !strcmp(d->key, "wtfn64_hle"))
+                if (!strcmp(d->key, "wtfn64_timing"))
                     d->values[j - 1].label = !strcmp(p, "on") ? "On" : "Off";
                 if (strstr(d->key, "-pak"))
                     d->values[j - 1].label = !strcmp(p, "memory") ? "Memory Pak" :
@@ -140,53 +124,28 @@ static bool toggle(retro_environment_t env, const char *key, bool fallback)
     const char *v = value(env, key, fallback ? "enabled" : "disabled");
     return !strcmp(v, "enabled") ? true : !strcmp(v, "disabled") ? false : fallback;
 }
-static unsigned scale(retro_environment_t env, const char *key, unsigned maximum)
-{
-    unsigned n = (unsigned)atoi(value(env, key, "1"));
-    return (n == 2 || n == 4 || (n == 8 && maximum == 8)) ? n : 1;
-}
 void renderer_read_options(retro_environment_t env)
 {
     struct renderer_settings *s = &renderer_settings;
     const char *v;
     memset(s, 0, sizeof(*s));
     v = value(env, "wtfn64_timing", "on");
-    /* Old Accurate/Fast selections both migrate to full timing. */
-    s->per_cycle_timing = strcmp(v, "off") != 0 && strcmp(v, "no-cache") != 0;
-    /* Consult the old boolean only when the frontend has no level saved. */
-    v = value(env, "wtfn64_hle", "");
-    s->hle = (!strcmp(v, "Off") || !strcmp(v, "off") || !strcmp(v, "disabled")) ? HLE_OFF :
-        (!strcmp(v, "on") || !strcmp(v, "enabled") || !strcmp(v, "RSP HLE") || !strcmp(v, "rsp")) ? HLE_RSP :
-        toggle(env, "wtfn64_rsp_hle", false) ? HLE_RSP : HLE_OFF;
-    s->rsp_hle = s->hle != HLE_OFF;
-    s->lle_graphics = s->lle_audio = !s->rsp_hle;
+    /* Previous simplified profiles migrate to automatic Off selection. */
+    s->per_cycle_timing = strcmp(v, "fast") != 0 && strcmp(v, "compatible") != 0 &&
+        strcmp(v, "off") != 0 && strcmp(v, "no-cache") != 0;
     s->component_timing = true;
 #ifdef N64EMU_USF
     s->component_timing = false;
 #endif
-#ifdef HAVE_PARALLEL_RDP
-    if (strcmp(value(env, "wtfn64_renderer", "softrdp"), "parallel-rdp") == 0)
-        s->renderer = RENDERER_PARALLEL;
-#endif
-    v = value(env, "wtfn64_angrylion_threads", "6");
-    s->threads = strcmp(v, "auto") == 0 ? 0 : (unsigned)atoi(v);
-    if (strcmp(v, "auto") != 0 && (s->threads < 2 || s->threads > 10 || s->threads % 2))
-        s->threads = 6;
-    s->performance_only = toggle(env, "wtfn64_performance_cores", true);
-    s->upscale = s->renderer == RENDERER_SOFTRDP ?
-        scale(env, "wtfn64_angrylion_upscale", 4) : scale(env, "wtfn64_parallel_upscale", 8);
+    s->threads = rendering_thread_count();
+    s->upscale = 1;
     renderer_read_live_options(env);
-    s->ss_readbacks = toggle(env, "wtfn64_ss_readbacks", false);
-    s->ss_dither = toggle(env, "wtfn64_ss_dither", false);
 }
 
 void renderer_read_live_options(retro_environment_t env)
 {
     struct renderer_settings *s = &renderer_settings;
-    s->downscale = (unsigned)atoi(value(env, "wtfn64_parallel_downscale", "0"));
-    if (s->downscale > 3) s->downscale = 0;
-    s->native_lod = toggle(env, "wtfn64_native_lod", true);
-    s->native_tex_rect = toggle(env, "wtfn64_native_tex_rect", true);
+    s->native_lod = true;
     s->vi_filter = toggle(env, "wtfn64_vi_filter", true);
     s->dedither = toggle(env, "wtfn64_vi_dedither", true);
     s->blur = toggle(env, "wtfn64_vi_blur", true);

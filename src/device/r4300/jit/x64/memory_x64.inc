@@ -752,7 +752,8 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         }
     } else {
         emit_fetch_native(config, index, exit->start, 1, check_line);
-        if (R4300_OFF_RAM_CYCLES) emit_addimm(R13, R4300_OFF_RAM_CYCLES, R13);
+        unsigned ram_cycles = r4300_off_ram_cycles(config->fast_memory_timing);
+        if (ram_cycles) emit_addimm(R13, ram_cycles, R13);
         emit_state_imm(offsetof(struct r4300_core, pipeline_cached_store), 0, 0);
     }
     if (!deferred_pipeline(config)) {

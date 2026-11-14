@@ -8,7 +8,6 @@ DEBUG ?= 0
 HEADLESS_BENCHMARK ?= 0
 LLE ?= 0
 HAVE_PARALLEL_RSP ?= 1
-HAVE_PARALLEL_RDP ?= 1
 CPU_BACKEND ?= auto
 RSP_BACKEND ?= auto
 USF ?= 0
@@ -236,7 +235,6 @@ else ifeq ($(platform),win)
    endif
 
    HAVE_PARALLEL_RSP = 1
-   HAVE_PARALLEL_RDP = 1
    HAVE_THR_AL = 1
    LLE = 1
    COREFLAGS += -DOS_WINDOWS -DMINGW -DUNICODE
@@ -254,7 +252,6 @@ ifeq ($(STATIC_LINKING), 1)
 endif
 
 ifeq ($(USF),1)
-override HAVE_PARALLEL_RDP := 0
 COREFLAGS += -DN64EMU_USF
 TARGET := $(subst n64emu_libretro,n64emu_usf,$(TARGET))
 ifneq (,$(findstring win,$(platform)))
@@ -302,26 +299,6 @@ CXXFLAGS += -std=c++17 -D_CRT_SECURE_NO_WARNINGS
 CXXFLAGS += -fpermissive
 # ISA upgrades belong to runtime-dispatched leaves, never the default C++ ABI.
 
-# HLE integer kernels share SSE2 and the existing NEON translation layer.
-# Keep this ISA requirement local to HLE; scalar reference builds can opt out.
-HLE_SIMD ?= 1
-ifeq ($(HLE_SIMD),0)
-COREFLAGS += -DHLE_SIMD_DISABLE -DF3D_NO_SSE2 -DRSP_NO_SSE2
-else
-ifneq (,$(filter x86_64 amd64 x86 i386 i486 i586 i686,$(ARCH)))
-HLE_SSE2_FLAGS := -msse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2 -mno-fma -mno-popcnt
-$(patsubst %.c,%.o,$(wildcard $(CORE_DIR)/src/device/rcp/rsp/hle/*.c)): CFLAGS += $(HLE_SSE2_FLAGS)
-endif
-endif
-
-# Rebuild HLE when its ISA contract changes without invalidating unrelated
-# CPU and renderer objects. Header dependencies cover the walker layouts.
-HLE_SIMD_CONFIG := $(CORE_DIR)/.hle-simd-config
-HLE_SIMD_CONFIG_VALUE := arch=$(ARCH):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):simd=$(HLE_SIMD):sse2-neon-v2
-ifneq ($(strip $(shell cat "$(HLE_SIMD_CONFIG)" 2>/dev/null)),$(HLE_SIMD_CONFIG_VALUE))
-$(file >$(HLE_SIMD_CONFIG),$(HLE_SIMD_CONFIG_VALUE))
-endif
-$(patsubst %.c,%.o,$(wildcard $(CORE_DIR)/src/device/rcp/rsp/hle/*.c)): $(HLE_SIMD_CONFIG)
 
 ifeq ($(HAVE_LTCG),1)
    CPUFLAGS += -flto
@@ -351,7 +328,7 @@ endif
 # Backend defines affect dispatch and private cache layouts. Rebuild between the
 # n64emuJIT emitter, runtime layout and optimization settings.
 CPU_JIT_CONFIG := $(CORE_DIR)/.cpu-jit-config
-CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):cxx=$(CXX):$(CXX_MACHINE):$(CXX_VERSION):cxxstd=c++17:renderers=softrdp,parallel-rdp:headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):hle-simd=$(HLE_SIMD):software=softrdp:simd=sse2-dispatch-v1:pic=$(PIC):tls=$(SHARED_TLS_FLAGS)
+CPU_JIT_CONFIG_VALUE := arch=$(ARCH):platform=$(platform):cc=$(CC):$(CC_MACHINE):$(CC_VERSION):cxx=$(CXX):$(CXX_MACHINE):$(CXX_VERSION):cxxstd=c++17:renderers=softrdp:headless=$(HEADLESS_BENCHMARK):usf=$(USF):$(WITH_DYNAREC):cpu=$(CPU_BACKEND):rsp=$(RSP_BACKEND):debug=$(DEBUG):profile=$(N64EMUJIT_PROFILE):software=softrdp:simd=sse2-dispatch-v1:pic=$(PIC):tls=$(SHARED_TLS_FLAGS)
 # Wrapper invocations must leave the child's configuration stamp intact.
 CONFIG_WRAPPERS := x86 arm32 usf usf-x86 usf-arm32 rpi4 rpi5
 ifneq ($(strip $(MAKECMDGOALS)),)
@@ -386,15 +363,15 @@ rpi4 rpi5:
 	$(MAKE) platform=$@ all
 .PHONY: x86 arm32 usf usf-x86 usf-arm32
 x86:
-	$(MAKE) ARCH=x86 HAVE_PARALLEL_RDP=0 all
+	$(MAKE) ARCH=x86 all
 arm32:
-	$(MAKE) platform=unix ARCH=arm HAVE_PARALLEL_RDP=0 all
+	$(MAKE) platform=unix ARCH=arm all
 usf:
 	$(MAKE) USF=1 all
 usf-x86:
 	$(MAKE) USF=1 ARCH=x86 all
 usf-arm32:
-	$(MAKE) USF=1 platform=unix ARCH=arm HAVE_PARALLEL_RDP=0 all
+	$(MAKE) USF=1 platform=unix ARCH=arm all
 $(CORE_DIR)/src/device/r4300/cpu_ops.o: $(addprefix $(CORE_DIR)/src/device/r4300/,fpu_arithmetic.h fpu_compare.h fpu_native.h interp_fpu_move.h)
 $(CORE_DIR)/src/device/r4300/jit_runtime.o $(CORE_DIR)/src/device/r4300/cpu_ops.o: $(addprefix $(CORE_DIR)/src/device/r4300/,interp_fpu_move.h interp_thread_poll.h)
 $(CORE_DIR)/src/device/r4300/fpu_native.o: $(addprefix $(CORE_DIR)/src/device/r4300/,fpu_native.h fpu_neon.h cp1.h)

@@ -1,0 +1,101 @@
+USF specification v1.2
+9/19/04 - v1.0 - First official version
+10/10/04 - v1.1 - Removed bug tags, added _enablecompare tag
+1/14/06 - v1.2 - added _enableFIFOfull tag
+
+--- Structure of a USF file
+
+A USF file may contain an N64 save state and/or ROM image. The structure is that
+of a PSF file with version code 0x21. The save state and ROM are stored in the
+reserved area of the PSF file. The compressed program section is not used, thus
+the program size and CRC should both be zero.
+The organization of the reserved area is:
+
+SR64 ROM image (stored as little endian 4 byte words) or 4 zero bytes (signifying no ROM)
+  then
+SR64 Project 64 v1.4 save state (format below) or 4 zero bytes (signifying no save state)
+
+--- Definition of SR64 Format
+
+SR64 is a sparse storage scheme. Instead of storing an entire file SR64 makes
+it possible to store only those parts which are important. USF uses this format
+to store the ROM and save state.
+
+SR64 format is:
+4 byte identifier: "SR64"
+each chunk:
+4 byte little endian chunk length n (if 0 this ends the sparse segment)
+4 byte little endian chunk offset
+n bytes data
+
+--- Loading a USF or USFlib/miniUSF
+
+1. initialize the ROM and save state to zero.
+2. if the USF contains a _lib tag (_libn not supported as of this version)
+recursively load the specified file starting from step 2
+3. load the ROM and save state, replacing any data with the same addresses that
+may have already been loaded
+
+By convention a file that includes a _lib tag is named with a .miniusf extension
+and a file that is included via a _lib tag is name with a .usflib extension.
+
+--- Definition of Project 64 v1.4 save state
+
+(DWORD is 4-byte little endian, _int64 is 8-byte little endian)
+0x000: DWORD: 0x23D8A6C8, identifier
+0x004: DWORD: RDRAM size in bytes
+0x008: ROM header, first 0x40 bytes of ROM stored as DWORDs
+0x048: DWORD: VI timer (PJ64 internal)
+0x04c: DWORD: PC
+0x050: 32 _int64: CPU General Purposes Registers
+0x150: 32 _int64: Floating Point Registers
+0x250: 32 DWORD: COP0 Registers
+0x2d0: 32 DWORD: Floating Point Control Registers
+0x350: _int64: HI
+0x358: _int64: LO
+0x360: 10 DWORD: RDRAM Registers
+0x388: 10 DWORD: SP Registers
+0x3b0: 10 DWORD: DP Registers
+0x3d8: 4 DWORD: MI Registers
+0x3e8: 14 DWORD: VI Registers
+0x420: 6 DWORD: AI Registers
+0x438: 13 DWORD: PI Registers
+0x46c: 8 DWORD: RI Registers
+0x48c: 4 DWORD: SI Registers
+0x49c: 32 TLB entries (20 bytes each), see PJ64 source for format
+0x71c: PIF RAM, 0x40 bytes stored as DWORDs
+0x75c: RDRAM, stored as DWORDs, whatever size specified by 0x004.
+0x75c+RDRAM size: 0x1000 bytes RSP DMEM, stored as DWORDs
+0x175c+RDRAM size: 0x1000 bytes RSP IMEM, stored as DWORDs
+
+Most of these values are relatively straightforward and would be a component of
+any N64 emulator.
+
+--- _enablecompare tag
+
+A MIPS processor has an exception triggered when the Count register equals the
+Compare register. The Count register is always incrementing, and many games that
+don't even need this register leave it enabled anyway. This causes a slight
+problem with USFs, because it is possible that this exception will not be
+triggered during the logging of the USF. This results in USFs that crash many
+minutes into the track when the exception handler is not found. The initial
+solution was to disable this exception in 64th Note, but it has since been
+discovered that several games do require this exception for sound generation.
+In order to preserve compatibility with the old sets this exception is disabled
+by default. It can be enabled by including the _enablecompare tag in the
+affected miniUSF or USFlib (which will affect the entire set). Note that the
+value of the tag is unimportant, it can be _enablecompare=1,
+_enablecompare=true, or _enablecompare=false if you want to be confusing.
+This feature was introduced in 64th Note v0.06.
+
+--- _enableFIFOfull tag
+
+The FIFO full flag in the AI status register is set when a buffer has been sent and
+cleared when it is done playing. Some games rely on this behavior, and expect the
+playback to take a real number of cycles. Initially 64th Note never set the FIFO
+full flag, but once a game was encountered that needed it this feature was added
+and it broke some games, so it must be enabled by the individual game.
+Without this tag 64th Note never sets the FIFO full flag. If this tag is found
+(regardless of its value, as with _enablecompare) the flag will be set for
+approximately the playback time of the buffer.
+This feature was introduced in 64th Note v1.0 beta 23.

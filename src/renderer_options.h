@@ -4,23 +4,17 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-enum renderer_type { RENDERER_SOFTRDP, RENDERER_PARALLEL };
 
-enum hle_level { HLE_OFF, HLE_RSP };
 enum controller_pak_option { CONTROLLER_PAK_NONE, CONTROLLER_PAK_MEMORY,
     CONTROLLER_PAK_RUMBLE, CONTROLLER_PAK_TRANSFER };
 struct renderer_settings {
-    /* RSP execution is independent of cycle-based CPU timing. */
-    bool rsp_hle, lle_graphics, lle_audio;
-    enum hle_level hle;
     /* Cycle-based timing selects full CPU cache contents and interlocks.
      * Component clocks remain active when CPU timing is off. */
     bool per_cycle_timing;
     bool component_timing;
-    enum renderer_type renderer;
-    unsigned threads, upscale, downscale;
-    bool performance_only, vi_filter, dedither, blur, overscan, bob;
-    bool native_lod, native_tex_rect, ss_readbacks, ss_dither;
+    unsigned threads, upscale;
+    bool vi_filter, dedither, blur, overscan, bob;
+    bool native_lod;
 };
 extern struct renderer_settings renderer_settings;
 /* Simplified CPU timing retains work-derived RSP/RDP deadlines. */

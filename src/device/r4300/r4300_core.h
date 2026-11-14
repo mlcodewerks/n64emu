@@ -162,6 +162,7 @@ struct r4300_core
     uint32_t irq_writeback_pending;
     uint64_t icache_fill_end;
     uint32_t icache_fill_index; /* Cache index plus one; zero means no fill. */
+    unsigned fast_memory_timing; /* Content-load option, like cache_timing. */
     struct vi_controller* vi;
 };
 

@@ -53,6 +53,12 @@ GPU conformance checks and the separate limits of RDP timing validation.
 
 ## Fast-mode refinement
 
+The current source disables CPU cache timing in Fast mode after the first VI.
+[The new Fast timing study](fast-timing-study/README.md) tests instruction-only
+timing, RCP register costs and tags-only cache timing against that implementation.
+Its generated cores are experiments; the older tags-only descriptions below
+refer to a previous implementation.
+
 [Fast timing bookkeeping and FIFO arithmetic](FAST_MODE_REFINEMENT.md)
 reduce x64 helper/cache-hit overhead while preserving the modeled clocks.
 Knife Edge's 48 combat tasks now match all 18,119 native triangle packets;

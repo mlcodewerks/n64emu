@@ -76,7 +76,7 @@ static int interp_thread_poll_advance(struct r4300_core* r, uint32_t pc)
 {
     /* Both MTC0 STATUS writes cost two base clocks rather than one. */
     const unsigned cycles = 36 * (1 + r4300_issue_reservation(r->compat_issue_clock)) +
-        2 * (r4300_base_cycles(UINT32_C(0x40896000), 0) - 1) + 9 * R4300_OFF_RAM_CYCLES;
+        2 * (r4300_base_cycles(UINT32_C(0x40896000), 0) - 1) + 9 * r4300_off_ram_cycles(r->fast_memory_timing);
     uint32_t status = r->cp0.regs[CP0_STATUS_REG];
     if (r->cache_timing || r->delay_slot || r->skip_jump || breakloop ||
         r->cp0.cycle_count >= -(int)(cycles / 2) || r->cp0.last_addr != pc ||

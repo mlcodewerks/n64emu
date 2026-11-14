@@ -151,8 +151,6 @@ static bool read_command_word(const sr_context *ctx, bool xbus_dma, uint32_t wor
         return true;
     }
 
-    if (ctx->host.read_command_word &&
-        ctx->host.read_command_word(ctx->host.userdata, word_index, word)) return true;
     return sr_memory_read_be32(&ctx->memory, word_index << 2, word);
 }
 

@@ -3,7 +3,6 @@
 #include "main/main.h"
 #include "device/memory.h"
 #include "device/rcp/rcp.h"
-#include "device/rcp/rsp/optional_rsp.h"
 #include "device/rcp/rsp/p_rsp/dpc_bridge.h"
 #include <stdlib.h>
 #include <string.h>
@@ -69,7 +68,6 @@ void core_bind_backends(void)
     rsp_info.CheckInterrupts = empty_callback;
 
     native_rsp_init(rsp_info);
-    optional_rsp_init(rsp_info);
     parallelRSPSetDpcCallbacks(&g_dev.dp, read_rsp_dpc_regs, write_rsp_dpc_regs);
     parallelRSPSetDmaCallbacks(&g_dev.sp, rsp_dma_read_memory, rsp_dma_write_memory);
     core_input_init();

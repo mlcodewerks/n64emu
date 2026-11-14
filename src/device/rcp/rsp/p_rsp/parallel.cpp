@@ -8,7 +8,6 @@
 #include <stdint.h>
 #include <cstring>
 #include "dpc_bridge.h"
-#include "hle_boot_probe.hpp"
 
 #include "core/backend.h"
 
@@ -38,42 +37,6 @@ int SP_STATUS_TIMEOUT;
 
 extern "C"
 {
-    uint32_t parallelRSPHleBootProbe(const uint32_t *imem,const uint32_t *dmem,
-        uint32_t *state,uint16_t *vco)
-    { return rsp_hle_boot_probe(imem,dmem,state,vco); }
-    uint16_t parallelRSPGetVCO(void)
-    {
-        return (uint16_t)rsp_get_flags(RSP::cpu.get_state().cp2.flags[RSP::RSP_VCO].e);
-    }
-    void parallelRSPSetVCO(uint16_t value)
-    {
-        rsp_set_flags(RSP::cpu.get_state().cp2.flags[RSP::RSP_VCO].e,value);
-    }
-    uint32_t parallelRSPGetT6(void){return RSP::cpu.get_state().sr[14];}
-    void parallelRSPSetT6(uint32_t value){RSP::cpu.get_state().sr[14]=value;}
-    uint32_t parallelRSPGetPacketCursor(void){return RSP::cpu.get_state().sr[16];}
-    void parallelRSPSetPacketCursor(uint32_t value){RSP::cpu.get_state().sr[16]=value;}
-    void parallelRSPGetGraphicsLatches(uint16_t values[32][8])
-    {auto& v=RSP::cpu.get_state().cp2.regs;for(unsigned r=0;r<32;r++)for(unsigned k=0;k<8;k++)values[r][k]=v[r].e[k];}
-    void parallelRSPSetGraphicsLatches(const uint16_t values[32][8],uint32_t mask)
-    {auto& v=RSP::cpu.get_state().cp2.regs;for(unsigned r=0;r<32;r++)if(mask&(1u<<r))for(unsigned k=0;k<8;k++)v[r].e[k]=values[r][k];}
-    void parallelRSPGetF5Context(uint32_t values[7])
-    {
-        auto& v=RSP::cpu.get_state().cp2.regs;
-        values[0]=v[12].e[0]|(uint32_t(v[12].e[1])<<16);
-        const unsigned regs[3]={2,11,13};
-        for(unsigned r=0;r<3;r++)for(unsigned p=0;p<2;p++)
-            values[1+r*2+p]=v[regs[r]].e[4+p*2]|(uint32_t(v[regs[r]].e[5+p*2])<<16);
-    }
-    void parallelRSPSetF5Context(const uint32_t values[7],uint32_t mask)
-    {
-        auto& v=RSP::cpu.get_state().cp2.regs;
-        const unsigned regs[7]={12,2,2,11,11,13,13},lanes[7]={0,4,6,4,6,4,6};
-        for(unsigned p=0;p<7;p++)if(mask&(1u<<p)){
-            v[regs[p]].e[lanes[p]]=uint16_t(values[p]);
-            v[regs[p]].e[lanes[p]+1]=uint16_t(values[p]>>16);
-        }
-    }
     void parallelRSPSaveState(uint32_t* words)
     {
         auto& s = RSP::cpu.get_state();
@@ -242,7 +205,6 @@ extern "C"
 #if defined(__LIBRETRO__) && !defined(DEBUG_JIT)
         RSP::cpu.set_cycle_timing(renderer_component_timing());
         core_log(CORE_LOG_INFO,"RSP backend: %s; component timing %s",
-                     renderer_settings.rsp_hle ? "HLE with native fallback" :
 #ifdef N64EMU_RSP_INTERPRETER
                      "portable LLE",
 #else

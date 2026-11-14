@@ -5,7 +5,6 @@
 #include "device/rcp/rcp.h"
 #include "device/rcp/rdp/rdp_core.h"
 #ifdef __LIBRETRO__
-#include "optional_rsp.h"
 #endif
 
 void rsp_dma_read_memory(void* opaque, uint32_t address, uint32_t length)
@@ -30,7 +29,6 @@ void rsp_dma_write_memory(void* opaque, uint32_t address, uint32_t length)
         uint32_t valid = address < sp->ri->rdram->dram_size ? (uint32_t)sp->ri->rdram->dram_size-address : 0;
         if(valid>size)valid=size;
 #ifdef __LIBRETRO__
-        if(valid)optional_rsp_timing_dma_write(address, valid);
 #endif
         if(valid) {
             invalidate_r4300_cached_code(sp->mi->r4300, address, valid);

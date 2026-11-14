@@ -64,6 +64,10 @@ static void emit_region_guard(const struct n64emujit_config* config, unsigned st
     emit_movimm64(uint64_t(config->cache_timing)|(uint64_t(config->compat_issue_clock)<<32),T0);
 #endif
     emit_mem(0x39,1,T0,STATE,-1,0,offsetof(struct r4300_core,cache_timing));memory_guard(failure,5);
+    if (!config->cache_timing) {
+        emit_mem_imm(0x81,0,7,STATE,-1,0,offsetof(struct r4300_core,fast_memory_timing),config->fast_memory_timing);
+        memory_guard(failure,5);
+    }
     emit_mem(0x8b, 0, T0, STATE, -1, 0, offsetof(struct r4300_core, cp0.regs[CP0_STATUS_REG]));
     // KSU=kernel is the common case, with or without an active exception.
     JIT(tst(WReg(T0),CP0_STATUS_MODE_MASK));unsigned char* kernel=emit_jump(4);
@@ -89,7 +93,7 @@ static void emit_region_guard(const struct n64emujit_config* config, unsigned st
      * interlock/compatibility clock per instruction, plus one for restored
      * simultaneous LDI/DCB history at entry. */
     unsigned compatibility = !config->cache_timing ? count * r4300_issue_reservation(config->compat_issue_clock) : 0;
-    unsigned ram = config->cache_timing ? 0 : memory_count * R4300_OFF_RAM_CYCLES;
+    unsigned ram = config->cache_timing ? 0 : memory_count * r4300_off_ram_cycles(config->fast_memory_timing);
     unsigned cached_bound = base + compatibility + ram, uncached_bound = base + compatibility + ram;
     if (config->cache_timing && count) {
         uint32_t pc = config->virtual_pc + start * 4;

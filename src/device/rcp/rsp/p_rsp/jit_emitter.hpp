@@ -70,6 +70,9 @@ class Emitter
         return labels.back().get();
     }
 public:
+#ifdef RSP_JIT_EMITTER_AARCH64
+    static void vector_tables(void (*write)(const void*,size_t));
+#endif
     explicit Emitter(bool optimize=true) : optimize_code(optimize) {}
     void vector_instruction(unsigned op, unsigned vd, unsigned vs, unsigned vt, unsigned e, bool register_arguments=false);
     void vector_sequence(const uint32_t *instructions, unsigned count);

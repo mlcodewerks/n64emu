@@ -34,8 +34,9 @@ static osal_force_inline unsigned r4300_dcache_hit_cycles(unsigned compatibility
 
 /* Ares CPU cache model: 16 KiB I-cache / 32-byte lines, 8 KiB D-cache /
  * 16-byte lines, direct mapped with virtual indices and physical tags.
- * I-cache fills cost 88 CPU cycles; native D-cache fills cost 41 before VI
- * arbitration. Compatibility fills and writebacks cost 40 CPU cycles.
+ * I-cache fills use the shared idle/busy service estimates; native D-cache
+ * fills cost 41 before VI arbitration. Compatibility fills and writebacks
+ * cost 40 CPU cycles.
  * The cache keeps write-back contents. VI arbitration is a coarse surcharge;
  * shared CPU/RSP/RDP bus arbitration remains unmodeled. */
 /* Keep the uncommon mapped-address scan out of every load/store handler. */
@@ -223,7 +224,7 @@ static osal_force_inline int r4300_data_access_cycles_explicit(struct r4300_core
         if (!cached && physical >= UINT32_C(0x04000000) && physical < UINT32_C(0x05000000))
             cp0_step_cycles(&r->cp0, write ? R4300_RCP_WRITE_CYCLES : R4300_RCP_READ_CYCLES);
         else if (physical < UINT32_C(0x00800000))
-            cp0_step_cycles(&r->cp0, R4300_OFF_RAM_CYCLES);
+            cp0_step_cycles(&r->cp0, r4300_off_ram_cycles(r->fast_memory_timing));
 #endif
         return 0;
     }

@@ -394,6 +394,9 @@ benchmarks/fast-timing-study/*
 !benchmarks/fast-timing-study/build_ram7_fp_play.sh
 !benchmarks/fast-timing-study/ram8-refinement-results.json
 !benchmarks/fast-timing-study/checks.c
+!benchmarks/fast-timing-study/validation_frontend.c
+!benchmarks/fast-timing-study/cinematic_monitor.c
+!benchmarks/fast-timing-study/frame_alignment.cpp
 !benchmarks/fast-timing-study/tag_hit_bench.c
 !benchmarks/fast-timing-study/off_poll_checks.c
 !benchmarks/fast-timing-study/off_host_checks.c
@@ -409,6 +412,9 @@ benchmarks/fast-timing-study/*
 !benchmarks/fast-timing-study/summary.json
 !benchmarks/fast-timing-study/compromise-results.json
 !benchmarks/fast-timing-study/current-results.json
+!benchmarks/fast-timing-study/timing-profile-validation.json
+!benchmarks/fast-timing-study/recording-comparison.json
+!benchmarks/fast-timing-study/compatible-demo-validation.json
 !benchmarks/fast-timing-study/tagfree-results.json
 !benchmarks/fast-timing-study/register-results.json
 !benchmarks/fast-timing-study/off-costs-results.json
@@ -418,6 +424,14 @@ benchmarks/fast-timing-study/*
 !benchmarks/fast-timing-study/fp-direct.patch
 
 tests/.build/
+!benchmarks/rsp_simd_checks.cpp
+!benchmarks/native_usf_check.mk
+!benchmarks/fast-timing-study/access_probe.c
+!benchmarks/fast-timing-study/work_frontend.c
+!benchmarks/fast-timing-study/access-analysis-results.json
+!benchmarks/fast-timing-study/avx2-results.json
+!benchmarks/fast-timing-study/work-measurements.json
+!benchmarks/conformance/validation-20261115.json
 build-unit-*.log
 !benchmarks/hle-calibration/
 benchmarks/hle-calibration/*

@@ -18,16 +18,8 @@ static sr_rgba8 *scanout;
 static struct rgba *presentation;
 static size_t scanout_capacity, presentation_capacity;
 static sr_field_output fields;
-static const uint32_t *hle_words;
-static uint32_t hle_base, hle_count;
 bool softrdp_native_lod=true;
 
-static bool host_command(void *unused, uint32_t index, uint32_t *word)
-{
-    (void)unused;
-    if (!hle_words || index - hle_base >= hle_count) return false;
-    *word = hle_words[index - hle_base]; return true;
-}
 static void host_interrupt(void *unused)
 { (void)unused; if (config.gfx.mi_intr_cb) config.gfx.mi_intr_cb(); }
 
@@ -49,7 +41,6 @@ void n64video_init(struct n64video_config *in)
     for (unsigned i = 0; i < SR_DP_REGISTER_COUNT; ++i) host.dp_regs[i] = config.gfx.dp_reg[i];
     for (unsigned i = 0; i < SR_VI_REGISTER_COUNT; ++i) host.vi_regs[i] = config.gfx.vi_reg[i];
     host.mi_intr_reg = config.gfx.mi_intr_reg; host.raise_mi_interrupt = host_interrupt;
-    host.read_command_word = host_command;
     host.disable_vi_dither_filter = !config.vi.vi_dedither;
     host.disable_vi_filter = config.vi.mode != VI_MODE_NORMAL;
     host.disable_vi_divot_filter = config.vi.mode != VI_MODE_NORMAL || !config.vi.vi_blur;
@@ -64,8 +55,6 @@ void n64video_process_list(void)
     if (context && sr_process_rdp_list(context) != SR_OK)
         msg_warning("SoftRDP: invalid or unsupported command list");
 }
-void n64video_set_hle_cmd_buffer(const uint32_t *words, uint32_t base, uint32_t bytes)
-{ hle_words = words; hle_base = base >> 2; hle_count = bytes >> 2; }
 
 static bool reserve(void **buffer, size_t *capacity, size_t bytes)
 {
@@ -128,7 +117,7 @@ void n64video_close(void)
     sr_threads_shutdown(); sr_field_output_reset(&fields);
     free(scanout); free(presentation); scanout = NULL; presentation = NULL;
     scanout_capacity = presentation_capacity = 0;
-    hle_words = NULL; hle_count = 0; vdac_close();
+    vdac_close();
 }
 unsigned int n64video_noise_state_size(void) { return (unsigned int)sr_state_snapshot_size(); }
 void n64video_save_noise(void *data)

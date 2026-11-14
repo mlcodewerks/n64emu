@@ -96,7 +96,6 @@ void n64video_set_vi_options(bool filter, bool dedither, bool divot, bool oversc
 int n64video_dps_take(uint32_t words[32]);
 void n64video_update_screen(void);
 void n64video_process_list(void);
-void n64video_set_hle_cmd_buffer(const uint32_t* buf, uint32_t base_byte_addr, uint32_t len_bytes);
 void n64video_close(void);
 /* number of parallel batches dispatched so far (tooling) */
 uint32_t n64video_flush_count(void);

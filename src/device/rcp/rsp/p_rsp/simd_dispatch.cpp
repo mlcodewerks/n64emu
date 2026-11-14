@@ -10,7 +10,7 @@ unsigned rsp_simd_runtime_level()
         unsigned actual = __builtin_cpu_supports("sse4.2") ? 42 : __builtin_cpu_supports("sse4.1") ? 41 : __builtin_cpu_supports("ssse3") ? 3 : 2;
         // Diagnostics may lower the ISA, never request unsupported instructions.
         const char *limit = std::getenv("N64EMU_RSP_SIMD");
-        unsigned requested = !limit ? actual : !std::strcmp(limit,"sse2") ? 2 : !std::strcmp(limit,"ssse3") ? 3 : !std::strcmp(limit,"sse41") ? 41 : actual;
+        unsigned requested = !limit ? actual : !std::strcmp(limit,"sse2") ? 2 : !std::strcmp(limit,"ssse3") ? 3 : !std::strcmp(limit,"sse41") ? 41 : !std::strcmp(limit,"sse42") ? 42 : actual;
         return requested < actual ? requested : actual;
     }();
     return level;

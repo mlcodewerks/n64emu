@@ -19,7 +19,6 @@
 #include "main/profile.h"
 #endif
 #include "core/backend.h"
-#include "optional_rsp.h"
 #include "core/log.h"
 #include "rsp_ucode_capture.h"
 
@@ -337,6 +336,7 @@ static void do_SP_Task_at(struct rsp_core* sp, int64_t start_clock, uint32_t ove
     uint32_t executed_cycles = 0;
     uint32_t previous_status = sp->regs[SP_STATUS_REG];
     uint32_t previous_irq = sp->mi->regs[MI_INTR_REG] & MI_INTR_SP;
+    int native_execution = 1;
 
     if (sp->mem[0xfc0/4] == 1)
     {
@@ -347,7 +347,17 @@ static void do_SP_Task_at(struct rsp_core* sp, int64_t start_clock, uint32_t ove
 #if defined(PROFILE)
         timed_section_start(TIMED_SECTION_GFX);
 #endif
-        executed_cycles = optional_rsp_execute(0xffffffff);
+#ifdef N64EMU_USF
+        /* Audio-only rips omit graphics microcode. Acknowledge discarded
+         * startup display tasks through the decoder's existing DP stub. */
+        if (!(previous_status & SP_STATUS_SSTEP) && sp->mem[0xfcc/4] <= 0x1000u) {
+            sp->regs[SP_STATUS_REG] |= SP_STATUS_HALT | SP_STATUS_BROKE | SP_STATUS_SIG2;
+            if (previous_status & SP_STATUS_INTR_BREAK) sp->mi->regs[MI_INTR_REG] |= MI_INTR_SP;
+            signal_rcp_interrupt(sp->mi, MI_INTR_DP);
+            native_execution = 0;
+        } else
+#endif
+        executed_cycles = native_rsp_execute(0xffffffff);
 #if defined(PROFILE)
         timed_section_end(TIMED_SECTION_GFX);
 #endif
@@ -365,7 +375,7 @@ static void do_SP_Task_at(struct rsp_core* sp, int64_t start_clock, uint32_t ove
 #if defined(PROFILE)
         timed_section_start(TIMED_SECTION_AUDIO);
 #endif
-        executed_cycles = optional_rsp_execute(0xffffffff);
+        executed_cycles = native_rsp_execute(0xffffffff);
 #if defined(PROFILE)
         timed_section_end(TIMED_SECTION_AUDIO);
 #endif
@@ -376,7 +386,7 @@ static void do_SP_Task_at(struct rsp_core* sp, int64_t start_clock, uint32_t ove
     else
     {
         sp->regs2[SP_PC_REG] &= 0xfff;
-        executed_cycles = optional_rsp_execute(0xffffffff);
+        executed_cycles = native_rsp_execute(0xffffffff);
         sp->regs2[SP_PC_REG] |= save_pc;
 
         sp_delay_time = 0;
@@ -425,7 +435,7 @@ static void do_SP_Task_at(struct rsp_core* sp, int64_t start_clock, uint32_t ove
             signal_rcp_interrupt(sp->mi, MI_INTR_SP);
         }
     }
-    if (optional_rsp_native_dispatch()) sp->rsp_completion_status |= RSP_PENDING_NATIVE;
+    if (native_execution) sp->rsp_completion_status |= RSP_PENDING_NATIVE;
     /* BROKE is sticky and does not prevent CLR_HALT from restarting the SP.
      * Hide only newly produced completion bits until their guest deadline. */
     sp->regs[SP_STATUS_REG] = (sp->regs[SP_STATUS_REG] & ~(SP_STATUS_BROKE | SP_STATUS_HALT)) |

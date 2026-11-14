@@ -28,7 +28,7 @@
 #include "util.h"
 #include "device/rcp/rsp/p_rsp/dpc_bridge.h"
 #ifdef __LIBRETRO__
-#include "device/rcp/rsp/optional_rsp.h"
+#include "device/rcp/rdp/softrdp/softrdp_video.h"
 #endif
 
 enum { GB_CART_FINGERPRINT_SIZE = 0x1c };
@@ -39,10 +39,10 @@ enum { DD_DISK_ID_OFFSET = 0x43670 };
 _Static_assert(16384 + 4 + PARALLEL_RSP_STATE_WORDS * 4 + 24 <= RDP_RASTER_STATE_OFFSET,
     "RDP raster state overlaps native RSP state");
 _Static_assert(RDP_RASTER_STATE_OFFSET + 192 <= 20480,
-    "RDP raster state overlaps optional HLE state");
+    "RDP raster state exceeds its reserved area");
 
 static const char* savestate_magic = "M64+SAVE";
-static const int savestate_latest_version = 0x00012300; /* 1.35: ZSortp/JPEG HLE continuations */
+static const int savestate_latest_version = 0x00012400; /* 1.36: native-only RSP; independent raster noise state */
 
 struct savestate_work {
     char *data;
@@ -78,7 +78,7 @@ int core_state_load(struct device* dev, const void *data)
     unsigned char *savestateData, *curr;
     char queue[1024];
     unsigned char using_tlb_data[4];
-    unsigned char data_0001_0200[RDP_EXTRA_STATE_BYTES]; // cache, LLE RSP and optional HLE state
+    unsigned char data_0001_0200[RDP_EXTRA_STATE_BYTES]; // cache, native RSP and raster state
 
     uint32_t* cp0_regs = r4300_cp0_regs(&dev->r4300.cp0);
 
@@ -97,10 +97,10 @@ int core_state_load(struct device* dev, const void *data)
     version = (version << 8) | *curr++;
     if((version >> 16) != (savestate_latest_version >> 16) || version > (unsigned)savestate_latest_version)
         return 0;
-    /* Walker state changes the following HLE-stream offsets. Reject older
-     * layouts before reading their payload instead of misinterpreting it. */
-    if(version<0x00011e00) {
-        core_log(CORE_LOG_WARNING,"This savestate predates the Fast3D walker state format; use the previous build to load it.");
+    /* Previous states can contain a partially executed high-level task that
+     * has no native instruction continuation. Reject before modifying devices. */
+    if (version < 0x00012400) {
+        core_log(CORE_LOG_WARNING, "This savestate requires the previous core; native-only RSP states start at version 1.36.");
         return 0;
     }
 
@@ -878,18 +878,8 @@ int core_state_load(struct device* dev, const void *data)
     if (version < 0x00011100)
         dev->sp.rsp_completion_status &= SP_STATUS_HALT | SP_STATUS_BROKE;
 #ifdef __LIBRETRO__
-    if (version >= 0x00012300) optional_rsp_load(data_0001_0200 + 20480);
-    else if (version >= 0x00011c00) optional_rsp_load_v122(data_0001_0200 + 20480);
-    else if (version >= 0x00011700) optional_rsp_load_v11b(data_0001_0200 + 20480);
-    else if (version >= 0x00011600) optional_rsp_load_v116(data_0001_0200 + 20480);
-    else if (version >= 0x00011000) optional_rsp_load_legacy_stream(data_0001_0200 + 20480);
-    else optional_rsp_load_legacy(version >= 0x00010e00 ? data_0001_0200 + 20480 : NULL);
+    n64video_load_noise(data_0001_0200 + 20480);
 #endif
-    if (!rdp_hle_frozen_load(&dev->dp, version >= 0x00011b00 ?
-            data + 44 + savestateSize + sizeof(queue) + sizeof(using_tlb_data) +
-            RDP_HLE_FROZEN_STATE_OFFSET : NULL, RDP_HLE_FROZEN_STATE_BYTES)) {
-        free(savestateData); return 0;
-    }
     if (version >= 0x00011a00) {
         curr = data_0001_0200 + RDP_RASTER_STATE_OFFSET;
         dev->dp.timing.primitive_color = GETDATA(curr, uint32_t);
@@ -1439,8 +1429,10 @@ int core_state_save(const struct device* dev, void *data)
     }
 
 #ifdef __LIBRETRO__
-    if (optional_rsp_state_size() > 131072) { free(save->data); free(save); return 0; }
-    optional_rsp_save(save->data + 16788288 + sizeof(queue) + 4 + 20480);
+    if (n64video_noise_state_size() > RDP_COUNTER_STATE_OFFSET - 20480u) {
+        free(save->data); free(save); return 0;
+    }
+    n64video_save_noise(save->data + 16788288 + sizeof(queue) + 4 + 20480);
 #endif
     curr = save->data + 16788288 + sizeof(queue) + 4 + RDP_RASTER_STATE_OFFSET;
     PUTDATA(curr, uint32_t, dev->dp.timing.primitive_color);
@@ -1459,9 +1451,6 @@ int core_state_save(const struct device* dev, void *data)
     if (!rdp_counters_save(&dev->dp.counters,
             save->data + 16788288 + sizeof(queue) + 4 + RDP_COUNTER_STATE_OFFSET,
             RDP_COUNTER_STATE_BYTES)) { free(save->data); free(save); return 0; }
-    if (!rdp_hle_frozen_save(&dev->dp,
-            save->data + 16788288 + sizeof(queue) + 4 + RDP_HLE_FROZEN_STATE_OFFSET,
-            RDP_HLE_FROZEN_STATE_BYTES)) { free(save->data); free(save); return 0; }
     curr=save->data+16788288+sizeof(queue)+4+RDP_CPU_EXTRA_STATE_OFFSET;
     PUTDATA(curr,uint64_t,dev->r4300.cp2_latch);
     PUTARRAY(dev->r4300.icache_shadow_tags,curr,uint32_t,512);

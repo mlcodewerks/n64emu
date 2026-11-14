@@ -10,7 +10,7 @@
 
 extern retro_log_printf_t log_cb;
 static bool initialized, enabled = true;
-static unsigned core_count;
+static unsigned core_count, available_count;
 #ifdef _WIN32
 static GROUP_AFFINITY cores[1024];
 /* A retro_run scope owns this thread's affinity until it returns to the
@@ -50,6 +50,7 @@ void performance_cores_init(void)
 {
     if (initialized) return;
     initialized = true;
+    available_count = cpu_features_get_core_amount();
 #ifdef _WIN32
     DWORD bytes = 0, offset;
     unsigned highest = 0;
@@ -58,6 +59,11 @@ void performance_cores_init(void)
     unsigned char *buffer;
     GetThreadGroupAffinity(GetCurrentThread(), &current);
     GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask);
+    if (process_mask) {
+        DWORD_PTR available = process_mask;
+        available_count = 0;
+        while (available) { ++available_count; available &= available - 1; }
+    }
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &bytes);
     buffer = bytes ? (unsigned char *)malloc(bytes) : NULL;
     if (buffer && GetLogicalProcessorInformationEx(RelationProcessorCore,
@@ -96,6 +102,7 @@ void performance_cores_init(void)
     int packages[CPU_SETSIZE], ids[CPU_SETSIZE];
     int highest = 0;
     if (!sched_getaffinity(0, sizeof(allowed), &allowed)) {
+        available_count = CPU_COUNT(&allowed);
         for (unsigned cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
             if (!CPU_ISSET(cpu, &allowed)) continue;
             int quality = linux_topology_value(cpu, "cpu_capacity");
@@ -130,8 +137,9 @@ void performance_cores_init(void)
 unsigned performance_cores_count(void)
 {
     performance_cores_init();
-    /* Do not invent P-core topology when the OS cannot report it. */
-    return core_count ? core_count : 1;
+    /* Unknown topology leaves affinity to the OS, while Auto can still
+     * use the available CPUs rather than forcing serial rendering. */
+    return core_count ? core_count : available_count ? available_count : 1;
 }
 
 void performance_cores_set_enabled(bool value) { enabled = value; }

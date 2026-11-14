@@ -45,8 +45,7 @@ static bool environment(unsigned command, void *data) {
  case RETRO_ENVIRONMENT_GET_VARIABLE: {
   struct retro_variable *v=data;const char *key=v->key;
   if(!strcmp(key,"wtfn64_renderer"))v->value="softrdp";
-  else if(!strcmp(key,"wtfn64_timing"))v->value="accurate";
-  else if(!strcmp(key,"wtfn64_hle"))v->value="Off";
+  else if(!strcmp(key,"wtfn64_timing"))v->value="on";
   else if(!strcmp(key,"wtfn64_angrylion_threads"))v->value="auto";
   else if(!strcmp(key,"wtfn64_angrylion_upscale"))v->value="1";
   else {v->value=NULL;return false;}return true;

@@ -541,7 +541,8 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_mem(0x89, 0, T1, STATE, -1, 0, offsetof(struct r4300_core, pipeline_cached_store));
     } else {
         emit_fetch_native(config, index, exit->start, 1, check_line);
-        if (R4300_OFF_RAM_CYCLES) emit_addimm(CLOCKS, R4300_OFF_RAM_CYCLES, CLOCKS);
+        unsigned ram_cycles = r4300_off_ram_cycles(config->fast_memory_timing);
+        if (ram_cycles) emit_addimm(CLOCKS, ram_cycles, CLOCKS);
         emit_state_imm(offsetof(struct r4300_core, pipeline_cached_store), 0, 0);
     }
     emit_movimm64(config->cache_timing && !write && (rt || fp) ? UINT64_C(1) << (rt + (fp ? 32 : 0)) : 0, T0);

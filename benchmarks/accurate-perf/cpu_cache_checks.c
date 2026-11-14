@@ -6,6 +6,9 @@
 #endif
 #include "device/r4300/fastmem.h"
 #include "device/r4300/jit/n64emujit.h"
+#ifndef CPU_CACHE_CHECKS_OFF_PROFILE
+#define CPU_CACHE_CHECKS_OFF_PROFILE 0
+#endif
 static void verify(int ok, const char *what, unsigned seed, unsigned mode) {
   if (!ok) {
     fprintf(stderr, "accurate JIT mismatch %s seed=%u mode=%u\n", what, seed,
@@ -61,14 +64,23 @@ static struct snapshot take(void) {
 }
 static const uint32_t ops[] = {0x24210001, 0x00011040, 0x00411826, 0x24040005,
                                0x00222021, 0x34451234, 0x000330c3, 0};
+static struct vi_controller fill_vi;
+static struct rdp_core fill_dp;
 static void initial(unsigned seed, unsigned mode) {
   setup(0);
   memcpy(code, ops, sizeof(ops));
-  cpu.cache_timing = 1;
-  cpu.compat_issue_clock = 0;
+  cpu.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
+  cpu.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+  cpu.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
   cpu.cp0.regs[CP0_CONFIG_REG] = 3;
   cpu.cp0.regs[CP0_STATUS_REG] = 0;
   cpu.cp0.count_clock = 1000;
+  /* Exercise the same RDP pressure in precise and emitted cache fills,
+   * including a deadline that drains during an older writeback. */
+  static const int fill_debt[] = {-1, 1, 32, 80, 4096};
+  fill_dp.timing.deadline = cpu.cp0.count_clock + fill_debt[seed % 5];
+  fill_vi.dp = &fill_dp;
+  cpu.vi = &fill_vi;
   cpu.cp0.count_phase = seed & 1;
   cpu.cp0.cycle_count = -100000;
   cpu.instruction_pc.addr = mode ? 0xa0000000 : 0x80000000;
@@ -110,7 +122,9 @@ int CPU_CACHE_CHECKS_MAIN(void) {
     struct n64emujit_config c = {0};
     c.virtual_pc = mode ? 0xa0000000 : 0x80000000;
     c.physical_page = 0;
-    c.cache_timing = 1;
+    c.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
     c.commits = &cpu.retired_ops;
     n64emujit_entry fn =
         n64emujit_compile_optimized(jit, NULL, ops, 8, precise_exit, &c);
@@ -146,12 +160,12 @@ int CPU_CACHE_CHECKS_MAIN(void) {
   }
   cases += memory_checks(jit);
   cases += branch_checks(jit);
-  cases += ownership_checks(jit);
+  if (!CPU_CACHE_CHECKS_OFF_PROFILE) cases += ownership_checks(jit);
   n64emujit_destroy(jit);
   r4300_jit_destroy(&cpu);
-  printf("Accurate x64 JIT: %u pipeline/cache/write-buffer differential cases "
+  printf("CPU profile %u x64 JIT: %u pipeline/cache/write-buffer differential cases "
          "passed.\n",
-         cases);
+         CPU_CACHE_CHECKS_OFF_PROFILE, cases);
   return 0;
 }
 
@@ -209,7 +223,9 @@ static unsigned memory_checks(struct n64emujit *jit) {
               (majors[kind] << 26) | (1 << 21) | ((2 + i) << 16) | (i * 8);
         struct n64emujit_config c = {0};
         c.virtual_pc = 0x80000000;
-        c.cache_timing = 1;
+        c.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
         c.commits = &cpu.retired_ops;
         c.fastmem = fast ? &fastmem : NULL;
         n64emujit_entry fn = n64emujit_compile_optimized(jit, NULL, memory_ops,
@@ -248,7 +264,9 @@ static void memory_benchmark(struct n64emujit *jit) {
     memory_ops[i] = (major << 26) | (1 << 21) | ((2 + i) << 16) | (i * 8);
   struct n64emujit_config c = {0};
   c.virtual_pc = 0x80000000;
-  c.cache_timing = 1;
+  c.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
   c.commits = &cpu.retired_ops;
   c.fastmem = strstr(getenv("N64EMU_CPU_BENCH"), "fastmem") ? &fastmem : NULL;
   n64emujit_entry fn =
@@ -298,7 +316,9 @@ static unsigned branch_checks(struct n64emujit *jit) {
                       : (2 << 21) | 8;
       struct n64emujit_config c = {0};
       c.virtual_pc = 0x80000000;
-      c.cache_timing = 1;
+      c.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
       c.commits = &cpu.retired_ops;
       c.has_delay = 1;
       c.delay_op = 0x24630001;
@@ -342,7 +362,9 @@ static unsigned ownership_checks(struct n64emujit *jit) {
     memory_ops[0] = ((store ? 0x2bu : 0x23u) << 26) | (1 << 21) | (2 << 16);
     struct n64emujit_config c = {0};
     c.virtual_pc = 0x80000000;
-    c.cache_timing = 1;
+    c.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
     c.commits = &cpu.retired_ops;
     c.fastmem = store ? NULL : &fastmem;
     n64emujit_entry fn = n64emujit_compile_optimized(

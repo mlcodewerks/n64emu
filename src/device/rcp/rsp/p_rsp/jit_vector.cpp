@@ -13,6 +13,7 @@ namespace RSP { namespace JIT {
 alignas(16) static const uint32_t blend_byte_sign_bits[4] = {
     0x80808080u, 0x80808080u, 0x80808080u, 0x80808080u
 };
+alignas(16) static const uint16_t vector_flag_bits[8]={1,2,4,8,16,32,64,128};
 enum class VOp { Load, Store, Constant, Shuffle, Add, Sub, Adds, Subs, Addu, Subu,
     And, Or, Xor, AndNot, Eq, Gt, Min, Max, MulLo, MulHi, MulHiU, Shl, Shr, Sar, UnpackLo, UnpackHi, Pack, Blend };
 static bool commutative(VOp op)
@@ -327,12 +328,16 @@ alignas(16) static const std::array<std::array<uint8_t,16>,16> element_masks=[](
     }return masks;
 }();
 
-#ifdef N64EMU_JIT32_CROSS_ARM
+
+#if defined(N64EMU_JIT32_CROSS_ARM) || defined(RSP_JIT_EMITTER_AARCH64)
 void Emitter::vector_tables(void (*write)(const void*,size_t))
 {
     write(element_masks.data(),sizeof(element_masks));
     write(blend_byte_sign_bits,sizeof(blend_byte_sign_bits));
     write(rsp_reciprocal_rom,sizeof(rsp_reciprocal_rom));
+#ifdef RSP_JIT_EMITTER_AARCH64
+    write(vector_flag_bits,sizeof(vector_flag_bits));
+#endif
 }
 #endif
 
@@ -424,7 +429,8 @@ void Emitter::emit_vector_program(const VectorProgram &program)
     // Recycle homes when SSA values die. Reserving one slot per IR node made
     // fused sequences grow the stack with program length rather than liveness
     // and could jump over Windows' stack guard page.
-    unsigned spill_bytes=peak>sizeof(registers)/sizeof(registers[0])?peak*16:0;
+    const unsigned slot_bytes=16;
+    unsigned spill_bytes=peak>sizeof(registers)/sizeof(registers[0])?peak*slot_bytes:0;
     std::vector<unsigned> home(count,0),free_homes;
     unsigned next_home=0;
     // Scratch homes are private to this instruction and never overlap the
@@ -460,7 +466,7 @@ void Emitter::emit_vector_program(const VectorProgram &program)
             if(!spilled[id]){
                 if(free_homes.empty())home[id]=next_home++;
                 else {home[id]=free_homes.back();free_homes.pop_back();}
-                assert((home[id]+1)*16<=spill_bytes);
+                assert((home[id]+1)*slot_bytes<=spill_bytes);
                 spill(best,id);spilled[id]=true;
             }physical[id]=-1;owner[best]=-1;return best;
         };
@@ -563,7 +569,7 @@ void Emitter::vector_transfer(unsigned op,unsigned scalar,unsigned vector,unsign
 #include "jit_vector32_transfer.inc"
 #else
     const unsigned offset=vec_offset(vector),flag=std::min(vector&3u,2u);
-    alignas(16) static const uint16_t bits[8]={1,2,4,8,16,32,64,128};
+    const auto &bits=vector_flag_bits;
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(RSP_JIT_EMITTER_AARCH64)
     using namespace Xbyak_aarch64;
     if(op==0) {

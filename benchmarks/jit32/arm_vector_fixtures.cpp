@@ -17,7 +17,14 @@ static const Op operations[64]={
  RSP_VRCP,RSP_VRCPL,RSP_VRCPH,RSP_VMOV,RSP_VRSQ,RSP_VRSQL,RSP_VRSQH,RSP_VNOP,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,RSP_VNOP};
 static FILE* output;
 static void word(uint32_t n){std::fwrite(&n,4,1,output);}
-static void table(const void* data,size_t bytes){word(uint32_t(uintptr_t(data)));word(uint32_t(bytes));std::fwrite(data,1,bytes,output);}
+static void table(const void* data,size_t bytes){
+#ifdef RSP_JIT_EMITTER_AARCH64
+    uint64_t address=uintptr_t(data);std::fwrite(&address,8,1,output);
+#else
+    word(uint32_t(uintptr_t(data)));
+#endif
+    word(uint32_t(bytes));std::fwrite(data,1,bytes,output);
+}
 static void body(JIT::Emitter& emit,uint32_t tag,unsigned samples) {
     emit.movi(JIT::JIT_R0,0);emit.retr(JIT::JIT_R0);
     JIT::HostWord size;emit.get_code(&size);std::vector<uint8_t> code(size);emit.set_code(code.data(),size);emit.emit();
@@ -25,7 +32,17 @@ static void body(JIT::Emitter& emit,uint32_t tag,unsigned samples) {
 }
 int main(int argc,char** argv) {
     if(argc!=2)return 2;output=std::fopen(argv[1],"wb");if(!output)return 1;
-    word(0x33505352);word(sizeof(CPUState));word(offsetof(CPUState,cp2));word(sizeof(CP2));word(offsetof(CPUState,sr)+4);word(3);
+#ifdef RSP_JIT_EMITTER_AARCH64
+    word(0x36505352);
+#else
+    word(0x33505352);
+#endif
+    word(sizeof(CPUState));word(offsetof(CPUState,cp2));word(sizeof(CP2));word(offsetof(CPUState,sr)+4);
+#ifdef RSP_JIT_EMITTER_AARCH64
+    word(4);
+#else
+    word(3);
+#endif
     JIT::Emitter::vector_tables(table);std::mt19937 random(0x41333256);
     for(unsigned op=0;op<64;op++)for(unsigned element=0;element<16;element++)for(unsigned alias=0;alias<8;alias++) {
         if(op==2||op==3||op==10||op==11)continue; // existing C helper, not a native SIMD lowering
@@ -40,6 +57,26 @@ int main(int argc,char** argv) {
             if(sample<4)for(auto& flag:actual.cp2.flags)for(auto& lane:flag.e)lane=(random()&1)?0xffff:0;
             if(sample<2)for(auto& v:actual.cp2.regs)for(auto& lane:v.e)lane=sample?0x8000:0;
             expected=actual;(operations[op]?operations[op]:RSP_RESERVED)(&expected,vd,vs,vt,element);
+            std::fwrite(&actual,1,sizeof(actual),output);std::fwrite(&expected.cp2,1,sizeof(CP2),output);
+        }
+    }
+    // Exercise the shared SSA optimizer and allocator with two instructions,
+    // independent element selection, aliases and true dependencies on A32.
+    for(unsigned op:{0u,1u,4u,5u,6u,7u,0x13u,0x14u,0x15u,0x25u,0x26u,0x27u,0x28u,0x29u,0x2au,0x2bu,0x2cu,0x2du})
+    for(unsigned e=0;e<16;e++)for(unsigned e2=0;e2<16;e2++)for(unsigned alias=0;alias<6;alias++) {
+        unsigned vd=alias==0?3:alias==1?9:5,vd2=alias==2?vd:7;
+        unsigned vs2=alias==3?vd:10,vt2=alias==4?vd:alias==5?10:11;
+        auto instruction=[&](unsigned dest,unsigned vs,unsigned vt,unsigned element) {
+            return (0x25u<<25)|(element<<21)|(vt<<16)|(vs<<11)|(dest<<6)|op;
+        };
+        uint32_t words[]={instruction(vd,3,9,e),instruction(vd2,vs2,vt2,e2)};
+        JIT::Emitter emit;emit.frame(256);emit.getarg(JIT::JIT_V0);
+        emit.vector_sequence(words,2);body(emit,0x20000000|(op<<24)|(e<<16)|(alias<<8)|e2,2);
+        for(unsigned sample=0;sample<2;sample++) {
+            CPUState actual={},expected={};auto* values=reinterpret_cast<uint16_t*>(&actual.cp2);
+            const uint16_t edges[]={0,1,0x7fff,0x8000,0xffff,0x4000,0xc000,0x8001};
+            for(unsigned i=0;i<sizeof(CP2)/2;i++)values[i]=sample?uint16_t(random()):edges[random()%8];
+            expected=actual;operations[op](&expected,vd,3,9,e);operations[op](&expected,vd2,vs2,vt2,e2);
             std::fwrite(&actual,1,sizeof(actual),output);std::fwrite(&expected.cp2,1,sizeof(CP2),output);
         }
     }

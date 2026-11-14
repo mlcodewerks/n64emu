@@ -67,5 +67,20 @@ int main(void)
     fresh(0,0);cpu.pipeline_load_mask=2;cpu.pipeline_fpu_result_mask=4;cpu.pipeline_fpu_cc=cpu.pipeline_cached_store=1;
     r4300_begin_prefetched_instruction_cycles(&cpu,0,0x80000000,1,0);
     assert(!cpu.pipeline_load_mask && !cpu.pipeline_fpu_result_mask && !cpu.pipeline_fpu_cc && !cpu.pipeline_cached_store);++cases;
+    /* Fill pressure follows the monotonic scheduler clock, not writable or
+     * wrapping CP0 COUNT. Keep the native admission bound conservative. */
+    assert(R4300_ICACHE_FILL_IDLE_CYCLES <= R4300_ICACHE_FILL_CYCLES);
+    assert(R4300_ICACHE_FILL_BUSY_CYCLES <= R4300_ICACHE_FILL_CYCLES);
+    struct vi_controller fill_vi={0};struct rdp_core fill_dp={0};
+    for(unsigned wrap=0;wrap<2;++wrap)for(unsigned phase=0;phase<2;++phase){
+        fresh(1,phase);cpu.cp0.count_clock=wrap?INT64_C(0x100000000)+1000:1000;
+        cpu.cp0.regs[CP0_COUNT_REG]=UINT32_MAX-1;cpu.vi=&fill_vi;fill_vi.dp=&fill_dp;
+        fill_dp.timing.deadline=cpu.cp0.count_clock;
+        assert(r4300_icache_fill_cycles(&cpu)==R4300_ICACHE_FILL_IDLE_CYCLES);++cases;
+        fill_dp.timing.deadline=cpu.cp0.count_clock+1;
+        assert(r4300_icache_fill_cycles(&cpu)==R4300_ICACHE_FILL_BUSY_CYCLES);++cases;
+        fill_vi.dp=NULL;
+        assert(r4300_icache_fill_cycles(&cpu)==R4300_ICACHE_FILL_IDLE_CYCLES);++cases;
+    }
     r4300_jit_destroy(&cpu);printf("Timing: %u On/Off latency, half-clock, wrap, RCP and pipeline contracts passed.\n",cases);return 0;
 }
