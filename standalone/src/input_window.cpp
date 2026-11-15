@@ -15,6 +15,19 @@ void draw_binding(Input &input, unsigned player, unsigned index, InputOutput out
     ImGui::TextWrapped("%s", bind.label.c_str());
     ImGui::PushID(int(player));
     ImGui::PushID(int(index));
+    const float available = ImGui::GetContentRegionAvail().x;
+    const auto draw_capture = [&] {
+        ImGui::SameLine(available * 0.80f);
+        ImGui::SetNextItemWidth(available * 0.20f);
+        char buffer[128]{};
+        const auto name = description(input, bind.positive);
+        std::snprintf(buffer, sizeof(buffer), "%s", name.c_str());
+        ImGui::InputText("##joykey", buffer, sizeof(buffer));
+        if (ImGui::IsItemActivated() || ImGui::IsItemClicked()) {
+            ImGui::SetWindowFocus();
+            input.begin_capture(player, output);
+        }
+    };
     const bool stick_axis = output.device == RETRO_DEVICE_ANALOG && output.index < 2 && output.id < 2;
     if (stick_axis) {
         int source = int(bind.mode);
@@ -26,6 +39,8 @@ void draw_binding(Input &input, unsigned player, unsigned index, InputOutput out
             if (bind.mode == AnalogMode::Mouse)
                 input.assign("mouse", player, true);
         }
+        if (bind.mode == AnalogMode::Mapped)
+            draw_capture();
         if (output.id == RETRO_DEVICE_ID_ANALOG_Y)
             bind.custom |= ImGui::Checkbox("Invert Y axis", &bind.invert);
         if (bind.mode == AnalogMode::Mouse) {
@@ -63,18 +78,8 @@ void draw_binding(Input &input, unsigned player, unsigned index, InputOutput out
         }
     }
 
-    const float available = ImGui::GetContentRegionAvail().x;
-    const float field_width = available * 0.20f;
-    ImGui::SameLine(available - field_width);
-    ImGui::SetNextItemWidth(field_width);
-    char buffer[128]{};
-    const auto name = description(input, bind.positive);
-    std::snprintf(buffer, sizeof(buffer), "%s", name.c_str());
-    ImGui::InputText("##joykey", buffer, sizeof(buffer));
-    if (ImGui::IsItemActivated() || ImGui::IsItemClicked()) {
-        ImGui::SetWindowFocus();
-        input.begin_capture(player, output);
-    }
+    if (!stick_axis)
+        draw_capture();
     if (input_axis(output)) {
         bind.custom |= ImGui::SliderFloat("Analog sensitivity", &bind.sensitivity, 0.f, 100.f,
                                          "%.0f%%", ImGuiSliderFlags_AlwaysClamp);
@@ -96,6 +101,7 @@ void draw_input_settings(Input &input, bool &open) {
                                         ImVec2(io.DisplaySize.x * 0.7f, io.DisplaySize.y * 0.5f));
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("Input Settings", &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::PushItemWidth(ImMin(260.f, ImGui::GetContentRegionAvail().x * 0.4f));
         auto *state = ImGui::GetStateStorage();
         const auto capture_key = ImGui::GetID("Capture active");
         if (state->GetBool(capture_key) && !input.capturing()) {
@@ -150,6 +156,7 @@ void draw_input_settings(Input &input, bool &open) {
         if (!input.status.empty() && input.status.find("Could not save input settings.") == 0)
             ImGui::TextWrapped("%s", input.status.c_str());
         state->SetBool(capture_key, input.capturing());
+        ImGui::PopItemWidth();
         ImGui::EndPopup();
     }
     if (!open)
