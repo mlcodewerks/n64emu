@@ -3,7 +3,7 @@
 #include <array>
 #include <map>
 
-constexpr unsigned input_players = 16;
+constexpr unsigned input_players = 4;
 enum class InputKind { Key, MouseButton, MouseAxis, MouseWheel, Button, Axis, Hat };
 enum class AnalogMode { Mapped, Mouse, Digital };
 enum class InputScope { Global, Core, Game };
@@ -32,6 +32,7 @@ struct InputPlayer {
     std::vector<InputBinding> bindings;
 };
 struct InputProfile {
+    uint32_t game_players = (1u << input_players) - 1;
     std::array<InputPlayer, input_players> players;
     // A physical device may feed several players; several devices may feed one player.
     std::map<std::string, uint32_t> assignments;
@@ -65,6 +66,7 @@ struct InputDeviceChoice {
 };
 
 InputProfile default_input_profile();
+bool n64_input_output(const InputOutput &output);
 bool input_axis(const InputOutput &output);
 bool input_vertical_axis(const InputOutput &output);
 std::string input_output_name(const InputOutput &output);
@@ -72,3 +74,5 @@ std::string input_key_name(unsigned key);
 int16_t combine_input_axes(int16_t first, int16_t second);
 bool load_input_profile(const fs::path &path, InputProfile &profile, std::string &error);
 bool save_input_profile(const fs::path &path, const InputProfile &profile, std::string &error);
+
+bool parse_input_profile(const std::string &text, InputProfile &profile, std::string &error);

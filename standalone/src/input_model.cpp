@@ -1,8 +1,19 @@
+#include "config_store.h"
 #include "input.h"
 #include <cmath>
 #include <sstream>
 
 namespace {
+void copy_player(InputProfile &to, const InputProfile &from, unsigned player) {
+    to.players[player] = from.players[player];
+    const uint32_t bit = 1u << player;
+    for (auto &assignment : to.assignments)
+        assignment.second &= ~bit;
+    for (const auto &assignment : from.assignments)
+        to.assignments[assignment.first] |= assignment.second & bit;
+    for (const auto &name : from.device_names)
+        to.device_names[name.first] = name.second;
+}
 bool hat_pressed(int angle, int direction) {
     if (angle < 0)
         return false;
@@ -21,13 +32,7 @@ bool hat_pressed(int angle, int direction) {
 }
 int16_t clamp_axis(float value) { return int16_t(std::clamp(value, -32768.0f, 32767.0f)); }
 std::vector<InputDeviceChoice> default_choices() {
-    return {{RETRO_DEVICE_NONE, "Disconnected"},
-            {RETRO_DEVICE_JOYPAD, "Joypad"},
-            {RETRO_DEVICE_ANALOG, "Analog controller"},
-            {RETRO_DEVICE_KEYBOARD, "Keyboard"},
-            {RETRO_DEVICE_MOUSE, "Mouse"},
-            {RETRO_DEVICE_POINTER, "Pointer / touch"},
-            {RETRO_DEVICE_LIGHTGUN, "Light gun (mouse)"}};
+    return {{RETRO_DEVICE_NONE, "Disconnected"}, {RETRO_DEVICE_JOYPAD, "Nintendo 64 controller"}};
 }
 bool same_source(const InputSource &a, const InputSource &b) {
     return a.kind == b.kind && a.device == b.device && a.code == b.code && a.direction == b.direction;
@@ -582,10 +587,11 @@ std::vector<InputOutput> Input::visible_bindings(unsigned player) const {
         return outputs;
     if (!has_core()) {
         for (const auto &b : profile.players[player].bindings)
-            outputs.push_back(b.output);
+            if (n64_input_output(b.output))
+                outputs.push_back(b.output);
     } else if (profile.players[player].controller != RETRO_DEVICE_NONE) {
         for (const auto &label : labels)
-            if (label.port == player && !label.label.empty() &&
+            if (label.port == player && n64_input_output(label.output) && !label.label.empty() &&
                 std::find(outputs.begin(), outputs.end(), label.output) == outputs.end())
                 outputs.push_back(label.output);
     }
@@ -625,8 +631,10 @@ void Input::load_configuration(const fs::path &directory) {
     auto names = profile.device_names;
     profile = default_input_profile();
     std::error_code ec;
-    if (fs::exists(profile_path(InputScope::Global), ec))
-        load_input_profile(profile_path(InputScope::Global), profile, status);
+    if (config_input_exists(config_directory.parent_path(), profile_path(InputScope::Global)))
+        config_input_load(config_directory.parent_path(), profile_path(InputScope::Global), profile, status);
+    else
+        config_input_save(config_directory.parent_path(), profile_path(InputScope::Global), profile, status);
     for (const auto &assignment : previous)
         if (!profile.assignments.count(assignment.first))
             profile.assignments.insert(assignment);
@@ -648,14 +656,29 @@ void Input::begin_core(const fs::path &library, const fs::path &content) {
     auto devices = profile.assignments;
     auto names = profile.device_names;
     profile = default_input_profile();
+    per_player_scopes = false;
+    game_player_mask = 0;
     current_scope = InputScope::Global;
     for (auto scope : {InputScope::Global, InputScope::Core, InputScope::Game}) {
         if (scope == InputScope::Game && content.empty())
             continue;
         auto path = profile_path(scope);
         std::error_code ec;
-        if (fs::exists(path, ec) && load_input_profile(path, profile, status))
-            current_scope = scope;
+        if (config_input_exists(config_directory.parent_path(), path)) {
+            auto next = profile;
+            if (config_input_load(config_directory.parent_path(), path, next, status)) {
+                if (scope == InputScope::Game) {
+                    game_player_mask = next.game_players;
+                    for (unsigned player = 0; player < input_players; ++player)
+                        if (game_player_mask & (1u << player))
+                            copy_player(profile, next, player);
+                    profile.game_players = game_player_mask;
+                } else {
+                    profile = std::move(next);
+                }
+                current_scope = scope;
+            }
+        }
     }
     for (const auto &device : devices)
         if (!profile.assignments.count(device.first))
@@ -673,6 +696,8 @@ void Input::end_core() {
     labels.clear();
     for (auto &list : choices)
         list.clear();
+    per_player_scopes = false;
+    game_player_mask = 0;
     current_scope = InputScope::Global;
     if (!config_directory.empty())
         load_configuration(config_directory.parent_path());
@@ -684,12 +709,14 @@ void Input::select_scope(InputScope scope) {
     stop_rumble();
     auto path = profile_path(scope);
     std::error_code ec;
-    if (fs::exists(path, ec)) {
+    if (config_input_exists(config_directory.parent_path(), path)) {
         auto next = profile;
-        if (!load_input_profile(path, next, status))
+        if (!config_input_load(config_directory.parent_path(), path, next, status))
             return;
         profile = std::move(next);
     }
+    per_player_scopes = false;
+    game_player_mask = scope == InputScope::Game ? profile.game_players : 0;
     current_scope = scope;
     apply_labels();
     for (unsigned player = 0; player < input_players; ++player)
@@ -702,8 +729,61 @@ void Input::select_scope(InputScope scope) {
         }
     status = "Editing input profile. Use Save input profile to keep changes.";
 }
+bool Input::uses_game_input(unsigned player) const {
+    return player < input_players && (game_player_mask & (1u << player));
+}
+bool Input::set_game_input(unsigned player, bool enabled) {
+    if (player >= input_players || !has_game())
+        return false;
+    if (uses_game_input(player) == enabled)
+        return true;
+    // Preserve edits before changing the source for this port, as wtweg does.
+    per_player_scopes = true;
+    if (!save_configuration(status))
+        return false;
+    auto next = default_input_profile();
+    std::error_code ec;
+    for (auto scope : {InputScope::Global, InputScope::Core}) {
+        const auto path = profile_path(scope);
+        if (config_input_exists(config_directory.parent_path(), path) && !config_input_load(config_directory.parent_path(), path, next, status))
+            return false;
+    }
+    if (enabled) {
+        // A new game override starts with this player's current core bindings.
+        game_player_mask |= 1u << player;
+    } else {
+        copy_player(profile, next, player);
+        game_player_mask &= ~(1u << player);
+    }
+    cancel_capture();
+    stop_rumble();
+    apply_labels();
+    return save_configuration(status);
+}
+bool Input::save_player_configuration(std::string &error) {
+    per_player_scopes = true;
+    return save_configuration(error);
+}
 bool Input::save_configuration(std::string &error) {
-    return save_input_profile(profile_path(current_scope), profile, error);
+    if (!per_player_scopes)
+        return config_input_save(config_directory.parent_path(), profile_path(current_scope), profile, error);
+    if (!has_core())
+        return config_input_save(config_directory.parent_path(), profile_path(InputScope::Global), profile, error);
+    auto core = default_input_profile();
+    std::error_code ec;
+    for (auto scope : {InputScope::Global, InputScope::Core}) {
+        const auto path = profile_path(scope);
+        if (config_input_exists(config_directory.parent_path(), path) && !config_input_load(config_directory.parent_path(), path, core, error))
+            return false;
+    }
+    auto game = profile;
+    game.game_players = game_player_mask;
+    for (unsigned player = 0; player < input_players; ++player)
+        if (!uses_game_input(player))
+            copy_player(core, profile, player);
+    if (!config_input_save(config_directory.parent_path(), profile_path(InputScope::Core), core, error))
+        return false;
+    return !has_game() || config_input_save(config_directory.parent_path(), profile_path(InputScope::Game), game, error);
 }
 void Input::reset_player(unsigned player) {
     if (player < input_players) {

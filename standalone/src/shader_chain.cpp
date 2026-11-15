@@ -1,3 +1,4 @@
+#include "config_store.h"
 #include "shader_chain.h"
 #include "shader_library.h"
 #include "native.h"
@@ -434,9 +435,7 @@ void shader_controller::init()
     directory = executable_directory();
     auto &api = librashader();
     api.load(directory);
-    auto path = directory / "winweg.shaders";
-    std::error_code ec;
-    if (std::filesystem::exists(path, ec) && shader_load(path, settings, error))
+    if (config_shader_load(directory, settings, error))
         for (auto &chain : settings.chains)
             if ((api.d3d9_available) && !chain.passes.empty())
                 inspect(chain);

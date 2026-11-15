@@ -1,3 +1,4 @@
+#include "config_store.h"
 #include "core.h"
 #include "shader_chain.h"
 #include <fstream>
@@ -5,8 +6,10 @@
 #include <sstream>
 
 Core::Core(Video &v, Input &i, const fs::path &dir) : video(v), input(i), directory(dir) {
-    for (auto name : {L"system", L"saves", L"config"}) fs::create_directories(dir / name);
+    for (auto name : {L"system", L"saves"}) fs::create_directories(dir / name);
+    config_initialize(dir);
     input.load_configuration(dir);
+    restore_options();
 }
 Core::~Core() { try { unload(); } catch (...) {} }
 void Core::log(const std::string &text, LogSource source, retro_log_level level) { append_log(text, source, level); }
@@ -158,15 +161,28 @@ void Core::load_state(const fs::path &path) {
 }
 void Core::restore_options() {
     saved_options.clear();
-    std::ifstream file(directory / L"config" / L"n64emu.options");
-    std::string key, value;
-    while (file >> std::quoted(key) >> std::quoted(value)) saved_options[key] = value;
+    auto values = config_section(directory, "core_options");
+    if (values) {
+        if (!cJSON_IsObject(values.get())) throw std::runtime_error("Invalid core_options in n64emu.json");
+        for (auto item = values->child; item; item = item->next) {
+            if (!cJSON_IsString(item)) throw std::runtime_error("Invalid core option in n64emu.json");
+            saved_options[item->string] = item->valuestring;
+        }
+    } else {
+        std::ifstream file(directory / L"config" / L"n64emu.options");
+        std::string key, value;
+        while (file >> std::quoted(key) >> std::quoted(value)) saved_options[key] = value;
+        Json migrated(cJSON_CreateObject(), cJSON_Delete);
+        for (const auto &entry : saved_options)
+            cJSON_AddStringToObject(migrated.get(), entry.first.c_str(), entry.second.c_str());
+        config_write_section(directory, "core_options", migrated.get());
+    }
 }
 void Core::save_options() {
-    std::ostringstream text;
-    for (const auto &o : options) text << std::quoted(o.key) << ' ' << std::quoted(o.value) << '\n';
-    auto value = text.str();
-    write_file(directory / L"config" / L"n64emu.options", value.data(), value.size());
+    Json values(cJSON_CreateObject(), cJSON_Delete);
+    for (const auto &option : options)
+        cJSON_AddStringToObject(values.get(), option.key.c_str(), option.value.c_str());
+    config_write_section(directory, "core_options", values.get());
 }
 void Core::set_option(Option &option, const std::string &value) {
     if (!n64emu_set_option(option.key.c_str(), value.c_str())) return;

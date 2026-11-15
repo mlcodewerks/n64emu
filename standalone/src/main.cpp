@@ -1,3 +1,4 @@
+#include "config_store.h"
 #include "IconsForkAwesome.h"
 #include "core.h"
 #include "core_options_window.h"
@@ -13,6 +14,8 @@
 #include "shader_library.h"
 #include "shader_source_editor.h"
 #include "ui_fonts.h"
+#include "imgui_theme.h"
+#include "ui_window_layout.h"
 #include <cmath>
 #include <fstream>
 #include <functional>
@@ -184,12 +187,26 @@ int main() {
             throw std::runtime_error("Window creation failed");
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
-        ImGui::StyleColorsDark();
-        init_ui_fonts(ImGui_ImplWin32_GetDpiScaleForHwnd(window));
+        const float dpi_scale = ImGui_ImplWin32_GetDpiScaleForHwnd(window);
+        apply_imgui_theme(dpi_scale);
+        init_ui_fonts(dpi_scale);
         shader_source_editor_init_font();
         auto directory = executable_directory();
-        std::string ini = (directory / L"imgui.ini").u8string();
-        ImGui::GetIO().IniFilename = ini.c_str();
+        config_initialize(directory);
+        ImGui::GetIO().IniFilename = nullptr;
+        auto layout = config_section(directory, "window_layout");
+        if (layout) {
+            if (!cJSON_IsString(layout.get())) throw std::runtime_error("Invalid window_layout in n64emu.json");
+            ImGui::LoadIniSettingsFromMemory(layout->valuestring);
+        } else if (fs::exists(directory / L"imgui.ini")) {
+            auto bytes = read_file(directory / L"imgui.ini");
+            ImGui::LoadIniSettingsFromMemory(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+        }
+        auto save_layout = [&] {
+            Json value(cJSON_CreateString(ImGui::SaveIniSettingsToMemory()), cJSON_Delete);
+            config_write_section(directory, "window_layout", value.get());
+            ImGui::GetIO().WantSaveIniSettings = false;
+        };
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         if (!ImGui_ImplWin32_Init(window))
             throw std::runtime_error("ImGui Win32 initialization failed");
@@ -214,14 +231,29 @@ int main() {
             core.audio_enabled = !no_audio;
             dsp_settings dsp;
             std::string dsp_error;
-            if (fs::exists(directory / L"winweg.dsp") &&
-                dsp_load(directory / L"winweg.dsp", dsp, dsp_error)) {
-                core.audio.dsp.configure(dsp, dsp_error);
-            }
+            if (!config_dsp_load(directory, dsp, dsp_error) || !core.audio.dsp.configure(dsp, dsp_error))
+                core.log(dsp_error + "\n");
             FilePicker picker;
             dsp_chain_window dsp_window;
-            bool running = true, settings = false, options = false, logs = false, fast_forward = false;
+            bool running = true, settings = false, input_settings = false, options = false, logs = false, fast_forward = false;
             unsigned slot = 0;
+            auto frontend = config_section(directory, "frontend");
+            if (frontend) {
+                auto scale = cJSON_GetObjectItemCaseSensitive(frontend.get(), "integer_scale");
+                auto saved_slot = cJSON_GetObjectItemCaseSensitive(frontend.get(), "state_slot");
+                if (!cJSON_IsObject(frontend.get()) || !cJSON_IsBool(scale) || !cJSON_IsNumber(saved_slot) ||
+                    saved_slot->valuedouble < 0 || saved_slot->valuedouble > 9 ||
+                    saved_slot->valuedouble != std::floor(saved_slot->valuedouble))
+                    throw std::runtime_error("Invalid frontend settings in n64emu.json");
+                video.integer_scale = cJSON_IsTrue(scale);
+                slot = unsigned(saved_slot->valuedouble);
+            }
+            auto save_frontend = [&] {
+                Json value(cJSON_CreateObject(), cJSON_Delete);
+                cJSON_AddBoolToObject(value.get(), "integer_scale", video.integer_scale);
+                cJSON_AddNumberToObject(value.get(), "state_slot", slot);
+                config_write_section(directory, "frontend", value.get());
+            };
             uint64_t iteration = 0, deadline = native_nanoseconds();
             Timer timer;
             std::function<void()> pending;
@@ -314,7 +346,10 @@ int main() {
                         if (ImGui::BeginMenu("State slot")) {
                             for (unsigned i = 0; i < 10; ++i)
                                 if (ImGui::MenuItem(std::to_string(i).c_str(), nullptr, i == slot))
+                                {
                                     slot = i;
+                                    save_frontend();
+                                }
                             ImGui::EndMenu();
                         }
                         if (ImGui::MenuItem("Save state"))
@@ -334,7 +369,8 @@ int main() {
                         ImGui::EndMenu();
                     }
                     ImGui::MenuItem(ICON_FK_COG " Settings", nullptr, &settings);
-                    ImGui::MenuItem("Audio DSP", nullptr, &dsp_window.visible);
+                    ImGui::MenuItem("Input Settings...", nullptr, &input_settings);
+                    ImGui::MenuItem("Audio DSP Chains...", nullptr, &dsp_window.visible);
                     ImGui::MenuItem("Shader chains", nullptr, &shader_window_visible);
                     ImGui::MenuItem("Core options", nullptr, &options, core.loaded());
                     ImGui::MenuItem("Log", nullptr, &logs);
@@ -351,11 +387,12 @@ int main() {
                         throw;
                 }
                 if (settings) {
-                    ImGui::SetNextWindowSize(ImVec2(580, 650), ImGuiCond_FirstUseEver);
+                    ui_prepare_window("Settings", ImVec2(0.7f, 0.7f));
                     ImGui::Begin("Settings", &settings);
                     if (ImGui::BeginTabBar("settings")) {
                         if (ImGui::BeginTabItem("Video")) {
-                            ImGui::Checkbox("Integer scale", &video.integer_scale);
+                            if (ImGui::Checkbox("Integer scale", &video.integer_scale))
+                                save_frontend();
                             ImGui::TextUnformatted("Renderer: Direct3D 9");
                             if (ImGui::Button("Shader chains..."))
                                 shader_window_visible = true;
@@ -370,18 +407,22 @@ int main() {
                             ImGui::EndTabItem();
                         }
                         if (ImGui::BeginTabItem("Input")) {
-                            draw_input_settings(controls);
+                            if (ImGui::Button("Input Settings..."))
+                                input_settings = true;
                             ImGui::EndTabItem();
                         }
                         ImGui::EndTabBar();
                     }
                     ImGui::End();
                 }
+                draw_input_settings(controls, input_settings);
                 dsp_window.draw(core.audio.dsp, directory);
                 draw_shader_chain_window();
                 draw_core_options(core, options);
                 draw_log_window(logs);
                 ImGui::Render();
+                if (ImGui::GetIO().WantSaveIniSettings)
+                    save_layout();
                 ++iteration;
                 if (!capture.empty() && ((capture_interval && iteration % capture_interval == 0) ||
                                          (limit && iteration == limit))) {
@@ -422,6 +463,7 @@ int main() {
                           "d3d9");
             append_log(result);
         }
+        save_layout();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
         if (IsWindow(window))

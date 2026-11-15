@@ -13,29 +13,21 @@ bool input_axis(const InputOutput &o) {
 bool input_vertical_axis(const InputOutput &o) {
     return o.device == RETRO_DEVICE_LIGHTGUN ? o.id == RETRO_DEVICE_ID_LIGHTGUN_SCREEN_Y : o.id == 1;
 }
-std::string input_output_name(const InputOutput &o) {
-    static const char *buttons[] = {"B / bottom face button",
-                                    "Y / left face button",
-                                    "Select / Back",
-                                    "Start",
-                                    "D-pad up",
-                                    "D-pad down",
-                                    "D-pad left",
-                                    "D-pad right",
-                                    "A / right face button",
-                                    "X / top face button",
-                                    "Left shoulder",
-                                    "Right shoulder",
-                                    "Left trigger",
-                                    "Right trigger",
-                                    "Left stick button",
-                                    "Right stick button"};
-    if (o.device == RETRO_DEVICE_JOYPAD && o.id < 16)
-        return buttons[o.id];
-    if (o.device == RETRO_DEVICE_ANALOG && o.index < 2 && o.id < 2)
-        return std::string(o.index ? "Right stick " : "Left stick ") +
-               (o.id ? "Y (up/down)" : "X (left/right)");
-    return "Control " + std::to_string(o.id + 1);
+bool n64_input_output(const InputOutput &output) {
+    return output.index == 0 &&
+           ((output.device == RETRO_DEVICE_JOYPAD && output.id < 14) ||
+            (output.device == RETRO_DEVICE_ANALOG && output.id < 2));
+}
+std::string input_output_name(const InputOutput &output) {
+    static const char *buttons[] = {"A Button", "B Button", "L Shoulder", "Start",
+        "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right",
+        "C-Down", "C-Up", "C-Left", "C-Right", "Z Trigger", "R Shoulder"};
+    if (n64_input_output(output)) {
+        if (output.device == RETRO_DEVICE_JOYPAD)
+            return buttons[output.id];
+        return output.id ? "Control Stick Y" : "Control Stick X";
+    }
+    return "Unsupported control";
 }
 std::string input_key_name(unsigned key) {
     if (!key)
@@ -112,32 +104,17 @@ InputProfile default_input_profile() {
     InputProfile profile;
     profile.assignments = {{"keyboard", 1}, {"mouse", 1},    {"xinput:0", 1},
                            {"xinput:1", 2}, {"xinput:2", 4}, {"xinput:3", 8}};
-    const unsigned keys[] = {'Z', 'A', VK_RSHIFT, VK_RETURN, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT,
-                             'X', 'S', 'Q',       'W',       '1',   '2',     '3',     '4'};
-    const int direct[] = {1, 0, 8, 9, -1, -1, -1, -1, 2, 3, 4, 5, 6, 7, 10, 11};
     for (auto &player : profile.players) {
-        for (unsigned i = 0; i < 16; ++i) {
+        for (unsigned i = 0; i < 14; ++i) {
             InputBinding binding;
             binding.output = {RETRO_DEVICE_JOYPAD, 0, i};
             binding.label = input_output_name(binding.output);
-            binding.positive = {{InputKind::Key, "keyboard", int(keys[i]), 0},
-                                {InputKind::Button, "@xinput", int(i), 0}};
-            if (direct[i] >= 0)
-                binding.positive.push_back({InputKind::Button, "@dinput", direct[i], 0});
-            if (i >= 4 && i <= 7) {
-                const int hat[] = {0, 2, 3, 1};
-                binding.positive.push_back({InputKind::Hat, "@dinput", 0, hat[i - 4]});
-                binding.positive.push_back(
-                    {InputKind::Axis, "@dinput", i < 6 ? 1 : 0, (i == 4 || i == 6) ? -1 : 1});
-            }
             player.bindings.push_back(std::move(binding));
         }
-        for (unsigned axis = 0; axis < 4; ++axis) {
+        for (unsigned axis = 0; axis < 2; ++axis) {
             InputBinding binding;
             binding.output = {RETRO_DEVICE_ANALOG, axis / 2, axis % 2};
             binding.label = input_output_name(binding.output);
-            binding.positive = {{InputKind::Axis, "@xinput", int(axis), 0},
-                                {InputKind::Axis, "@dinput", axis < 2 ? int(axis) : int(axis + 1), 0}};
             player.bindings.push_back(std::move(binding));
         }
     }
@@ -169,9 +146,17 @@ void validate(const InputBinding &b) {
 bool load_input_profile(const fs::path &path, InputProfile &profile, std::string &error) {
     try {
         auto bytes = read_file(path);
-        if (bytes.size() > 4 * 1024 * 1024)
+        return parse_input_profile(std::string(bytes.begin(), bytes.end()), profile, error);
+    } catch (const std::exception &failure) {
+        error = failure.what();
+        return false;
+    }
+}
+bool parse_input_profile(const std::string &text, InputProfile &profile, std::string &error) {
+    try {
+        if (text.size() > 4 * 1024 * 1024)
             throw std::runtime_error("Input profile is too large");
-        std::istringstream file(std::string(bytes.begin(), bytes.end()));
+        std::istringstream file(text);
         std::string header;
         file >> header;
         auto next = default_input_profile();
@@ -187,7 +172,7 @@ bool load_input_profile(const fs::path &path, InputProfile &profile, std::string
                 if (!(file >> button) || button < -1 || button > 127)
                     throw std::runtime_error("Invalid legacy controller mapping");
             for (auto &player : next.players)
-                for (unsigned i = 0; i < 16; ++i) {
+                for (unsigned i = 0; i < 14; ++i) {
                     auto &sources = player.bindings[i].positive;
                     sources.erase(std::remove_if(sources.begin(), sources.end(),
                                                  [](const InputSource &s) {
@@ -205,12 +190,17 @@ bool load_input_profile(const fs::path &path, InputProfile &profile, std::string
             unsigned version;
             if (!(file >> version) || version != 2)
                 throw std::runtime_error("Unsupported input profile version");
+            next.game_players = (1u << input_players) - 1;
             next.assignments.clear();
             for (auto &player : next.players)
                 player.bindings.clear();
             std::string tag;
             while (file >> tag) {
-                if (tag == "NAME") {
+                if (tag == "GAMEPLAYERS") {
+                    if (!(file >> next.game_players) || next.game_players > 65535)
+                        throw std::runtime_error("Invalid game player mask");
+                    next.game_players &= (1u << input_players) - 1;
+                } else if (tag == "NAME") {
                     std::string device, name;
                     if (!(file >> std::quoted(device) >> std::quoted(name)) || device.size() > 1024 ||
                         name.size() > 1024)
@@ -221,23 +211,26 @@ bool load_input_profile(const fs::path &path, InputProfile &profile, std::string
                     uint32_t mask;
                     if (!(file >> std::quoted(device) >> mask) || device.size() > 1024 || mask > 65535)
                         throw std::runtime_error("Invalid controller assignment");
-                    next.assignments[device] = mask;
+                    next.assignments[device] = mask & ((1u << input_players) - 1);
                 } else if (tag == "PORT") {
                     unsigned port, device;
-                    if (!(file >> port >> device) || port >= input_players)
+                    if (!(file >> port >> device) || port >= 16)
                         throw std::runtime_error("Invalid player");
-                    next.players[port].controller = device;
+                    if (port < input_players)
+                        next.players[port].controller = device;
                 } else if (tag == "BIND") {
                     unsigned port, mode;
                     InputBinding b;
                     if (!(file >> port >> b.output.device >> b.output.index >> b.output.id >> mode >>
                           b.sensitivity >> b.deadzone >> b.mouse_sensitivity >> b.strength >> b.threshold >>
                           b.invert >> b.custom) ||
-                        port >= input_players || b.output.index > 255 || b.output.id > 65535 ||
+                        port >= 16 || b.output.index > 255 || b.output.id > 65535 ||
                         b.output.device > RETRO_DEVICE_POINTER)
                         throw std::runtime_error("Invalid input binding");
                     b.mode = AnalogMode(mode);
                     validate(b);
+                    if (port >= input_players)
+                        continue;
                     auto &entry = find_binding(next, port, b.output);
                     b.label = entry.label;
                     entry = b;
@@ -247,7 +240,7 @@ bool load_input_profile(const fs::path &path, InputProfile &profile, std::string
                     InputSource source;
                     if (!(file >> port >> output.device >> output.index >> output.id >> side >> kind >>
                           std::quoted(source.device) >> source.code >> source.direction) ||
-                        port >= input_players || side > 1 || kind > unsigned(InputKind::Hat) ||
+                        port >= 16 || side > 1 || kind > unsigned(InputKind::Hat) ||
                         source.device.size() > 1024 || source.code < 0 || source.code > 65535 ||
                         source.direction < -1 || source.direction > 3)
                         throw std::runtime_error("Invalid input source");
@@ -260,6 +253,8 @@ bool load_input_profile(const fs::path &path, InputProfile &profile, std::string
                                                                         : 1;
                     if (source.code > limit || (source.kind != InputKind::Hat && source.direction > 1))
                         throw std::runtime_error("Invalid input source control");
+                    if (port >= input_players)
+                        continue;
                     auto &b = find_binding(next, port, output);
                     auto &sources = side ? b.negative : b.positive;
                     if (sources.size() >= 32)
@@ -271,6 +266,9 @@ bool load_input_profile(const fs::path &path, InputProfile &profile, std::string
             if (!file.eof())
                 throw std::runtime_error("Truncated input profile");
         }
+        for (auto &player : next.players)
+            player.bindings.erase(std::remove_if(player.bindings.begin(), player.bindings.end(),
+                [](const InputBinding &binding) { return !n64_input_output(binding.output); }), player.bindings.end());
         profile = std::move(next);
         error.clear();
         return true;
@@ -282,7 +280,7 @@ bool load_input_profile(const fs::path &path, InputProfile &profile, std::string
 bool save_input_profile(const fs::path &path, const InputProfile &profile, std::string &error) {
     try {
         std::ostringstream out;
-        out << "WINWEG_INPUT 2\n";
+        out << "WINWEG_INPUT 2\nGAMEPLAYERS " << profile.game_players << '\n';
         for (const auto &name : profile.device_names)
             out << "NAME " << std::quoted(name.first) << ' ' << std::quoted(name.second) << '\n';
         for (const auto &assignment : profile.assignments)

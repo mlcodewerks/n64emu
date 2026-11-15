@@ -1,196 +1,157 @@
 #include "input_window.h"
 #include "imgui.h"
+#include "imgui_internal.h"
+#include <cstdio>
 
 namespace {
-void source_editor(Input &input, unsigned player, InputOutput output, bool negative) {
-    auto &binding = input.binding(player, output);
-    auto &sources = negative ? binding.negative : binding.positive;
-    ImGui::PushID(negative ? 1 : 0);
-    const bool capturing = input.capturing(player, output, negative);
-    auto description = input.binding_name(sources);
-    if (ImGui::Button(capturing ? "Press an input (Escape cancels)" : description.c_str(), ImVec2(-1, 0)))
-        input.begin_capture(player, output, negative, false);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", description.c_str());
-    if (ImGui::SmallButton("Add input"))
-        input.begin_capture(player, output, negative, true);
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Clear")) {
-        input.cancel_capture();
-        sources.clear();
-        binding.custom = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Choose key"))
-        ImGui::OpenPopup("Keyboard keys");
-    if (ImGui::BeginPopup("Keyboard keys")) {
-        ImGui::TextUnformatted("Add a keyboard input");
-        ImGui::BeginChild("Key list", ImVec2(230, 260));
-        for (unsigned key = 1; key < 256; ++key) {
-            auto name = input_key_name(key);
-            if (name == "Unknown key")
-                continue;
-            ImGui::PushID(int(key));
-            if (ImGui::Selectable(name.c_str())) {
-                input.cancel_capture();
-                sources.push_back({InputKind::Key, "keyboard", int(key), 0});
-                binding.custom = true;
-                input.assign("keyboard", player, true);
-                ImGui::CloseCurrentPopup();
+std::string description(Input &input, const std::vector<InputSource> &sources) {
+    return sources.empty() ? "None" : input.binding_name(sources);
+}
+
+void draw_binding(Input &input, unsigned player, unsigned index, InputOutput output) {
+    auto &bind = input.binding(player, output);
+    if (bind.label.empty())
+        return;
+    ImGui::TextWrapped("%s", bind.label.c_str());
+    ImGui::PushID(int(player));
+    ImGui::PushID(int(index));
+    const bool stick_axis = output.device == RETRO_DEVICE_ANALOG && output.index < 2 && output.id < 2;
+    if (stick_axis) {
+        int source = int(bind.mode);
+        if (ImGui::Combo("Source", &source, "Controller / key / mouse button\0Mouse\0Digital directions\0")) {
+            input.cancel_capture();
+            bind.mode = AnalogMode(source);
+            bind.value = 0;
+            bind.custom = true;
+            if (bind.mode == AnalogMode::Mouse)
+                input.assign("mouse", player, true);
+        }
+        if (output.id == RETRO_DEVICE_ID_ANALOG_Y)
+            bind.custom |= ImGui::Checkbox("Invert Y axis", &bind.invert);
+        if (bind.mode == AnalogMode::Mouse) {
+            bind.custom |= ImGui::SliderFloat("Mouse sensitivity", &bind.mouse_sensitivity, 1.f, 32767.f,
+                                             "%.0f", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+            ImGui::TextWrapped("Mouse %s motion drives this axis and returns to center when stopped. Sensitivity is analog units per mouse pixel.", output.id == 0 ? "X" : "Y");
+            ImGui::PopID();
+            ImGui::PopID();
+            return;
+        }
+        if (bind.mode == AnalogMode::Digital) {
+            bind.custom |= ImGui::SliderFloat("Emulated strength", &bind.strength, 0.f, 100.f,
+                                             "%.0f%%", ImGuiSliderFlags_AlwaysClamp);
+            for (int direction = 0; direction < 2; ++direction) {
+                ImGui::PushID(direction);
+                const bool negative = direction == 0;
+                auto &sources = negative ? bind.negative : bind.positive;
+                ImGui::TextUnformatted(output.id == 0 ? (negative ? "Left" : "Right") : (negative ? "Up" : "Down"));
+                ImGui::SameLine();
+                const auto name = description(input, sources);
+                if (ImGui::Button(input.capturing(player, output, negative)
+                                      ? "Press a key, mouse button or controller input..." : name.c_str()))
+                    input.begin_capture(player, output, negative);
+                ImGui::SameLine();
+                if (ImGui::Button("Clear")) {
+                    sources.clear();
+                    bind.custom = true;
+                    input.cancel_capture();
+                }
+                ImGui::PopID();
             }
             ImGui::PopID();
+            ImGui::PopID();
+            return;
         }
-        ImGui::EndChild();
-        ImGui::EndPopup();
     }
+
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float field_width = available * 0.20f;
+    ImGui::SameLine(available - field_width);
+    ImGui::SetNextItemWidth(field_width);
+    char buffer[128]{};
+    const auto name = description(input, bind.positive);
+    std::snprintf(buffer, sizeof(buffer), "%s", name.c_str());
+    ImGui::InputText("##joykey", buffer, sizeof(buffer));
+    if (ImGui::IsItemActivated() || ImGui::IsItemClicked()) {
+        ImGui::SetWindowFocus();
+        input.begin_capture(player, output);
+    }
+    if (input_axis(output)) {
+        bind.custom |= ImGui::SliderFloat("Analog sensitivity", &bind.sensitivity, 0.f, 100.f,
+                                         "%.0f%%", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::TextWrapped("100%% uses the original input strength. Lower sensitivity reduces the input strength.");
+    }
+    ImGui::PopID();
     ImGui::PopID();
 }
 } // namespace
-void draw_input_settings(Input &input) {
-    static int player = 0;
-    player = std::min(player, int(input.player_count() - 1));
-    auto player_name = "Player " + std::to_string(player + 1);
-    if (ImGui::BeginCombo("Player", player_name.c_str())) {
-        for (unsigned i = 0; i < input.player_count(); ++i)
-            if (ImGui::Selectable(("Player " + std::to_string(i + 1)).c_str(), i == unsigned(player))) {
-                input.cancel_capture();
-                player = int(i);
-            }
-        ImGui::EndCombo();
+
+void draw_input_settings(Input &input, bool &open) {
+    if (!open) {
+        input.cancel_capture();
+        return;
     }
-    const char *scope_names[] = {"Global defaults", "This core", "This game"};
-    if (ImGui::BeginCombo("Profile", scope_names[unsigned(input.scope())])) {
-        for (unsigned i = 0; i < 3; ++i) {
-            bool available = i == 0 || (i == 1 ? input.has_core() : input.has_game());
-            if (ImGui::Selectable(scope_names[i], unsigned(input.scope()) == i,
-                                  available ? 0 : ImGuiSelectableFlags_Disabled))
-                input.select_scope(InputScope(i));
+    ImGui::OpenPopup("Input Settings");
+    const auto &io = ImGui::GetIO();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(io.DisplaySize.x * 0.7f, io.DisplaySize.y * 0.3f),
+                                        ImVec2(io.DisplaySize.x * 0.7f, io.DisplaySize.y * 0.5f));
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Input Settings", &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        auto *state = ImGui::GetStateStorage();
+        const auto capture_key = ImGui::GetID("Capture active");
+        if (state->GetBool(capture_key) && !input.capturing()) {
+            ImGui::ClearActiveID();
+            ImGui::SetWindowFocus(nullptr);
         }
-        ImGui::EndCombo();
-    }
-    auto &selected = input.profile.players[player].controller;
-    const auto &choices = input.controller_choices(player);
-    std::string selected_name = "Disconnected";
-    for (const auto &choice : choices)
-        if (choice.id == selected)
-            selected_name = choice.name;
-    if (ImGui::BeginCombo("Emulated controller", selected_name.c_str())) {
-        for (const auto &choice : choices)
-            if (ImGui::Selectable(choice.name.c_str(), choice.id == selected))
-                input.set_controller(player, choice.id);
-        ImGui::EndCombo();
-    }
-    if (ImGui::CollapsingHeader("Devices assigned to this player", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextWrapped("Select any number of controllers. Their buttons combine; the strongest stick "
-                           "movement wins. A device may also feed more than one player.");
-        for (const auto &device : input.device_list()) {
-            ImGui::PushID(device.id.c_str());
-            bool enabled = input.assigned(device.id, player);
-            auto label = device.name + (device.connected ? "" : " (disconnected)");
-            if (ImGui::Checkbox(label.c_str(), &enabled))
-                input.assign(device.id, player, enabled);
-            ImGui::PopID();
-        }
-        if (ImGui::Button("Rescan controllers"))
-            input.rescan();
-    }
-    ImGui::TextUnformatted("Click a binding to replace it, or Add input to keep alternate controls.");
-    // Copy keys: editing stick modes can add backing bindings to a sparse profile.
-    const auto outputs = input.visible_bindings(player);
-    if (outputs.empty())
-        ImGui::TextWrapped("No input bindings are exposed for this player by the core.");
-    const float table_height =
-        std::max(120.0f, ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing() * 4.5f);
-    if (ImGui::BeginTable("Input bindings", 2,
-                          ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY,
-                          ImVec2(0, table_height))) {
-        ImGui::TableSetupColumn("Control", ImGuiTableColumnFlags_WidthStretch, 0.35f);
-        ImGui::TableSetupColumn("Input", ImGuiTableColumnFlags_WidthStretch, 0.65f);
-        ImGui::TableHeadersRow();
-        for (const auto &output : outputs) {
-            auto &binding = input.binding(player, output);
-            ImGui::PushID(int(output.device));
-            ImGui::PushID(int(output.index));
-            ImGui::PushID(int(output.id));
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextWrapped("%s", binding.label.c_str());
-            ImGui::TableSetColumnIndex(1);
-            if (input_axis(output)) {
-                int mode = int(binding.mode);
-                if (ImGui::Combo("Source", &mode,
-                                 "Controller / key / mouse button\0Mouse motion\0Digital directions\0")) {
-                    input.cancel_capture();
-                    binding.mode = AnalogMode(mode);
-                    binding.custom = true;
-                    if (binding.mode == AnalogMode::Digital) {
-                        const auto negative = input
-                                                  .binding(player, {RETRO_DEVICE_JOYPAD, 0,
-                                                                    input_vertical_axis(output) ? 4u : 6u})
-                                                  .positive;
-                        const auto positive = input
-                                                  .binding(player, {RETRO_DEVICE_JOYPAD, 0,
-                                                                    input_vertical_axis(output) ? 5u : 7u})
-                                                  .positive;
-                        auto &updated = input.binding(player, output);
-                        updated.negative = negative;
-                        updated.positive = positive;
-                    }
+        if (ImGui::BeginTabBar("MyTabBar", ImGuiTabBarFlags_None)) {
+            for (unsigned player = 0; player < input.player_count(); ++player) {
+                const auto tab = "Player " + std::to_string(player + 1);
+                if (ImGui::BeginTabItem(tab.c_str())) {
+                    if (ImGui::IsItemActivated())
+                        input.cancel_capture();
+                    ImGui::PushID(int(player));
+                    int scope = input.uses_game_input(player) ? 1 : 0;
+                    ImGui::BeginDisabled(!input.has_game());
+                    if (ImGui::Combo("Bindings", &scope, "Core\0This game\0") &&
+                        !input.set_game_input(player, scope == 1))
+                        input.status = "Could not save input settings. " + input.status;
+                    ImGui::EndDisabled();
+                    if (input.uses_game_input(player))
+                        ImGui::TextWrapped("These bindings apply only to this game and player port.");
+                    else
+                        ImGui::TextWrapped("These core bindings are shared by games using this controller layout. Selecting \"This game\" starts with a copy of them.");
+                    if (!input.has_game())
+                        ImGui::TextDisabled("Load a game to use game bindings.");
+                    ImGui::PopID();
+                    const auto selected = input.profile.players[player].controller;
+                    for (const auto &choice : input.controller_choices(player))
+                        if (choice.id == selected) {
+                            ImGui::Text("Controller: %s", choice.name.c_str());
+                            break;
+                        }
+                    const auto outputs = input.visible_bindings(player);
+                    for (unsigned index = 0; index < outputs.size(); ++index)
+                        draw_binding(input, player, index, outputs[index]);
+                    ImGui::EndTabItem();
                 }
-                auto &axis = input.binding(player, output);
-                if (axis.mode == AnalogMode::Mouse) {
-                    ImGui::SliderFloat("Mouse sensitivity", &axis.mouse_sensitivity, 1, 32767,
-                                       "%.0f units/pixel",
-                                       ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-                    ImGui::TextWrapped("Mouse motion returns to center when stopped.");
-                } else {
-                    if (axis.mode == AnalogMode::Digital) {
-                        ImGui::TextUnformatted(input_vertical_axis(output) ? "Up / negative"
-                                                                           : "Left / negative");
-                        source_editor(input, player, output, true);
-                        ImGui::TextUnformatted(input_vertical_axis(output) ? "Down / positive"
-                                                                           : "Right / positive");
-                        ImGui::SliderFloat("Emulated strength", &axis.strength, 0, 100, "%.0f%%",
-                                           ImGuiSliderFlags_AlwaysClamp);
-                    } else {
-                        ImGui::SliderFloat("Sensitivity", &axis.sensitivity, 0, 400, "%.0f%%",
-                                           ImGuiSliderFlags_AlwaysClamp);
-                        ImGui::SliderFloat("Deadzone", &axis.deadzone, 0, 95, "%.0f%%",
-                                           ImGuiSliderFlags_AlwaysClamp);
-                    }
-                    source_editor(input, player, output, false);
-                }
-                ImGui::Checkbox(input_vertical_axis(output) ? "Invert Y axis" : "Invert X axis",
-                                &input.binding(player, output).invert);
-            } else {
-                source_editor(input, player, output, false);
-                auto &updated = input.binding(player, output);
-                if (std::any_of(updated.positive.begin(), updated.positive.end(),
-                                [](const InputSource &s) { return s.kind == InputKind::Axis; }))
-                    ImGui::SliderFloat("Axis activation", &updated.threshold, 1, 100, "%.0f%%",
-                                       ImGuiSliderFlags_AlwaysClamp);
             }
-            ImGui::PopID();
-            ImGui::PopID();
-            ImGui::PopID();
+            ImGui::EndTabBar();
         }
-        ImGui::EndTable();
-    }
-    if (input.capturing()) {
-        if (ImGui::Button("Cancel capture"))
+        if (ImGui::Button("OK")) {
             input.cancel_capture();
-        ImGui::SameLine();
+            std::string error;
+            if (input.save_player_configuration(error)) {
+                input.status.clear();
+                open = false;
+                ImGui::CloseCurrentPopup();
+            } else {
+                input.status = "Could not save input settings. Check that the input configuration is writable, then press OK to retry. " + error;
+            }
+        }
+        if (!input.status.empty() && input.status.find("Could not save input settings.") == 0)
+            ImGui::TextWrapped("%s", input.status.c_str());
+        state->SetBool(capture_key, input.capturing());
+        ImGui::EndPopup();
     }
-    if (ImGui::Button("Save input profile")) {
-        std::string error;
-        if (input.save_configuration(error))
-            input.status = "Input profile saved.";
-        else
-            input.status = error;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Reset this player's bindings"))
-        input.reset_player(player);
-    if (!input.status.empty())
-        ImGui::TextWrapped("%s", input.status.c_str());
+    if (!open)
+        input.cancel_capture();
 }

@@ -1,0 +1,2 @@
+option('strip_release', type: 'boolean', value: true,
+  description: 'Strip the built n64emu executable in release and minsize builds')

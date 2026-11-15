@@ -1,4 +1,5 @@
 #include "log_window.h"
+#include "ui_window_layout.h"
 
 ImU32 log_message_color(const LogEntry &entry) {
     if (entry.source == LogSource::Frontend)
@@ -16,7 +17,7 @@ ImU32 log_message_color(const LogEntry &entry) {
 void draw_log_window(bool &open) {
     if (!open)
         return;
-    ImGui::SetNextWindowSize(ImVec2(760, 500), ImGuiCond_FirstUseEver);
+    ui_prepare_window("Log", ImVec2(0.8f, 0.7f));
     if (ImGui::Begin("Log", &open)) {
         static bool auto_scroll = true;
         if (ImGui::Button("Clear"))

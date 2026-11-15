@@ -28,7 +28,7 @@ class Input {
     InputBinding &binding(unsigned player, InputOutput output);
     std::vector<InputOutput> visible_bindings(unsigned player) const;
     const std::vector<InputDeviceChoice> &controller_choices(unsigned player) const;
-    unsigned player_count() const { return has_core() ? ports : input_players; }
+    unsigned player_count() const { return std::min(has_core() ? ports : input_players, input_players); }
     void set_controller_info(const retro_controller_info *info);
     void set_controller(unsigned player, unsigned device);
     void set_descriptors(const retro_input_descriptor *descriptors);
@@ -37,6 +37,9 @@ class Input {
     void load_configuration(const fs::path &directory);
     void select_scope(InputScope scope);
     bool save_configuration(std::string &error);
+    bool save_player_configuration(std::string &error);
+    bool uses_game_input(unsigned player) const;
+    bool set_game_input(unsigned player, bool enabled);
     InputScope scope() const { return current_scope; }
     bool has_core() const { return !core_path.empty(); }
     bool has_game() const { return !game_path.empty(); }
@@ -85,6 +88,8 @@ class Input {
     std::vector<Descriptor> labels;
     fs::path config_directory, core_path, game_path;
     InputScope current_scope = InputScope::Global;
+    bool per_player_scopes = false;
+    uint32_t game_player_mask = 0;
     unsigned ports = 4;
     retro_keyboard_event_t keyboard_callback = nullptr;
     struct Capture {

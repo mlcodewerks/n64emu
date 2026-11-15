@@ -1,3 +1,4 @@
+#include "ui_window_layout.h"
 #include "rom_browser.h"
 #include "IconsForkAwesome.h"
 #include "imgui_internal.h"
@@ -252,6 +253,7 @@ bool RomBrowser::Display(const std::string &wanted, ImGuiWindowFlags flags,
   }
   bool visible = true;
   const auto window_name = title + "##" + key;
+  ui_prepare_window(window_name.c_str(), ImVec2(0.8f, 0.85f));
   if (ImGui::Begin(window_name.c_str(), &visible,
                    flags | ImGuiWindowFlags_NoCollapse)) {
     ImGui::BeginDisabled(overwrite_pending);

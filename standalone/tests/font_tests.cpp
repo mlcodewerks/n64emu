@@ -1,4 +1,5 @@
 #include "ui_fonts.h"
+#include "imgui_theme.h"
 #include "imgui.h"
 #include <cstdio>
 #include <initializer_list>
@@ -8,6 +9,7 @@ int main() {
     try {
         for (float dpi : {1.0f, 1.5f, 2.0f}) {
             ImGui::CreateContext();
+            apply_imgui_theme(dpi);
             init_ui_fonts(dpi);
             auto &io = ImGui::GetIO();
             if (!io.FontDefault || io.Fonts->Fonts.Size != 1 || !io.Fonts->Build())

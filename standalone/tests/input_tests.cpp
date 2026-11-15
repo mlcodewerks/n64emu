@@ -37,7 +37,54 @@ int main(int argc, char **argv) {
         fs::create_directories(root);
         {
             Input input;
+            for (const auto &player : input.profile.players) {
+                require(player.bindings.size() == 16, "Cleared defaults lost configurable controls");
+                for (const auto &binding : player.bindings) {
+                    require(binding.positive.empty() && binding.negative.empty(),
+                            "A new player has preassigned input bindings");
+                    require(n64_input_output(binding.output), "Non-N64 control exposed in defaults");
+                }
+            }
             auto snapshot = neutral();
+            snapshot.keys.fill(true);
+            snapshot.mouse_buttons = 31;
+            for (auto &controller : snapshot.controllers) {
+                controller.buttons.fill(true);
+                controller.axes.fill(32767);
+                controller.hats.fill(4500);
+            }
+            input.apply_snapshot(snapshot);
+            for (unsigned player = 0; player < input_players; ++player) {
+                require(input.state(player, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK) == 0,
+                        "Unbound controls emitted buttons");
+                for (unsigned stick = 0; stick < 2; ++stick)
+                    for (unsigned axis_id = 0; axis_id < 2; ++axis_id)
+                        require(input.state(player, RETRO_DEVICE_ANALOG, stick, axis_id) == 0,
+                                "Unbound controls moved an analog stick");
+            }
+            require(input_output_name(button(0)) == "A Button" &&
+                        input_output_name(button(8)) == "C-Down" &&
+                        input_output_name(axis(0, 1)) == "Control Stick Y",
+                    "Standalone binding labels must use N64 controls");
+            input.binding(0, button(14)).positive = {{InputKind::Key, "keyboard", 'T', 0}};
+            input.binding(0, axis(1, 0)).positive = {{InputKind::Key, "keyboard", 'Y', 0}};
+            const auto visible = input.visible_bindings(0);
+            require(visible.size() == 16 && std::all_of(visible.begin(), visible.end(), n64_input_output),
+                    "Old generic bindings exposed stick clicks or a second stick");
+            input.binding(0, button(0)).positive = {{InputKind::Key, "keyboard", 'K', 0}};
+            input.reset_player(0);
+            require(input.binding(0, button(0)).positive.empty(), "Reset restored preassigned controls");
+        }
+        {
+            Input input;
+            auto snapshot = neutral();
+            for (unsigned player : {0u, 1u}) {
+                input.binding(player, button(0)).positive = {{InputKind::Button, "@xinput", 0, 0}};
+                input.binding(player, button(8)).positive = {{InputKind::Button, "@xinput", 8, 0}};
+            }
+            input.binding(0, button(10)).positive = {{InputKind::Button, "@dinput", 4, 0}};
+            input.binding(0, axis(0, 0)).positive = {{InputKind::Axis, "@xinput", 0, 0},
+                                                   {InputKind::Axis, "@dinput", 0, 0}};
             input.assign("xinput:1", 0, true);
             input.assign("dinput:test-guid", 0, true);
             snapshot.controllers[0].buttons[0] = true;
@@ -188,6 +235,8 @@ int main(int argc, char **argv) {
             Input input;
             auto snapshot = neutral();
             input.assign("dinput:test-guid", 0, true);
+            input.binding(0, button(4)).positive = {{InputKind::Hat, "@dinput", 0, 0}};
+            input.binding(0, button(7)).positive = {{InputKind::Hat, "@dinput", 0, 1}};
             snapshot.controllers[2].hats[0] = 4500;
             input.apply_snapshot(snapshot);
             require(input.state(0, RETRO_DEVICE_JOYPAD, 0, 4) && input.state(0, RETRO_DEVICE_JOYPAD, 0, 7),
@@ -271,7 +320,7 @@ int main(int argc, char **argv) {
         }
         {
             Input input;
-            require(input.visible_bindings(0).size() == 20,
+            require(input.visible_bindings(0).size() == 16,
                     "Global defaults must remain editable without a core");
             input.begin_core(root / L"visibility-core.dll", {});
             require(input.visible_bindings(0).empty(), "Undeclared generic controls were shown for a core");
@@ -287,6 +336,7 @@ int main(int argc, char **argv) {
             input.reset_player(0);
             require(input.visible_bindings(0).size() == 2, "Reset revealed generic bindings");
             auto snapshot = neutral();
+            input.binding(0, button(8)).positive = {{InputKind::Button, "@xinput", 8, 0}};
             snapshot.controllers[0].buttons[8] = true;
             input.apply_snapshot(snapshot);
             require(input.state(0, RETRO_DEVICE_JOYPAD, 0, 8) == 1,
@@ -303,7 +353,7 @@ int main(int argc, char **argv) {
             input.set_descriptors(nullptr);
             require(input.visible_bindings(0).empty(), "Cleared descriptor list retained visible bindings");
             input.end_core();
-            require(input.visible_bindings(0).size() == 20, "Closing a core did not restore global editing");
+            require(input.visible_bindings(0).size() == 16, "Closing a core did not restore global editing");
         }
         {
             std::ofstream legacy(root / L"legacy.cfg");
@@ -350,13 +400,51 @@ int main(int argc, char **argv) {
                 } else if (i == 2)
                     input.set_descriptors(nullptr);
                 ImGui::NewFrame();
-                ImGui::SetNextWindowSize(ImVec2(800, 800));
-                ImGui::Begin("Native input settings");
-                draw_input_settings(input);
-                ImGui::End();
+                bool open = true;
+                draw_input_settings(input, open);
                 ImGui::Render();
             }
             ImGui::DestroyContext();
+        }
+        {
+            Input input;
+            input.load_configuration(root / L"four-player-scopes");
+            input.begin_core(root / L"four-player-core.dll", root / L"game-a.rom");
+            require(input_players == 4 && input.player_count() == 4,
+                    "Standalone input must be limited to four players");
+            input.binding(0, axis(0, 0)).sensitivity = 75;
+            input.binding(1, axis(0, 0)).sensitivity = 80;
+            require(input.set_game_input(0, true), "Could not enable player game bindings");
+            input.binding(0, axis(0, 0)).sensitivity = 35;
+            input.binding(1, axis(0, 0)).sensitivity = 65;
+            std::string error;
+            require(input.save_player_configuration(error), error.c_str());
+            input.end_core();
+            input.begin_core(root / L"four-player-core.dll", root / L"game-a.rom");
+            require(input.uses_game_input(0) && !input.uses_game_input(1) &&
+                        input.binding(0, axis(0, 0)).sensitivity == 35 &&
+                        input.binding(1, axis(0, 0)).sensitivity == 65,
+                    "Per-player game/core bindings did not restore independently");
+            input.end_core();
+            input.begin_core(root / L"four-player-core.dll", root / L"game-b.rom");
+            require(!input.uses_game_input(0) && input.binding(0, axis(0, 0)).sensitivity == 75 &&
+                        input.binding(1, axis(0, 0)).sensitivity == 65,
+                    "One player's game bindings leaked to the core or another game");
+            input.end_core();
+            input.begin_core(root / L"four-player-core.dll", root / L"game-a.rom");
+            require(input.set_game_input(0, false) && input.binding(0, axis(0, 0)).sensitivity == 75,
+                    "Selecting Core did not restore that player's core bindings");
+            input.end_core();
+            input.begin_core(root / L"four-player-core.dll", root / L"game-a.rom");
+            require(!input.uses_game_input(0), "Core selection did not persist for the player");
+            std::ofstream(root / L"sixteen-player.input") <<
+                "WINWEG_INPUT 2\nASSIGN \"keyboard\" 65535\nPORT 15 1\n"
+                "BIND 15 1 0 0 0 100 24 1000 100 50 0 0\n"
+                "SOURCE 15 1 0 0 0 0 \"keyboard\" 65 0\nPORT 0 1\n";
+            InputProfile migrated;
+            require(load_input_profile(root / L"sixteen-player.input", migrated, error) &&
+                        migrated.assignments["keyboard"] == 15,
+                    "Legacy profiles must load while dropping players above four");
         }
         std::puts("PASS native input: shared controllers/players, alternate bindings, digital/mouse sticks, "
                   "analog directions, sensitivity/inversion/deadzone, capture/release, profiles, metadata, "

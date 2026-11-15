@@ -1,3 +1,4 @@
+#include "ui_window_layout.h"
 #include "shader_source_editor.h"
 #include "shader_chain.h"
 #include <algorithm>
@@ -190,10 +191,7 @@ bool shader_source_editor::draw(const std::string &compile_error, const shader_d
     if (!visible)
         return false;
     bool saved = false;
-    if (size.x > 0 && size.y > 0)
-        ImGui::SetNextWindowSize(size, ImGuiCond_Always);
-    else
-        ImGui::SetNextWindowSize(ImVec2(950, 750), ImGuiCond_FirstUseEver);
+    ui_prepare_window("Shader source", ImVec2(0.85f, 0.85f), false, size);
     if (focus)
         ImGui::SetNextWindowFocus();
     // Closing the window hides it; documents remain available from Edit source.

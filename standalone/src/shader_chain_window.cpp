@@ -1,8 +1,10 @@
+#include "config_store.h"
 #include "shader_chain_window.h"
 #include "shader_chain.h"
 #include "shader_library.h"
 #include "shader_source_editor.h"
 #include "imgui.h"
+#include "ui_window_layout.h"
 #include "rom_browser.h"
 #include <algorithm>
 #include <cmath>
@@ -72,7 +74,7 @@ void main() {
         {
             if (!visible)
                 return;
-            ImGui::SetNextWindowSize(ImVec2(950, 750), ImGuiCond_FirstUseEver);
+            ui_prepare_window("New shader preset", ImVec2(0.85f, 0.85f));
             if (focus)
                 ImGui::SetNextWindowFocus();
             if (ImGui::Begin("New shader preset", &visible))
@@ -237,7 +239,7 @@ void draw_shader_chain_window()
         RomBrowser::Instance()->OpenDialog("ShaderPicker", title, filters, config);
     };
     bool dirty = false, source_saved = false;
-    ImGui::SetNextWindowSize(ImVec2(760, 720), ImGuiCond_FirstUseEver);
+    ui_prepare_window("Shader Chains", ImVec2(0.8f, 0.85f));
     bool expanded = ImGui::Begin("Shader Chains", &shader_window_visible);
     if (expanded)
     {
@@ -270,7 +272,7 @@ void draw_shader_chain_window()
         ImGui::SameLine();
         if (ImGui::Button("Save default"))
         {
-            if (shader_save(control.directory / "winweg.shaders", control.settings, status))
+            if (config_shader_save(control.directory, control.settings, status))
                 status = "Default shader stack saved.";
         }
         if (ImGui::Button("Reload shaders"))

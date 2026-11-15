@@ -1,5 +1,7 @@
+#include "config_store.h"
 #include "dsp_chain_window.h"
 #include "imgui.h"
+#include "ui_window_layout.h"
 #include "rom_browser.h"
 #include <algorithm>
 #include <cstring>
@@ -148,7 +150,7 @@ void dsp_chain_window::draw_editor(editor &edit, dsp_chain &chain,
         if (chain.configure(edit.draft, edit.status, true))
         {
             edit.dirty = false;
-            if (dsp_save(path, edit.draft, edit.status))
+            if (config_dsp_save(path.parent_path(), edit.draft, edit.status))
                 edit.status = "Chain applied and saved.";
             else
                 edit.status = "Chain applied, but saving failed: " + edit.status;
@@ -342,7 +344,7 @@ void dsp_chain_window::draw(dsp_chain &core, const std::filesystem::path &direct
 {
     if (!visible)
         return;
-    ImGui::SetNextWindowSize(ImVec2(780, 680), ImGuiCond_FirstUseEver);
+    ui_prepare_window("Audio DSP", ImVec2(0.8f, 0.85f));
     if (ImGui::Begin("Audio DSP", &visible))
     {
         if (ImGui::BeginTabBar("Audio source"))
