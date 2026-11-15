@@ -22,7 +22,9 @@ bool breadcrumb_link(const char *label) {
   auto *draw = ImGui::GetWindowDrawList();
   const ImVec2 pos(window->DC.CursorPos.x,
                    window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
-  const auto size = ImGui::CalcTextSize(label);
+  const auto text_size = ImGui::CalcTextSize(label);
+  const ImVec2 size(std::min(text_size.x, ImGui::GetContentRegionAvail().x),
+                    text_size.y);
   const ImRect bounds(pos, ImVec2(pos.x + size.x, pos.y + size.y));
   const auto id = ImGui::GetID(label);
   ImGui::ItemSize(bounds, 0.0f);
@@ -33,7 +35,12 @@ bool breadcrumb_link(const char *label) {
   const bool focused = ImGui::IsItemFocused();
   const auto color = ImGui::ColorConvertFloat4ToU32(
       style.Colors[hovered || focused ? ImGuiCol_Text : ImGuiCol_TextDisabled]);
-  draw->AddText(bounds.Min, color, label);
+  ImGui::PushStyleColor(ImGuiCol_Text, color);
+  ImGui::RenderTextEllipsis(draw, bounds.Min, bounds.Max, bounds.Max.x, label,
+                            nullptr, &text_size);
+  ImGui::PopStyleColor();
+  if (hovered && text_size.x > size.x)
+    ImGui::SetTooltip("%s", label);
   if (focused)
     draw->AddRect(bounds.Min, bounds.Max, color);
   else
@@ -257,9 +264,30 @@ bool RomBrowser::Display(const std::string &wanted, ImGuiWindowFlags flags,
   if (ImGui::Begin(window_name.c_str(), &visible,
                    flags | ImGuiWindowFlags_NoCollapse)) {
     ImGui::BeginDisabled(overwrite_pending);
+    const auto &style = ImGui::GetStyle();
+    const float toolbar_width = ImGui::GetContentRegionAvail().x;
+    const float toolbar_right = ImGui::GetCursorScreenPos().x + toolbar_width;
+    bool toolbar_started = false;
+    // Keep each control on this row only when its full width fits.
+    const auto toolbar_item = [&](float width) {
+      if (toolbar_started && ImGui::GetItemRectMax().x + style.ItemSpacing.x +
+                                     width <= toolbar_right)
+        ImGui::SameLine();
+      toolbar_started = true;
+    };
+    const auto toolbar_button = [&](const char *label) {
+      const float width = std::min(toolbar_width,
+          ImGui::CalcTextSize(label).x + style.FramePadding.x * 2);
+      toolbar_item(width);
+      return ImGui::Button(label, ImVec2(width, 0));
+    };
 #ifdef _WIN32
     const std::string drive = directory.root_name().u8string();
-    ImGui::SetNextItemWidth(70.f);
+    const float drive_width = std::min(toolbar_width, std::max(70.f,
+        ImGui::CalcTextSize(drive.c_str()).x + style.FramePadding.x * 2 +
+            ImGui::GetFrameHeight()));
+    toolbar_item(drive_width);
+    ImGui::SetNextItemWidth(drive_width);
     if (ImGui::BeginCombo("##drive", drive.c_str())) {
       DWORD drives = GetLogicalDrives();
       for (int i = 0; i < 26; ++i)
@@ -270,12 +298,10 @@ bool RomBrowser::Display(const std::string &wanted, ImGuiWindowFlags flags,
         }
       ImGui::EndCombo();
     }
-    ImGui::SameLine();
 #endif
-    if (ImGui::Button(ICON_FK_LEVEL_UP " Up"))
+    if (toolbar_button(ICON_FK_LEVEL_UP " Up"))
       change_directory(directory.parent_path());
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh"))
+    if (toolbar_button("Refresh"))
       refresh();
     std::filesystem::path breadcrumb;
     int part_id = 0;
@@ -283,19 +309,26 @@ bool RomBrowser::Display(const std::string &wanted, ImGuiWindowFlags flags,
       breadcrumb /= part;
       if (directory.has_root_name() && part == directory.root_directory())
         continue;
-      ImGui::SameLine();
+      const auto label = part.u8string();
+      const float separator_width = part_id > 0
+          ? ImGui::CalcTextSize("/").x + style.ItemSpacing.x : 0.f;
+      toolbar_item(std::min(toolbar_width,
+          separator_width + ImGui::CalcTextSize(label.c_str()).x));
+      ImGui::BeginGroup();
       if (part_id > 0) {
         ImGui::TextUnformatted("/");
         ImGui::SameLine();
       }
       ImGui::PushID(part_id++);
-      if (breadcrumb_link(part.u8string().c_str())) {
+      if (breadcrumb_link(label.c_str())) {
         change_directory(part == directory.root_name() ? directory.root_path()
                                                        : breadcrumb);
         ImGui::PopID();
+        ImGui::EndGroup();
         break;
       }
       ImGui::PopID();
+      ImGui::EndGroup();
     }
     ImGui::SetNextItemWidth(-1);
     if (ImGui::InputText("##directory", path_text, sizeof(path_text),
@@ -306,14 +339,9 @@ bool RomBrowser::Display(const std::string &wanted, ImGuiWindowFlags flags,
     if (refresh_pending || future.valid())
       ImGui::TextDisabled("Loading directory...");
     float footer = ImGui::GetFrameHeightWithSpacing() * 2.5f;
-    if (ImGui::BeginChild("Files", ImVec2(0, -footer), 0,
-                          ImGuiWindowFlags_HorizontalScrollbar)) {
-      const float cell_h = std::max(1.f, ImGui::GetTextLineHeightWithSpacing());
-      const int rows =
-          std::max(1, int(ImGui::GetContentRegionAvail().y / cell_h));
-      const int columns = std::max(1, (int(records.size()) + rows - 1) / rows);
-      ImGui::Columns(columns, nullptr, false);
-      int row = 0;
+    // A single list uses the child's automatic vertical overflow scrollbar.
+    if (ImGui::BeginChild("Files", ImVec2(0, -footer))) {
+      const float list_width = ImGui::GetContentRegionAvail().x;
       std::filesystem::path navigate;
       for (const auto &entry : records) {
         bool clicked =
@@ -322,7 +350,7 @@ bool RomBrowser::Display(const std::string &wanted, ImGuiWindowFlags flags,
                                   ImGuiSelectableFlags_NoAutoClosePopups);
         if (ImGui::IsItemHovered() &&
             ImGui::CalcTextSize(entry.showName.c_str()).x >
-                ImGui::GetColumnWidth())
+                list_width)
           ImGui::SetTooltip("%s", entry.showName.c_str());
         if (clicked) {
           selected = entry.name;
@@ -337,12 +365,7 @@ bool RomBrowser::Display(const std::string &wanted, ImGuiWindowFlags flags,
               submit();
           }
         }
-        if (++row >= rows) {
-          row = 0;
-          ImGui::NextColumn();
-        }
       }
-      ImGui::Columns(1);
       if (!navigate.empty())
         change_directory(navigate);
     }
