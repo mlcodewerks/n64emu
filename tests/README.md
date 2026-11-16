@@ -32,6 +32,9 @@ The generated AI fixture extracts the production AI implementation on each
 source change; it does not maintain a second FIFO implementation.
 The suite also verifies that the standalone RDP tests use the production timing
 model, including its BSD 3-Clause license annotation.
+Mario Kart's optional existing-save/reopen integration regression is documented
+in [the saved boot check](../benchmarks/MARIO_KART_SAVE_BOOT.md); it requires a
+locally supplied USA ROM and checks that timing Off reaches the demo race.
 
 For just the new device/CPU checks:
 

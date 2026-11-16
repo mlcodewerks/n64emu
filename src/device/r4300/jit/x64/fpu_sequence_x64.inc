@@ -7,7 +7,7 @@ static unsigned emit_fpu_sequence(void* block,const uint32_t* ops,unsigned start
     unsigned end=start+1;
     bool resident_preparation=false;
 #if (defined(__x86_64__) || defined(_M_X64)) && !defined(N64EMUJIT_CROSS_ASSEMBLE)
-    resident_preparation=config->cache_timing==1 && !r4300_issue_reservation(config->compat_issue_clock);
+    resident_preparation=config->cache_timing==1 && !r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
 #endif
     if(native_fpu_transfer(r4300_get_idec(ops[start])->opcode) &&
         (!resident_preparation || config->fpu_prepare!=r4300_ops_jit_fpu_prepare))return start;

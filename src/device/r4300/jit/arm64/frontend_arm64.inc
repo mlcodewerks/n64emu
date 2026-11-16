@@ -170,10 +170,10 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                         pipeline_live = 1;
                         exit->resume = out; exit->resume_registers = regcache;
                     } else {
-                        pending_cycles+=r4300_base_cycles(ops[j],0)+r4300_issue_reservation(config->compat_issue_clock);
+                        pending_cycles+=r4300_base_cycles(ops[j],0)+r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
                         ++pending_fetches;
                         emit_fetch_native(config, j, i, r4300_base_cycles(ops[j], 0), check_line,true);
-                        unsigned reservation = r4300_issue_reservation(config->compat_issue_clock);
+                        unsigned reservation = r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
                         if (config->cache_timing && !reservation && pipeline_live) {
                             emit_ldi_native(ops[j], 0, j == i ? 0 : ops[j - 1], j != i);
                             emit_pipeline_clear();

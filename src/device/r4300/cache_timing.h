@@ -16,13 +16,14 @@ static osal_force_inline unsigned r4300_icache_fill_cycles(const struct r4300_co
     return dp && dp->timing.deadline > r->cp0.count_clock
         ? R4300_ICACHE_FILL_BUSY_CYCLES : R4300_ICACHE_FILL_IDLE_CYCLES;
 }
-/* Shared compatibility hit estimate, including the existing cache handoff. */
-enum { R4300_DCACHE_HIT_CYCLES = 1 };
+/* A resident D-cache access shares the instruction's issue clock. */
+enum { R4300_DCACHE_HIT_CYCLES = 0 };
 static osal_force_inline unsigned r4300_dcache_hit_cycles(unsigned compatibility)
 {
-    /* A native D-cache hit uses the instruction's issue clock; dependent
-     * consumers pay their separate LDI interlock. Nemu checks both cases. */
-    return compatibility ? R4300_DCACHE_HIT_CYCLES : 0;
+    /* Both cached profiles model dependent consumers with the LDI interlock;
+     * charging a second hit clock would count the access twice. */
+    (void)compatibility;
+    return R4300_DCACHE_HIT_CYCLES;
 }
 #if defined(__GNUC__) || defined(__clang__)
 #define R4300_CACHE_NOINLINE __attribute__((noinline))
@@ -252,7 +253,7 @@ static osal_force_inline int r4300_data_access_cycles_explicit(struct r4300_core
     key = (pa & 0x1ffff000) | 1;
     if ((*tag & ~2u) != key) {
         r4300_dcache_refill(r, va, pa);
-    } else if (r->compat_issue_clock) cp0_step_cycles(&r->cp0, R4300_DCACHE_HIT_CYCLES);
+    }
     if (write) *tag |= 2;
     return 1;
 }

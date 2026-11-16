@@ -18,8 +18,6 @@ static inline void rom_database_settings(const uint8_t header[64], core_rom_sett
          * board ID with a C prefix (CD6 and CPY). Explicit C-board records
          * and the EverDrive header retain their original settings. */
         if (fallback.savetype != SAVETYPE_NONE) {
-            /* Preserve the exact ID's timing policy, including unknown fallback. */
-            fallback.timing_compatible = settings->timing_compatible;
             *settings = fallback;
         }
     }

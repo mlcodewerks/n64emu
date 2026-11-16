@@ -23,14 +23,14 @@ static int retired(const char *key)
 static void check_default(const char *key,const char *value)
 {
     CHECK(!retired(key));
-    if (!strcmp(key,"wtfn64_timing")) { CHECK(!strcmp(value,"on")); saw_timing_default=true; }
+    if (!strcmp(key,"wtfn64_timing")) { CHECK(!strcmp(value,"off")); saw_timing_default=true; }
 }
 static void check_switch(const char *key,const char *desc,const struct retro_core_option_value *values)
 {
     if (!strcmp(key,"wtfn64_timing")) {
-        CHECK(!strcmp(desc,"Cycle timing (restart required)"));
-        CHECK(!strcmp(values[0].value,"on") && !strcmp(values[0].label,"On"));
-        CHECK(!strcmp(values[1].value,"off") && !strcmp(values[1].label,"Off"));
+        CHECK(!strcmp(desc,"CPU timing (restart required)"));
+        CHECK(!strcmp(values[0].value,"off") && !strcmp(values[0].label,"Compatible"));
+        CHECK(!strcmp(values[1].value,"on") && !strcmp(values[1].label,"Accurate"));
         CHECK(values[2].value==NULL);
     }
 }
@@ -39,7 +39,7 @@ static bool environment(unsigned command,void *data)
     if (command==RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION) { *(unsigned*)data=option_version; return true; }
     if (command==RETRO_ENVIRONMENT_SET_VARIABLES) {
         for (const struct retro_variable *v=data;v->key;++v) {
-            if (!strcmp(v->key,"wtfn64_timing")) CHECK(!strcmp(v->value,"Cycle timing (restart required); on|off"));
+            if (!strcmp(v->key,"wtfn64_timing")) CHECK(!strcmp(v->value,"CPU timing (restart required); off|on"));
             const char *first=strchr(v->value,';')+2;
             char value[64];size_t n=strcspn(first,"|");
             CHECK(n<sizeof(value));memcpy(value,first,n);value[n]=0;check_default(v->key,value);
@@ -77,7 +77,7 @@ static void check_options(void)
         CHECK(saw_timing_default);
     }
     renderer_read_options(environment);
-    CHECK(renderer_settings.per_cycle_timing);
+    CHECK(!renderer_settings.per_cycle_timing);
     unsigned cores=performance_cores_count();
     unsigned workers=cores>6?6:cores?cores:1;
     CHECK(renderer_settings.threads==workers && renderer_settings.upscale==1);

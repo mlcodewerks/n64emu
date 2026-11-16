@@ -471,6 +471,40 @@ static inline uint64_t rdp_timing_buffered_vi(struct rdp_timing *t,uint64_t work
     return elapsed;
 }
 
+/* First-buffer response under a live three-client bank conflict. The aggregate
+ * bound is calibrated on short-span game sequences; the wide-span interface
+ * rates remain constrained separately by console counter measurements.
+ * Separate banks, open-row reads, blanking and service that already covers
+ * the response retain their existing schedule. All addresses are bit offsets. */
+enum { RDP_SHARED_BANK_READ_RESPONSE = 96 };
+static inline unsigned rdp_timing_shared_bank_read_response(
+    const struct rdp_timing *t, uint64_t service, uint64_t color, uint64_t depth,
+    unsigned color_read, unsigned depth_read)
+{
+    if (!color_read || !depth_read ||
+        service >= UINT64_C(2) * RDP_SHARED_BANK_READ_RESPONSE * 256 ||
+        !rdp_timing_row_conflict(color, depth) || !rdp_timing_vi_enabled(t)) return 0;
+    const uint32_t *v = t->vi_regs;
+    uint64_t ticks = t->vi_field_ticks, period = ticks * 4;
+    int64_t start = t->deadline % (int64_t)ticks;
+    int64_t origin = t->vi_field_start % (int64_t)ticks;
+    if (start < 0) start += ticks;
+    if (origin < 0) origin += ticks;
+    uint64_t phase = (((uint64_t)start * 4 + period * 2 - (uint64_t)origin * 4 -
+        t->clock_overhang + (t->vi_elapsed % period) * 3) * 256 +
+        (uint64_t)t->span_fraction * 3) % (period * 256);
+    unsigned total = (v[6] & 1023) + 1;
+    unsigned halfline = (unsigned)(phase * total / (period * 256));
+    unsigned vs = v[10] >> 16 & 1023, ve = v[10] & 1023;
+    if (halfline < vs || halfline >= ve) return 0;
+    uint64_t y = (((uint64_t)(halfline - vs) / 2) * (v[13] & 4095) +
+        ((v[13] >> 16) & 4095)) >> 10;
+    unsigned bpp = (v[0] & 3) == 3 ? 4 : 2;
+    uint64_t address = ((v[1] & 0xffffffu) + y * (v[2] & 4095) * bpp +
+        (((v[12] >> 16) & 4095) >> 10) * bpp) & 0xffffffu;
+    return (address >> 20) == (color >> 23) ? RDP_SHARED_BANK_READ_RESPONSE : 0;
+}
+
 static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned left,unsigned right,
     uint64_t color,uint64_t depth,unsigned color_read,unsigned depth_read,
     unsigned color_write,unsigned depth_write)
@@ -486,6 +520,19 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
     // A crossing needs a mixed-bank request schedule. Keep its existing bound.
     if((color_live&&(color>>23)!=(last_color>>23)) ||
        (depth_live&&(depth>>23)!=(last_depth>>23)))return UINT64_MAX;
+    unsigned independent_devices=color_live&&depth_live&&(color>>24)!=(depth>>24);
+    /* Coverage-times-alpha moves opaque/interpenetrating Z comparison after
+     * the combiner. With no color fetch, separate RDRAM devices can overlap
+     * the color store with the depth read/write client. Reuse the calibrated
+     * single-client rates as an aggregate overlap estimate; these late-depth
+     * mixes are constrained by game sequences, not independent counter data. */
+    unsigned parallel_depth=independent_devices && !t->cycle_type && profile==14 &&
+        (t->modes&0x1000u) && !(t->modes&0x800u);
+    if(parallel_depth) {
+        unsigned depth_rate=rdp_buffer_rate[t->cycle_type][5];
+        unsigned color_rate=rdp_buffer_rate[t->cycle_type][4];
+        rate=depth_rate>color_rate?depth_rate:color_rate;
+    }
     uint64_t q=segments*rate;
     unsigned switches=(color_read&&depth_read)+depth_write;
     unsigned back=(!color_write&&!depth_write&&color_read&&depth_read) ||
@@ -523,13 +570,32 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
     unsigned paired=color_read && depth_read &&
         (color>>24)==(depth>>24) && (color>>23)!=(depth>>23);
     unsigned interleaved=paired && !t->cycle_type;
-    uint64_t transient=(color_read+depth_read)*(paired && t->cycle_type?60u:49u)*256;
+    unsigned response=paired && t->cycle_type?60u:49u;
+    /* A pixel-alpha forced blend consumes framebuffer feedback after the
+     * combiner, without the earlier AA memory-coverage dependency. Independent
+     * devices can cover its read fill, as on the late-depth path. Fog/shade
+     * alpha and other blender muxes have different dependencies and retain
+     * their schedule. Both writeback clients must be live; compare-only,
+     * translucent/decal, rejected and two-cycle paths retain their schedule. */
+    unsigned pixel_alpha_blend=(t->modes&0xcccc0000u)==0x00400000u;
+    unsigned parallel_feedback=independent_devices && !t->cycle_type &&
+        color_read && depth_read && color_write && depth_write && pixel_alpha_blend &&
+        !(t->modes&0x800u) &&
+        (t->modes&0x4000u) && !(t->modes&8u);
+    if(parallel_depth || parallel_feedback)
+        response=(rdp_buffer_rate[t->cycle_type][2]+255)/256;
+    unsigned shared=rdp_timing_shared_bank_read_response(t,q,color,depth,color_read,depth_read);
+    if(shared>response)response=shared;
+    uint64_t transient=(color_read+depth_read)*response*256;
     if(!interleaved) {
         RDP_TIMING_OBSERVE_RESPONSE(t,transient>q?(transient-q+255)/256:0);
         if(q<transient)q=transient;
     }
     unsigned startup=t->reject?4u+2u*t->cycle_type:15u;
-    q+=startup*256u;
+    if(parallel_depth) {
+        uint64_t pipeline=raster+startup*256u;
+        if(q<pipeline)q=pipeline;
+    } else q+=startup*256u;
     q=rdp_timing_buffered_vi(t,q,profile,color,depth,color_live,depth_live);
     if(q==UINT64_MAX)return q;
     if(interleaved) {

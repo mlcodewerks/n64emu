@@ -227,7 +227,7 @@ static void emit_branch_prefetch(const struct n64emujit_config* config,unsigned 
  * two-entry instruction micro-TLB hit/replacement state for later fetches. */
 static void emit_fetch_native(const struct n64emujit_config* config, unsigned index, unsigned start, unsigned base, int check_line, bool defer_base=false,size_t fetch_flag=4)
 {
-    unsigned cycles = base + r4300_issue_reservation(config->compat_issue_clock);
+    unsigned cycles = base + r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
     if(!defer_base)emit_addimm(R13, cycles, R13);
     if (!config->cache_timing) return;
     uint32_t pc = config->virtual_pc + index * 4;
@@ -288,7 +288,7 @@ static void emit_pipeline_clear(void)
 }
 static bool deferred_pipeline(const struct n64emujit_config* config)
 {
-    return config->cache_timing == 1 && !r4300_issue_reservation(config->compat_issue_clock);
+    return config->cache_timing == 1 && !r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
 }
 static bool native_store(uint32_t instruction)
 {
@@ -704,7 +704,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         if(direct_cache_hit)patch_jump(direct_cache_hit,out);
         emit_fetch_native(config, index, exit->start, 1, check_line);
         emit_reg_op(0x01, RDX, R13, 0);
-        if (!r4300_issue_reservation(config->compat_issue_clock)) {
+        if (!r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing)) {
             emit_ldi_native(instruction, fp, previous, known);
             if (!known || native_store(previous)) {
                 emit_reg_op(0x85, RCX, RCX, 0); unsigned char* no_cache = emit_jump(4);

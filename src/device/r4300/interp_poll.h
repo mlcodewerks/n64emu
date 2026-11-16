@@ -103,7 +103,7 @@ static int interp_ram_poll_advance(struct r4300_core* r, const struct interp_ram
      * final iteration normally for the exact PC, delay slot and phase.
      * Without detailed timing the ROM-facing compatibility envelope still
      * reserves the issue clocks, while reads bypass stale D-cache contents. */
-    const unsigned reservation = r4300_issue_reservation(r->compat_issue_clock);
+    const unsigned reservation = r4300_cached_issue_reservation(r->compat_issue_clock, r->cache_timing);
     const unsigned cycles = 10 * (1 + reservation) +
         (r->cache_timing ? 2 * (r4300_dcache_hit_cycles(reservation) + !reservation) : 2 * r4300_off_ram_cycles(r->fast_memory_timing));
     uint64_t iterations = (uint64_t)(-(r->cp0.cycle_count + 1)) / (cycles / 2);
@@ -170,7 +170,7 @@ static int interp_simple_poll_advance(struct r4300_core* r,const struct interp_s
     else if(size==2){word=(word>>((2-(address&2))*8))&65535;value=major==33?(int64_t)(int16_t)word:word;}
     else value=major==35?(int64_t)(int32_t)word:(int64_t)word;
     if(r->regs[rt]!=value || ((p->words[p->count-2]>>26)==4 ? value!=0 : value==0))return 0;
-    const unsigned reservation=r4300_issue_reservation(r->compat_issue_clock);
+    const unsigned reservation=r4300_cached_issue_reservation(r->compat_issue_clock, r->cache_timing);
     const unsigned clocks=p->count*(1+reservation+(r->cache_timing && !cached?40:0))+
         (r->cache_timing?(cached?r4300_dcache_hit_cycles(reservation):31)+!reservation:r4300_off_ram_cycles(r->fast_memory_timing));
     // COUNT advances on either half-clock phase. Retain the final partial

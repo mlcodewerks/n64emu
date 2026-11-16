@@ -8,7 +8,7 @@ struct renderer_settings renderer_settings;
 /* Legacy options are supported by every libretro frontend; first value is default.
  * Renderer resources are latched at content load; shared VI controls update live. */
 static const struct retro_variable options[] = {
-    {"wtfn64_timing", "Cycle timing (restart required); on|off"},
+    {"wtfn64_timing", "CPU timing (restart required); off|on"},
     {"wtfn64_angrylion_deinterlace", "Deinterlacing; weave|bob"},
     {"wtfn64_vi_filter", "VI filtering; enabled|disabled"},
     {"wtfn64_vi_dedither", "VI dedithering; enabled|disabled"},
@@ -67,7 +67,7 @@ void renderer_register_options(retro_environment_t environment)
                 !strcmp(d->key, "wtfn64_vi_blur"))
                 d->info = "Applies immediately to SoftRDP.";
             if (!strcmp(d->key, "wtfn64_timing"))
-                d->info = "On always enables full CPU cache and pipeline timing. Off uses Fast timing for known untagged cartridges, and Compatible timing for tagged cartridges or titles absent from the database. Restart content to apply.";
+                d->info = "Compatible retains CPU caches with synchronous compatibility bus timing. Accurate uses full CPU cache, pipeline and bus timing. Both retain operand-dependent FPU latency and RSP/RDP clocks. Restart content to apply.";
             if (strstr(d->key, "-pak")) {
                 d->category_key = "input";
                 d->info = "Choose the accessory attached to this controller. A Memory Pak allows games to save progress.";
@@ -78,7 +78,7 @@ void renderer_register_options(retro_environment_t environment)
                 if (next) *next++ = 0;
                 d->values[j++].value = p;
                 if (!strcmp(d->key, "wtfn64_timing"))
-                    d->values[j - 1].label = !strcmp(p, "on") ? "On" : "Off";
+                    d->values[j - 1].label = !strcmp(p, "on") ? "Accurate" : "Compatible";
                 if (strstr(d->key, "-pak"))
                     d->values[j - 1].label = !strcmp(p, "memory") ? "Memory Pak" :
                         !strcmp(p, "rumble") ? "Rumble Pak" :
@@ -129,10 +129,11 @@ void renderer_read_options(retro_environment_t env)
     struct renderer_settings *s = &renderer_settings;
     const char *v;
     memset(s, 0, sizeof(*s));
-    v = value(env, "wtfn64_timing", "on");
-    /* Previous simplified profiles migrate to automatic Off selection. */
-    s->per_cycle_timing = strcmp(v, "fast") != 0 && strcmp(v, "compatible") != 0 &&
-        strcmp(v, "off") != 0 && strcmp(v, "no-cache") != 0;
+    v = value(env, "wtfn64_timing", "off");
+    /* Preserve explicit legacy Accurate selections. Removed cacheless values
+     * and old Off settings migrate to cached Compatible timing. */
+    s->per_cycle_timing = !strcmp(v, "accurate") || !strcmp(v, "on") ||
+        !strcmp(v, "cycle") || !strcmp(v, "cycle-based");
     s->component_timing = true;
 #ifdef N64EMU_USF
     s->component_timing = false;

@@ -531,8 +531,7 @@ bool core_runtime_load_game(const struct retro_game_info *game)
     }
     if (log_cb)
         log_cb(RETRO_LOG_INFO, "Timing: %s.\n", renderer_settings.per_cycle_timing ?
-                "Cycle (user override)" : ROM_SETTINGS.timing_compatible ?
-                "Compatible (tagged or unknown title)" : "Fast (known untagged title)");
+                "Accurate" : "Compatible (CPU caches retained)");
     format_saved_memory();
     deinit_audio_libretro();
     init_audio_libretro(audio_buffer_size);

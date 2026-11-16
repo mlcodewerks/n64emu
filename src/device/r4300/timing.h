@@ -96,13 +96,26 @@ static osal_force_inline unsigned int r4300_pipeline_issue_cycles(
     return stalls > issue ? stalls : issue;
 }
 
+static osal_force_inline unsigned int r4300_cached_issue_reservation(
+    unsigned int compatibility, unsigned int cache_timing)
+{
+#ifdef N64EMU_USF
+    (void)cache_timing;
+    return r4300_issue_reservation(compatibility);
+#else
+    /* The cache/pipeline model already charges issue and interlocks. The
+     * cacheless compatibility envelope must not be charged a second time. */
+    return cache_timing ? 0 : r4300_issue_reservation(compatibility);
+#endif
+}
+
 static osal_force_inline int r4300_begin_prefetched_instruction_cycles(struct r4300_core* r4300,
     uint32_t op, uint32_t pc, unsigned int cycles, unsigned int cache_timing)
 {
     /* Compatibility timing absorbs interlocks in its reserved clock. Native
      * timing charges the actual interlock, with no unconditional second issue.
      * Both timed cache implementations use the native policy. */
-    unsigned int issue = r4300_issue_reservation(r4300->compat_issue_clock);
+    unsigned int issue = r4300_cached_issue_reservation(r4300->compat_issue_clock, r4300->cache_timing);
     /* IF is two instructions ahead of the committing store. Capture the next
      * line now, but let older instructions retire while its fill is pending.
      * Stay within this translation; speculative fetch must not raise faults. */

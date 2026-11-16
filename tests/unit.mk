@@ -9,6 +9,7 @@ include benchmarks/accurate-perf/checks.mk
 UNIT_CPU_OBJECTS := $(filter-out $(OUT)/benchmarks/accurate-perf/cpu_cache_checks.o,$(CPU_OBJECTS)) $(CPU_JIT_OBJECTS)
 UNIT_EXES := $(OUT)/cpu-operations$(EXE) $(OUT)/interrupts$(EXE) $(OUT)/off-poll$(EXE) $(OUT)/storage-devices$(EXE) $(OUT)/controllers$(EXE) $(OUT)/gb-clock$(EXE)
 UNIT_EXES += $(OUT)/timing$(EXE) $(OUT)/off-profiles$(EXE)
+UNIT_EXES += $(OUT)/compatible-caches$(EXE)
 UNIT_EXES += $(OUT)/memory-mapping$(EXE) $(OUT)/pif-channels$(EXE) $(OUT)/disk-geometry$(EXE)
 UNIT_EXES += $(OUT)/rcp-devices$(EXE)
 UNIT_EXES += $(OUT)/rdp-registers$(EXE)
@@ -36,6 +37,8 @@ $(OUT)/pif-channels$(EXE): tests/pif_channels.c tests/support.c src/device/pif.c
 $(OUT)/disk-geometry$(EXE): tests/disk_geometry.c tests/support.c src/device/disk.c src/device/dd_controller.c tests/support.h tests/headless.h | $(OUT)
 	$(CC) $(CFLAGS) $(INCLUDES) -O2 -std=gnu99 -flto -fwhole-program $(filter %.c,$^) -o $@
 $(OUT)/timing$(EXE): $(OUT)/tests/timing.o $(UNIT_CPU_OBJECTS)
+	$(CXX) $^ -Wl,--gc-sections -lm -o $@
+$(OUT)/compatible-caches$(EXE): $(OUT)/tests/compatible_caches.o $(UNIT_CPU_OBJECTS)
 	$(CXX) $^ -Wl,--gc-sections -lm -o $@
 $(OUT)/cpu-operations$(EXE): $(OUT)/tests/cpu_operations.o $(UNIT_CPU_OBJECTS)
 	$(CXX) $^ -Wl,--gc-sections -lm -o $@

@@ -151,7 +151,7 @@ static void emit_branch_prefetch(const struct n64emujit_config* config)
  * two-entry instruction micro-TLB hit/replacement state for later fetches. */
 static void emit_fetch_native(const struct n64emujit_config* config, unsigned index, unsigned start, unsigned base, int check_line, bool defer_base=false,size_t fetch_flag=4)
 {
-    unsigned cycles = base + r4300_issue_reservation(config->compat_issue_clock);
+    unsigned cycles = base + r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
     if(!defer_base)emit_addimm(CLOCKS, cycles, CLOCKS);
     if (!config->cache_timing) return;
     uint32_t pc = config->virtual_pc + index * 4;
@@ -498,7 +498,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         if(data_ready)patch_jump(data_ready,out);
         emit_fetch_native(config, index, exit->start, 1, check_line);
         emit_reg_op(0x01, T2, CLOCKS, 0);
-        if (!r4300_issue_reservation(config->compat_issue_clock)) {
+        if (!r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing)) {
             emit_ldi_native(instruction, fp, previous, known);
             emit_reg_op(0x85, T1, T1, 0); unsigned char* no_cache = emit_jump(4);
             emit_mem_imm(0x81, 0, 7, STATE, -1, 0, offsetof(struct r4300_core, pipeline_cached_store),0);

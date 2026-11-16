@@ -397,6 +397,7 @@ benchmarks/fast-timing-study/*
 !benchmarks/fast-timing-study/validation_frontend.c
 !benchmarks/fast-timing-study/cinematic_monitor.c
 !benchmarks/fast-timing-study/frame_alignment.cpp
+!benchmarks/fast-timing-study/recording_cycle.cpp
 !benchmarks/fast-timing-study/tag_hit_bench.c
 !benchmarks/fast-timing-study/off_poll_checks.c
 !benchmarks/fast-timing-study/off_host_checks.c
@@ -407,6 +408,12 @@ benchmarks/fast-timing-study/*
 !benchmarks/fast-timing-study/beetle-gameplay.csv
 !benchmarks/fast-timing-study/earthworm-gameplay.csv
 !benchmarks/fast-timing-study/knife-gameplay.csv
+!benchmarks/fast-timing-study/blues-gameplay.csv
+!benchmarks/fast-timing-study/blues-active-gameplay.csv
+!benchmarks/fast-timing-study/conker-gameplay.csv
+!benchmarks/fast-timing-study/cached-recording-recheck.json
+!benchmarks/fast-timing-study/refined-recording-recheck.json
+!benchmarks/fast-timing-study/focused-recording-recheck.json
 !benchmarks/fast-timing-study/off-integration-results.json
 !benchmarks/fast-timing-study/main-core-results.json
 !benchmarks/fast-timing-study/summary.json
@@ -439,3 +446,13 @@ benchmarks/hle-calibration/*
 
 # Manually supplied foobar2000 SDK, PFC, libPPUI and WTL dependencies.
 /deps/fb2k/
+
+# Reproducible cache-profile measurements and saved-boot checks.
+!benchmarks/cache_profile_bench.c
+!benchmarks/cache_profile_bench.py
+!benchmarks/cache_profiles.mk
+!benchmarks/CACHE_PROFILE_PERFORMANCE.md
+!benchmarks/cache-profile-performance-validation.json
+!benchmarks/mario_kart_save_boot.c
+!benchmarks/MARIO_KART_SAVE_BOOT.md
+!benchmarks/mario-kart-save-boot-validation.json

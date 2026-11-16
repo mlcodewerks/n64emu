@@ -35,15 +35,15 @@ enum { R4300_OFF_RAM_CYCLES = 0 };
 enum { R4300_OFF_RAM_CYCLES = 7 };
 #endif
 
-/* Cycle is the user override. Off uses the database policy: known untagged
- * titles use Fast; Compatible tags and unknown titles use Compatible. */
-static inline unsigned r4300_use_fast_timing(unsigned cycle, unsigned compatible_policy)
+/* Both commercial-game profiles preserve caches. USF keeps its separate
+ * ripper clock and memory policy. */
+static inline unsigned r4300_profile_cache_enabled(unsigned accurate)
 {
 #ifdef N64EMU_USF
-    (void)cycle; (void)compatible_policy;
-    return 0;
+    return accurate != 0;
 #else
-    return !cycle && !compatible_policy;
+    (void)accurate;
+    return 1;
 #endif
 }
 
@@ -63,9 +63,11 @@ static inline unsigned r4300_fpu_compatibility_latency(unsigned cache_timing, un
     (void)cache_timing;
     return compatibility != 0;
 #else
-    /* Off retains its issue reservation, but uses operand-dependent FP
-     * execution latency. Full timing keeps its existing compatibility policy. */
-    return cache_timing && compatibility;
+    /* Cache retention must not select the ripper's fixed FP latencies.
+     * Commercial-game profiles use operand-dependent hardware latencies. */
+    (void)cache_timing;
+    (void)compatibility;
+    return 0;
 #endif
 }
 

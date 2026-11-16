@@ -105,7 +105,7 @@ static void emit_region_guard(const struct n64emujit_config* config, unsigned st
      * Only the first fetch can refill the instruction micro-TLB. Reserve one
      * interlock/compatibility clock per instruction, plus one for restored
      * simultaneous LDI/DCB history at entry. */
-    unsigned compatibility = !config->cache_timing ? count * r4300_issue_reservation(config->compat_issue_clock) : 0;
+    unsigned compatibility = !config->cache_timing ? count * r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing) : 0;
     unsigned ram = config->cache_timing ? 0 : memory_count * r4300_off_ram_cycles(config->fast_memory_timing);
     unsigned cached_bound = base + compatibility + ram, uncached_bound = base + compatibility + ram;
     if (config->cache_timing && count) {

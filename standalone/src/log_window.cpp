@@ -26,13 +26,15 @@ void draw_log_window(bool &open) {
         const bool auto_changed = ImGui::Checkbox("Auto-scroll", &auto_scroll);
         ImGui::SameLine();
         const bool scroll_down = ImGui::Button("Scroll to bottom");
-        ImGui::TextUnformatted("Core: green info/debug, yellow warnings, red errors. winweg: blue.");
+        ImGui::TextUnformatted("Core: green info/debug, yellow warnings, red errors.");
         ImGui::Separator();
         if (ImGui::BeginChild("Messages", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar)) {
             const bool follow = ImGui::GetScrollY() >= ImGui::GetScrollMaxY();
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
             for (const auto &entry : snapshot_log()) {
-                auto text = entry.source == LogSource::Frontend ? "[winweg] " + entry.text : entry.text;
+                if (entry.source == LogSource::Frontend)
+                    continue;
+                auto text = entry.text;
                 while (!text.empty() && (text.back() == '\n' || text.back() == '\r'))
                     text.pop_back();
                 ImGui::PushStyleColor(ImGuiCol_Text, log_message_color(entry));

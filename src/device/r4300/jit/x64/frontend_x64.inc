@@ -745,10 +745,10 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                         pipeline_live = 1;
                         exit->resume = out; exit->resume_registers = regcache;
                     } else {
-                        pending_cycles+=(fpu_zero_delay && j==branch_index+1 ? 2 : r4300_base_cycles(ops[j],0))+r4300_issue_reservation(config->compat_issue_clock);
+                        pending_cycles+=(fpu_zero_delay && j==branch_index+1 ? 2 : r4300_base_cycles(ops[j],0))+r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
                         ++pending_fetches;
                         emit_fetch_native(config, j, i, (fpu_zero_delay && j==branch_index+1 ? 2 : r4300_base_cycles(ops[j], 0)), check_line,true);
-                        unsigned reservation = r4300_issue_reservation(config->compat_issue_clock);
+                        unsigned reservation = r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
                         if (config->cache_timing && !reservation && pipeline_live) {
                             if(j==branch_index && j==i && branch_major==17) {
                                 if(pending_cycles||pending_fetches) {emit_pending_clocks(config,pending_cycles,pending_fetches);pending_cycles=pending_fetches=0;}

@@ -81,10 +81,9 @@ void poweron_r4300(struct r4300_core* r4300)
     r4300->cache_timing = 1;
     r4300->compat_issue_clock = 1;
 #ifdef __LIBRETRO__
-    r4300->cache_timing = renderer_settings.per_cycle_timing ? 1 : 0;
+    r4300->cache_timing = r4300_profile_cache_enabled(renderer_settings.per_cycle_timing);
     /* Only timing Off keeps the compatibility issue envelope. */
-    r4300->compat_issue_clock = r4300->cache_timing == 0;
-    r4300->fast_memory_timing = r4300_use_fast_timing(r4300->cache_timing, ROM_SETTINGS.timing_compatible);
+    r4300->compat_issue_clock = !renderer_settings.per_cycle_timing;
 #endif
 
     r4300_jit_invalidate(r4300, 0, 0);

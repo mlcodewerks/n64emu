@@ -9,6 +9,9 @@
 #ifndef CPU_CACHE_CHECKS_OFF_PROFILE
 #define CPU_CACHE_CHECKS_OFF_PROFILE 0
 #endif
+#ifndef CPU_CACHE_CHECKS_COMPAT_CLOCK
+#define CPU_CACHE_CHECKS_COMPAT_CLOCK CPU_CACHE_CHECKS_OFF_PROFILE
+#endif
 static void verify(int ok, const char *what, unsigned seed, unsigned mode) {
   if (!ok) {
     fprintf(stderr, "accurate JIT mismatch %s seed=%u mode=%u\n", what, seed,
@@ -70,7 +73,7 @@ static void initial(unsigned seed, unsigned mode) {
   setup(0);
   memcpy(code, ops, sizeof(ops));
   cpu.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
-  cpu.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+  cpu.compat_issue_clock = !!CPU_CACHE_CHECKS_COMPAT_CLOCK;
   cpu.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
   cpu.cp0.regs[CP0_CONFIG_REG] = 3;
   cpu.cp0.regs[CP0_STATUS_REG] = 0;
@@ -123,7 +126,7 @@ int CPU_CACHE_CHECKS_MAIN(void) {
     c.virtual_pc = mode ? 0xa0000000 : 0x80000000;
     c.physical_page = 0;
     c.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
-    c.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.compat_issue_clock = !!CPU_CACHE_CHECKS_COMPAT_CLOCK;
     c.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
     c.commits = &cpu.retired_ops;
     n64emujit_entry fn =
@@ -224,7 +227,7 @@ static unsigned memory_checks(struct n64emujit *jit) {
         struct n64emujit_config c = {0};
         c.virtual_pc = 0x80000000;
         c.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
-    c.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.compat_issue_clock = !!CPU_CACHE_CHECKS_COMPAT_CLOCK;
     c.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
         c.commits = &cpu.retired_ops;
         c.fastmem = fast ? &fastmem : NULL;
@@ -265,7 +268,7 @@ static void memory_benchmark(struct n64emujit *jit) {
   struct n64emujit_config c = {0};
   c.virtual_pc = 0x80000000;
   c.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
-    c.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.compat_issue_clock = !!CPU_CACHE_CHECKS_COMPAT_CLOCK;
     c.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
   c.commits = &cpu.retired_ops;
   c.fastmem = strstr(getenv("N64EMU_CPU_BENCH"), "fastmem") ? &fastmem : NULL;
@@ -317,7 +320,7 @@ static unsigned branch_checks(struct n64emujit *jit) {
       struct n64emujit_config c = {0};
       c.virtual_pc = 0x80000000;
       c.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
-    c.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.compat_issue_clock = !!CPU_CACHE_CHECKS_COMPAT_CLOCK;
     c.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
       c.commits = &cpu.retired_ops;
       c.has_delay = 1;
@@ -363,7 +366,7 @@ static unsigned ownership_checks(struct n64emujit *jit) {
     struct n64emujit_config c = {0};
     c.virtual_pc = 0x80000000;
     c.cache_timing = !CPU_CACHE_CHECKS_OFF_PROFILE;
-    c.compat_issue_clock = !!CPU_CACHE_CHECKS_OFF_PROFILE;
+    c.compat_issue_clock = !!CPU_CACHE_CHECKS_COMPAT_CLOCK;
     c.fast_memory_timing = CPU_CACHE_CHECKS_OFF_PROFILE == 2;
     c.commits = &cpu.retired_ops;
     c.fastmem = store ? NULL : &fastmem;

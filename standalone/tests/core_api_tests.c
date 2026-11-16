@@ -20,8 +20,13 @@ int main(int argc, char **argv)
     n64emu_option option;
     CHECK(n64emu_get_option(0, &option));
     CHECK(!strcmp(option.key, "wtfn64_timing"));
-    CHECK(!strcmp(option.value, "on"));
+    CHECK(!strcmp(option.value, "off") && option.count == 2 && !strcmp(option.labels[0], "Compatible"));
     CHECK(n64emu_set_option(option.key, "off"));
+    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "off"));
+    CHECK(n64emu_set_option(option.key, "on"));
+    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "on"));
+    CHECK(n64emu_set_option(option.key, "fast"));
+    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "off"));
     CHECK(!n64emu_set_option(option.key, "invalid"));
     CHECK(!n64emu_get_option(100, &option));
     CHECK(!n64emu_set_option(NULL, "off"));
@@ -35,7 +40,7 @@ int main(int argc, char **argv)
     n64emu_run(); n64emu_reset(); n64emu_unload();
     n64emu_deinit(); n64emu_deinit();
     CHECK(n64emu_init(&host));
-    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "on"));
+    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "off"));
     if (argc > 1) {
         for (unsigned cycle = 0; cycle < 2; ++cycle) {
             CHECK(n64emu_load(argv[1], NULL, 0));

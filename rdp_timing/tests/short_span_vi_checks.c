@@ -54,6 +54,114 @@ static unsigned topology_checks(void)
     return i;
 }
 
+static uint64_t pipeline_cost(unsigned modes,unsigned cycle,uint64_t color,uint64_t depth,
+    unsigned color_read,unsigned depth_read,unsigned color_write,unsigned depth_write,unsigned pixels)
+{
+    struct rdp_timing t;
+    uint64_t clocks;
+    memset(&t,0,sizeof(t));t.fb_size=2;t.modes=modes;t.cycle_type=cycle;
+    clocks=rdp_timing_buffered_span(&t,0,pixels,color,depth,
+        color_read,depth_read,color_write,depth_write);
+    assert(clocks!=UINT64_MAX);
+    return clocks*256+t.span_fraction;
+}
+
+static unsigned parallel_pipeline_checks(void)
+{
+    const uint64_t color=UINT64_C(0x1800000),depth=UINT64_C(0x800000);
+    unsigned checks=0;
+    uint64_t serial=pipeline_cost(0,0,color,depth,0,1,1,1,8);
+    uint64_t parallel=pipeline_cost(0x1000,0,color,depth,0,1,1,1,8);
+    assert(parallel<serial);++checks;
+    /* The interpenetrating mode also consumes post-combiner coverage. */
+    assert(pipeline_cost(0x1400,0,color,depth,0,1,1,1,8)==parallel);++checks;
+    /* A shared device, an early test or a different Z mode keeps its schedule. */
+    assert(pipeline_cost(0x1000,0,color,UINT64_C(0x1000000),0,1,1,1,8)==
+           pipeline_cost(0,0,color,UINT64_C(0x1000000),0,1,1,1,8));++checks;
+    assert(pipeline_cost(0x1800,0,color,depth,0,1,1,1,8)==serial);++checks;
+    assert(pipeline_cost(0x1c00,0,color,depth,0,1,1,1,8)==serial);++checks;
+    assert(pipeline_cost(0x1000,1,color,depth,0,1,1,1,8)==
+           pipeline_cost(0,1,color,depth,0,1,1,1,8));++checks;
+    /* The late-depth overlap requires both stores and no framebuffer fetch. */
+    assert(pipeline_cost(0x1000,0,color,depth,0,1,1,0,8)==
+           pipeline_cost(0,0,color,depth,0,1,1,0,8));++checks;
+    assert(pipeline_cost(0x1000,0,color,depth,1,1,1,1,8)==
+           pipeline_cost(0,0,color,depth,1,1,1,1,8));++checks;
+    /* Feedback can cover read fill only without the earlier AA dependency. */
+    serial=pipeline_cost(0,0,color,depth,1,1,1,1,8);
+    assert(pipeline_cost(0x00504070,0,color,depth,1,1,1,1,8)<serial);++checks;
+    assert(pipeline_cost(0x00504078,0,color,depth,1,1,1,1,8)==serial);++checks;
+    /* Fog/shade alpha and non-memory blend inputs do not consume this path. */
+    assert(pipeline_cost(0x05504270,0,color,depth,1,1,1,1,8)==serial);++checks;
+    assert(pipeline_cost(0x08504070,0,color,depth,1,1,1,1,8)==serial);++checks;
+    assert(pipeline_cost(0x4000,0,color,depth,1,1,1,1,8)==serial);++checks;
+    assert(pipeline_cost(0x00544070,0,color,depth,1,1,1,1,8)==serial);++checks;
+    /* Compare-only/translucent/decal paths lack this dual-writeback overlap. */
+    assert(pipeline_cost(0x00504a50,0,color,depth,1,1,1,0,8)==
+           pipeline_cost(0,0,color,depth,1,1,1,0,8));++checks;
+    assert(pipeline_cost(0x00504e50,0,color,depth,1,1,1,0,8)==
+           pipeline_cost(0,0,color,depth,1,1,1,0,8));++checks;
+    assert(pipeline_cost(0x00504870,0,color,depth,1,1,1,1,8)==serial);++checks;
+    assert(pipeline_cost(0x00504070,1,color,depth,1,1,1,1,8)==
+           pipeline_cost(0,1,color,depth,1,1,1,1,8));++checks;
+    assert(pipeline_cost(0x00504070,0,color,depth,1,1,0,0,8)==
+           pipeline_cost(0,0,color,depth,1,1,0,0,8));++checks;
+    /* Partial/aligned buffers remain monotonic and cover pixel/bus work. */
+    {
+        uint64_t previous=0;
+        for(unsigned pixels=1;pixels<=64;++pixels) {
+            uint64_t cost=pipeline_cost(0x1000,0,color,depth,0,1,1,1,pixels);
+            uint64_t words=(pixels+3)/4*3;
+            assert(cost>=previous && cost>=pixels*256 && cost>=words*256);
+            previous=cost;++checks;
+        }
+    }
+    return checks;
+}
+
+static unsigned shared_bank_checks(void)
+{
+    struct rdp_timing t;
+    uint32_t vi[14] = {0};
+    const uint64_t color = UINT64_C(0x310000) * 8;
+    const uint64_t depth = UINT64_C(0x360000) * 8;
+    unsigned checks = 0;
+    memset(&t, 0, sizeof(t));
+    vi[0] = 2; vi[1] = 0x300000; vi[2] = 320; vi[6] = 525;
+    vi[9] = (108u << 16) | 748; vi[10] = (37u << 16) | 511;
+    vi[12] = 512; vi[13] = 1024;
+    t.fb_size = 2; t.vi_regs = vi; t.vi_field_ticks = 783000;
+    t.deadline = 100000;
+    assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 0, 1)); ++checks;
+    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 0)); ++checks;
+    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, color + 8, 1, 1)); ++checks;
+    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, UINT64_C(0x210000) * 8, 1, 1)); ++checks;
+    assert(!rdp_timing_shared_bank_read_response(&t, UINT64_MAX, color, depth, 1, 1)); ++checks;
+    vi[1] = 0x100000;
+    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    /* The current source row, rather than ORIGIN alone, selects the bank. */
+    vi[1] = 0x3fff00;
+    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    vi[1] = 0x300000;
+    vi[0] = 0;
+    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    vi[0] = 2; t.deadline = 0;
+    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    t.deadline = t.vi_field_ticks - 1;
+    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    t.deadline = 100000 + t.vi_field_ticks;
+    assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    t.vi_field_start = INT64_C(0x100000000);
+    t.deadline = t.vi_field_start + 100000;
+    assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    t.vi_field_start = t.deadline = 0; t.vi_elapsed = 133334;
+    assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    t.vi_regs = NULL;
+    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    return checks;
+}
+
 int main(void)
 {
     uint32_t vi[14];
@@ -109,6 +217,8 @@ int main(void)
         UINT64_C(0x1800000), 1, 1, 1, 1) > 113);
     ++checks;
     checks += topology_checks();
+    checks += shared_bank_checks();
+    checks += parallel_pipeline_checks();
     printf("Short-span VI overlap and topology boundaries: %u checks passed\n", checks);
     return 0;
 }

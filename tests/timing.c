@@ -31,6 +31,29 @@ int main(void)
         if(r4300_cpu_clock(&cpu)-before!=expected)fprintf(stderr,"Timing op=%08x accurate=%u phase=%u got=%llu expected=%u\n",ops[i].op,accurate,phase,(unsigned long long)(r4300_cpu_clock(&cpu)-before),expected);
         assert(r4300_cpu_clock(&cpu)-before==expected);++cases;
     }
+    /* Cached Compatible must share issue and D-cache-hit clocks, and retain
+     * operand-dependent FPU shortcuts, at either COUNT half-clock phase. */
+    for(unsigned phase=0;phase<2;++phase) {
+        fresh(1,phase);cpu.compat_issue_clock=1;
+        cpu.prefetch_pc=cpu.instruction_pc.addr;cpu.prefetch_op=0;cpu.prefetch_valid=1;
+        uint64_t before=r4300_cpu_clock(&cpu);r4300_ops_execute_one(&cpu);
+        assert(r4300_cpu_clock(&cpu)-before==1);++cases;
+        fresh(1,phase);cpu.compat_issue_clock=1;
+        cpu.regs[2]=(int64_t)(int32_t)0x80000000;
+        cpu.dcache_tags[0]=1;cpu.dcache_words[0][0]=123;
+        before=r4300_cpu_clock(&cpu);
+        const uint32_t hit_ops[]={0x8c430000,0x24840001};
+        for(unsigned i=0;i<2;++i) {
+            cpu.prefetch_pc=cpu.instruction_pc.addr;cpu.prefetch_op=hit_ops[i];cpu.prefetch_valid=1;
+            r4300_ops_execute_one(&cpu);
+        }
+        assert(r4300_cpu_clock(&cpu)-before==2 && cpu.regs[3]==123);++cases;
+        fresh(1,phase);cpu.compat_issue_clock=1;
+        cpu.cp1.regs[1].float32[0]=1;cpu.cp1.regs[2].float32[0]=2.25f;
+        cpu.prefetch_pc=cpu.instruction_pc.addr;cpu.prefetch_op=0x460208c2;cpu.prefetch_valid=1;
+        before=r4300_cpu_clock(&cpu);r4300_ops_execute_one(&cpu);
+        assert(r4300_cpu_clock(&cpu)-before==2 && cpu.cp1.regs[3].float32[0]==2.25f);++cases;
+    }
     const unsigned steps[]={1,2,3,16,69,1000,1048576};
     for(unsigned phase=0;phase<2;++phase)for(unsigned wrap=0;wrap<2;++wrap){
         fresh(0,phase);uint32_t start=wrap?UINT32_MAX-4:10;cpu.cp0.regs[CP0_COUNT_REG]=start;
