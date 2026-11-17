@@ -41,6 +41,14 @@ static void reference(r4300_core& state,uint32_t op) {
     }
     if(write&&rd)state.regs[rd]=int64_t(result);state.regs[0]=0;
 }
+static bool replay_region;
+static int region_step(r4300_core* state,void* block,unsigned index,unsigned phase) {
+    if((phase&255)!=12)return step(state,block,index,phase);
+    unsigned count=phase>>8;
+    if(replay_region)for(unsigned n=0;n<count;++n)reference(*state,static_cast<const uint32_t*>(block)[index+n]);
+    state->retired_ops+=count;state->instruction_pc.addr=4*(index+count);
+    return replay_region?2:1;
+}
 static unsigned linked_count;
 static n64emujit_entry linked_body;
 static n64emujit_entry link(r4300_core*){return ++linked_count<100000?linked_body:nullptr;}
@@ -73,6 +81,25 @@ int main(int argc, char** argv) {
             }
         }
     }
+    unsigned mixed_cases=0;
+    if(!tail_only)for(unsigned sequence=0;sequence<256;++sequence) {
+        uint32_t ops[32];for(auto& op:ops)op=instructions[random()%instructions.size()];
+        n64emujit_config region={};region.cache_timing=1;region.alu_regions=1;
+        auto run=n64emujit_compile_optimized(jit,ops,ops,32,region_step,&region);require(run,"mixed region compile");
+        for(unsigned replay=0;replay<2;++replay)for(unsigned sample=0;sample<32;++sample){
+            replay_region=replay!=0;
+            for(auto& reg:actual->regs)reg=int64_t(random());actual->regs[0]=0;
+            actual->hi=random();actual->lo=random();actual->retired_ops=0;actual->instruction_pc.addr=0;
+            std::copy(std::begin(actual->regs),std::end(actual->regs),std::begin(expected->regs));
+            expected->hi=actual->hi;expected->lo=actual->lo;
+            for(auto op:ops)reference(*expected,op);
+            run(actual.get());
+            require(!std::memcmp(actual->regs,expected->regs,sizeof(actual->regs))&&actual->hi==expected->hi&&actual->lo==expected->lo,"mixed-width region / precise replay");
+            require(actual->retired_ops==32&&actual->instruction_pc.addr==128,"mixed region commit boundary");
+            ++mixed_cases;
+        }
+    }
+    std::printf("CPU JIT32: %u mixed-width native/replay regions passed.\n",mixed_cases);
     uint32_t increment=(25u<<26)|(1<<21)|(1<<16)|1;
     n64emujit_config config={};config.link=link;config.chain_entry=&linked_body;
     auto function=n64emujit_compile_optimized(jit,nullptr,&increment,1,step,&config);require(function,"linked block compilation");

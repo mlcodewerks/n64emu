@@ -6,6 +6,9 @@
 #endif
 #include "device/r4300/fastmem.h"
 #include "device/r4300/jit/n64emujit.h"
+#if !defined(_WIN32) && (defined(__aarch64__) || defined(__arm__))
+#include <sys/mman.h>
+#endif
 #ifndef CPU_CACHE_CHECKS_OFF_PROFILE
 #define CPU_CACHE_CHECKS_OFF_PROFILE 0
 #endif
@@ -360,6 +363,16 @@ static int tracked_store_exit(struct r4300_core *r, void *block, unsigned index,
 }
 static unsigned ownership_checks(struct n64emujit *jit) {
   unsigned cases = 0;
+  void *guard = n64emujit_fault_guard(jit);
+#if !defined(_WIN32) && (defined(__aarch64__) || defined(__arm__))
+  /* ARM uses explicit memory guards, without a fault-handler allocation.
+   * A real inaccessible page still catches any unexpected backing read. */
+  bool own_guard = guard == NULL;
+  if (own_guard) {
+    guard = mmap(NULL, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    verify(guard != MAP_FAILED, "protected ownership page", 0, 0);
+  }
+#endif
   init_fastmem();
   for (unsigned store = 0; store < 2; store++) {
     memory_ops[0] = ((store ? 0x2bu : 0x23u) << 26) | (1 << 21) | (2 << 16);
@@ -382,7 +395,7 @@ static unsigned ownership_checks(struct n64emujit *jit) {
       memory_initial(seed, 1);
       before_side_exit = take();
       side_exits = 0;
-      fastmem.physical_read[16] = (uintptr_t)n64emujit_fault_guard(jit);
+      fastmem.physical_read[16] = (uintptr_t)guard;
       verify(fastmem.physical_read[16] != 0, "host guard allocation", seed,
              store);
       uint64_t faults = n64emujit_fault_count(jit);
@@ -400,5 +413,8 @@ static unsigned ownership_checks(struct n64emujit *jit) {
   }
   tracked_pages[0] = 0;
   init_fastmem();
+#if !defined(_WIN32) && (defined(__aarch64__) || defined(__arm__))
+  if (own_guard) munmap(guard, 4096);
+#endif
   return cases;
 }

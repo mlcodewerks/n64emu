@@ -476,7 +476,8 @@ static inline uint64_t rdp_timing_buffered_vi(struct rdp_timing *t,uint64_t work
  * rates remain constrained separately by console counter measurements.
  * Separate banks, open-row reads, blanking and service that already covers
  * the response retain their existing schedule. All addresses are bit offsets. */
-enum { RDP_SHARED_BANK_READ_RESPONSE = 96 };
+enum { RDP_SHARED_BANK_READ_RESPONSE = 95,
+       RDP_SHARED_DEVICE_READ_RECOVERY_Q8 = 256 };
 static inline unsigned rdp_timing_shared_bank_read_response(
     const struct rdp_timing *t, uint64_t service, uint64_t color, uint64_t depth,
     unsigned color_read, unsigned depth_read)
@@ -534,6 +535,16 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
         rate=depth_rate>color_rate?depth_rate:color_rate;
     }
     uint64_t q=segments*rate;
+    /* Separate-bank rates do not distinguish a shared RDRAM device from
+     * independent devices. Estimate exposed read turnaround in Q8 clocks
+     * per buffer when the two-cycle consumer reads both banks of one device.
+     * One-cycle interleaving and single-read paths keep their old service.
+     * This is an aggregate video calibration, not measured request latency.
+     * Charge service before the response bound so existing read-fill time
+     * can cover it, rather than adding the same recovery to the final span. */
+    if(t->cycle_type && color_read && depth_read &&
+       (color>>24)==(depth>>24) && (color>>23)!=(depth>>23))
+        q+=segments*RDP_SHARED_DEVICE_READ_RECOVERY_Q8;
     unsigned switches=(color_read&&depth_read)+depth_write;
     unsigned back=(!color_write&&!depth_write&&color_read&&depth_read) ||
         (color_write&&depth_write&&!color_read&&!depth_read) ||

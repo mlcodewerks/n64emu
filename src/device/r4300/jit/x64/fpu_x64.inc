@@ -148,9 +148,9 @@ static void emit_fpu_save_fetch_flags()
 #ifndef N64EMU_USF
 /* A shared admission check keeps isolated FP instructions small. It only
  * reads guest state; operand classification and issue/result work stay native. */
-static int fpu_resident_guard(const struct r4300_core *r,uint32_t pc,uint32_t tag)
+static int fpu_resident_guard(const struct r4300_core *r,uint32_t pc,uint32_t tag,unsigned compatibility)
 {
-    if(r->cache_timing!=1 || r->compat_issue_clock || r->pc_extension)return 0;
+    if(r->cache_timing!=1 || r->compat_issue_clock!=compatibility || r->pc_extension)return 0;
     unsigned status=r->cp0.regs[CP0_STATUS_REG];
     if(!(status&CP0_STATUS_CU1) || ((status&CP0_STATUS_MODE_MASK) &&
        !(status&(CP0_STATUS_EXL|CP0_STATUS_ERL))))return 0;
@@ -197,7 +197,10 @@ static unsigned char* emit_fpu_resident_prepare(uint32_t instruction, unsigned i
     bool mapped=!prefetched && (pc&UINT32_C(0xc0000000))!=UINT32_C(0x80000000);
     if((!prefetched && (pc&UINT32_C(0xe0000000))==UINT32_C(0xa0000000)) ||
        (mapped && (!config->fetch_cache || !config->fetch_generation)))return NULL;
-    if(config->cache_timing!=1 || config->compat_issue_clock ||
+    /* Compatible's generated fetch does not read ahead. Keep its precise
+     * preparation at line edges, where that helper can fetch the next line. */
+    if(prefetched && config->compat_issue_clock && (pc&31)>=24 && (pc&4095)<4088)return NULL;
+    if(config->cache_timing!=1 ||
        config->fpu_prepare!=r4300_ops_jit_fpu_prepare ||
        (!word_conversion && ((fmt!=16 && fmt!=17) || (fn>7 && !float_conversion && !comparison)))) return NULL;
     unsigned char* slow[24];unsigned slow_count=0;
@@ -220,6 +223,7 @@ static unsigned char* emit_fpu_resident_prepare(uint32_t instruction, unsigned i
         }
         emit_mov64(R12,ARG1_REG);emit_movimm(pc,ARG2_REG);
         emit_movimm((config->physical_page<<12)|1,ARG3_REG);
+        emit_movimm(config->compat_issue_clock,ARG4_REG);
         emit_helper_call((const void*)fpu_resident_guard);
         emit_reg_op(0x85,RAX,RAX,0);slow[slow_count++]=emit_jump(4);
         if(mapped)emit_mem(0x89,0,RAX,RSP,-1,0,56);

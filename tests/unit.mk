@@ -10,12 +10,16 @@ UNIT_CPU_OBJECTS := $(filter-out $(OUT)/benchmarks/accurate-perf/cpu_cache_check
 UNIT_EXES := $(OUT)/cpu-operations$(EXE) $(OUT)/interrupts$(EXE) $(OUT)/off-poll$(EXE) $(OUT)/storage-devices$(EXE) $(OUT)/controllers$(EXE) $(OUT)/gb-clock$(EXE)
 UNIT_EXES += $(OUT)/timing$(EXE) $(OUT)/off-profiles$(EXE)
 UNIT_EXES += $(OUT)/compatible-caches$(EXE)
+ifneq (,$(FPU_PREPARE_CHECK))
+UNIT_EXES += $(OUT)/compatible-fpu-prepare$(EXE) $(OUT)/compatible-fpu-mixed$(EXE)
+endif
 UNIT_EXES += $(OUT)/memory-mapping$(EXE) $(OUT)/pif-channels$(EXE) $(OUT)/disk-geometry$(EXE)
 UNIT_EXES += $(OUT)/rcp-devices$(EXE)
 UNIT_EXES += $(OUT)/rdp-registers$(EXE)
 UNIT_EXES += $(OUT)/timing-policy$(EXE) $(OUT)/usf-timing-policy$(EXE)
 UNIT_EXES += $(OUT)/software-framebuffer$(EXE)
 UNIT_EXES += $(OUT)/input$(EXE)
+UNIT_EXES += $(OUT)/renderer-options$(EXE) $(OUT)/usf-renderer-options$(EXE)
 $(OUT)/input$(EXE): tests/input.c src/core/input.c src/core/input.h src/core/backend.h deps/libretro-common/include/libretro.h | $(OUT)
 	$(CC) $(CFLAGS) $(INCLUDES) -O2 -std=gnu99 $(filter %.c,$^) -lm -o $@
 $(OUT)/software-framebuffer$(EXE): tests/software_framebuffer.c src/device/rcp/rdp/softrdp/adapter.c src/device/rcp/rdp/softrdp/presenter.c src/device/rcp/rdp/softrdp/upstream/present/sr_field_output.c $(wildcard src/device/rcp/rdp/softrdp/*.h) $(wildcard src/device/rcp/rdp/softrdp/upstream/core/*.h) src/device/rcp/rdp/softrdp/upstream/present/sr_field_output.h deps/libretro-common/include/libretro.h | $(OUT)
@@ -69,3 +73,14 @@ check-unit: all $(UNIT_EXES) extra-build
 	$(PYTHON) tests/run.py --out $(OUT) --jobs $(TEST_JOBS) $(BASE_EXES) $(UNIT_EXES) $(EXTRA_EXES)
 -include $(wildcard $(OUT)/tests/*.d) $(wildcard $(OUT)/src/device/*.d)
 -include $(OUT)/benchmarks/fast-timing-study/off_poll_checks.d
+
+$(OUT)/compatible-fpu-prepare$(EXE): $(OUT)/tests/compatible_fpu_prepare.o $(UNIT_CPU_OBJECTS)
+	$(CXX) $^ -Wl,--gc-sections -lm -o $@
+
+$(OUT)/compatible-fpu-mixed$(EXE): $(OUT)/tests/compatible_fpu_mixed.o $(UNIT_CPU_OBJECTS)
+	$(CXX) $^ -Wl,--gc-sections -lm -o $@
+
+$(OUT)/renderer-options$(EXE): tests/renderer_options.c src/renderer_options.c src/renderer_options.h | $(OUT)
+	$(CC) $(CFLAGS) $(INCLUDES) -O2 -std=gnu99 $(filter %.c,$^) -o $@
+$(OUT)/usf-renderer-options$(EXE): tests/renderer_options.c src/renderer_options.c src/renderer_options.h | $(OUT)
+	$(CC) $(CFLAGS) $(INCLUDES) -DN64EMU_USF -O2 -std=gnu99 $(filter %.c,$^) -o $@

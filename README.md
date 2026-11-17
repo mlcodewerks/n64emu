@@ -27,11 +27,6 @@ SoftRDP is used for the RDP renderer. RSP emulator derived from parallel-rsp. \
 Many thanks to the authors of these emulators. \
 Thanks to [LongplayArchive](https://www.youtube.com/user/Longplayarchive) for the useful NTSC N64 hardware reference behaviour recordings.
 
-**CPU timing** selects **Compatible** (default) or **Accurate**. Both retain CPU
-caches, interlock timing and operand-dependent FPU latency. Compatible uses the synchronous compatibility bus model; 
-Accurate retains full bus/prefetch timing. RSP/RDP clocks remain active in both profiles, and changing the 
-setting requires restarting content.
-
 This emulator fork is based on  **very** extensive tests such as:
 - Lemmy's nemu64-test
 - Wiseguy's cache timing tests

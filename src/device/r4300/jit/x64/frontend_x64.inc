@@ -837,6 +837,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
         exits[exit_count++] = emit_b();
         for (unsigned n = 0; n < memory_exit_count; ++n) {
             struct memory_exit* exit = &memory_exits[n];
+            JIT(align(16)); /* Keep precise-resume entries on a decode boundary. */
             if (exit->fault_pc && !host_fault_publish(s->faults, exit->fault_pc, out)) return NULL;
             for (unsigned g = 0; g < exit->guard_count; ++g) patch_jump(exit->guards[g], out);
             if(ram_delay && exit->index==branch_index+1) {
@@ -889,9 +890,21 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
             emit_movimm(0, R13);
             /* Helpers may clobber volatile host registers and the loaded
              * guest destination. Restore the post-instruction allocation. */
-            for (unsigned h = 0; h < CACHE_REGS; ++h)
-                if (exit->resume_registers.map[h] >= 0)
-                    emit_state_load_raw(guest_offset(exit->resume_registers.map[h]), cache_host[h]);
+            unsigned source_a,source_b,written;
+            guest_operands(ops[exit->index],&source_a,&source_b,&written);
+            for (unsigned h = 0; h < CACHE_REGS; ++h) {
+                int guest=exit->resume_registers.map[h];
+                if(guest<0)continue;
+                bool preserved=cache_host[h]==R15 || cache_host[h]==RBX || cache_host[h]==RBP;
+#ifdef _WIN32
+                preserved|=cache_host[h]==RSI || cache_host[h]==RDI;
+#endif
+                /* Precise memory completion changes only its destination.
+                 * Admission is read-only; ABI-preserved allocations that
+                 * retain their guest identity already hold the right value. */
+                if(preserved && exit->registers.map[h]==guest && (!written || unsigned(guest)!=written))continue;
+                emit_state_load_raw(guest_offset(guest),cache_host[h]);
+            }
             unsigned char* resume = emit_b();
             patch_jump(resume, exit->resume);
         }

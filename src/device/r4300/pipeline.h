@@ -133,7 +133,7 @@ static osal_force_inline uint64_t r4300_pipeline_fpu_result(uint32_t op,
 static osal_force_inline unsigned int r4300_pipeline_cycles(struct r4300_core* r,
                                                             uint32_t op)
 {
-    const struct r4300_idec* d = r4300_get_idec(op);
+    const struct r4300_idec* d = NULL;
     unsigned int major = op >> 26;
     unsigned int rs = (op >> 21) & 31;
     unsigned int rt = (op >> 16) & 31;
@@ -149,52 +149,45 @@ static osal_force_inline unsigned int r4300_pipeline_cycles(struct r4300_core* r
     unsigned int store = 0;
     unsigned int stalls = 0;
 
-    switch (d->opcode) {
-    case R4300_OP_MFC0: case R4300_OP_DMFC0:
-        load = r4300_pipeline_gpr(rt);
+    /* Preparation needs only pipeline classes for most opcodes. Decode
+     * operand types solely for COP1 computational forwarding below. */
+    switch (major) {
+    case 0x10:
+        if (rs <= 1) load = r4300_pipeline_gpr(rt);
         break;
-    case R4300_OP_LB: case R4300_OP_LBU: case R4300_OP_LH: case R4300_OP_LHU:
-    case R4300_OP_LW: case R4300_OP_LWU: case R4300_OP_LD:
-    case R4300_OP_LL: case R4300_OP_LLD:
-    case R4300_OP_LWL: case R4300_OP_LWR: case R4300_OP_LDL: case R4300_OP_LDR:
-        load = r4300_pipeline_gpr(rt);
-        memory = 1;
+    case 0x11:
+        if (cu1 && (rs == 4 || rs == 5))
+            load = r4300_pipeline_fpr(r4300_pipeline_fpr_index(fs, fr));
         break;
-
-    case R4300_OP_LWC1: case R4300_OP_LDC1:
+    case 0x1a: case 0x1b:
+    case 0x20: case 0x21: case 0x22: case 0x23:
+    case 0x24: case 0x25: case 0x26: case 0x27:
+    case 0x30: case 0x34: case 0x37:
+        load = r4300_pipeline_gpr(rt); memory = 1;
+        break;
+    case 0x31: case 0x35:
         if (cu1) {
             load = r4300_pipeline_fpr(r4300_pipeline_fpr_index(rt, fr));
             memory = 1;
         }
         break;
-
-    case R4300_OP_MTC1: case R4300_OP_DMTC1:
-        if (cu1)
-            load = r4300_pipeline_fpr(r4300_pipeline_fpr_index(fs, fr));
-        break;
-
-    case R4300_OP_SB: case R4300_OP_SH: case R4300_OP_SW: case R4300_OP_SD:
-    case R4300_OP_SWL: case R4300_OP_SWR: case R4300_OP_SDL: case R4300_OP_SDR:
+    case 0x28: case 0x29: case 0x2a: case 0x2b:
+    case 0x2c: case 0x2d: case 0x2e: case 0x3f:
         memory = store = 1;
         break;
-
-    case R4300_OP_SC: case R4300_OP_SCD:
+    case 0x38: case 0x3c:
         memory = store = r->llbit != 0;
         break;
-
-    case R4300_OP_SWC1: case R4300_OP_SDC1:
+    case 0x39: case 0x3d:
         if (cu1) memory = store = 1;
         break;
-
-    case R4300_OP_CACHE:
-        /* Odd CACHE operation encodings target the data cache even when the
-         * effective address lies in an uncached segment. */
+    case 0x2f:
         dcache_operation = (rt & 1) != 0;
         break;
-
     default:
         break;
     }
+    if (cu1 && major == 0x11 && rs >= 16) d = r4300_get_idec(op);
 
     /* LDI: one cycle, including the real chip's false dependencies. */
     if (r->pipeline_load_mask &&
@@ -205,7 +198,7 @@ static osal_force_inline unsigned int r4300_pipeline_cycles(struct r4300_core* r
     /* COP1 has no EX->EX bypass for a computational result.  The encoded
      * execution rate has already elapsed; a directly dependent arithmetic or
      * compare consumer needs one additional clock for DC->EX forwarding. */
-    if (cu1 && r->pipeline_fpu_result_mask &&
+    if (d && r->pipeline_fpu_result_mask &&
         (r4300_pipeline_fpu_reads(op, d, fr) & r->pipeline_fpu_result_mask) != 0)
         ++stalls;
 
@@ -215,7 +208,9 @@ static osal_force_inline unsigned int r4300_pipeline_cycles(struct r4300_core* r
         ++stalls;
 
     {
-        unsigned int cached = memory && r4300_access_cached(r,
+        /* A load following a non-store cannot incur DCB and cannot leave
+         * store history. Its transfer will resolve cacheability itself. */
+        unsigned int cached = memory && (store || r->pipeline_cached_store) && r4300_access_cached(r,
             (uint32_t)r->regs[rs] + (uint32_t)(int32_t)(int16_t)op);
         unsigned int dcache = cached || dcache_operation;
 
@@ -225,7 +220,7 @@ static osal_force_inline unsigned int r4300_pipeline_cycles(struct r4300_core* r
         r->pipeline_cached_store = cached && store;
     }
 
-    if (cu1 && major == 0x11 && rs >= 16) {
+    if (d) {
         if (fn >= 0x30) fpu_cc = 1;
         else fpu_result = r4300_pipeline_fpu_result(op, d, fr);
     }

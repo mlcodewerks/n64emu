@@ -14,6 +14,7 @@
 #endif
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -74,6 +75,7 @@ struct n64emujit_config {
     struct n64emujit_fetch_cache* data_cache;
     unsigned alu_regions; /* Step callback implements phase 12. */
     unsigned fast_memory_timing;
+    const bool* break_requested; /* Shared 32-bit direct-link stop guard. */
 };
 struct n64emujit* n64emujit_create(void);
 void n64emujit_destroy(struct n64emujit*);

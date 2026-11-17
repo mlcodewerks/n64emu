@@ -62,7 +62,7 @@ void Core::load(const fs::path &content) {
     try {
         if (!n64emu_init(&host)) throw std::runtime_error("Cannot initialize n64emu core");
         initialized = true;
-        option_categories = {{"emulation", "Emulation", "CPU accuracy"}, {"video", "Video", "SoftRDP presentation"}, {"input", "Controllers", "Controller accessories"}};
+        option_categories.clear();
         for (unsigned i = 0; i < n64emu_option_count(); ++i) {
             n64emu_option definition{};
             n64emu_get_option(i, &definition);

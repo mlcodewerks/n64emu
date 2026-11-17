@@ -1731,6 +1731,7 @@ static void ci_execute_jit(struct r4300_core* r, int one)
             block->delay_op, !one && block->has_delay, block->idle_end, &r->retired_ops, &state->jit_fast_commits,
             ci_jit_fpu_prepare, ci_jit_fpu_finish, one ? NULL : &block->native_chain_entry};
         config.compat_issue_clock = r->compat_issue_clock;
+        config.break_requested = &breakloop;
         config.fast_memory_timing = r->fast_memory_timing;
         config.fastmem = state->fastmem;
         config.links = one ? NULL : block->native_links;

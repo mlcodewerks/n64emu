@@ -203,12 +203,6 @@ bool n64emu_get_option(unsigned index, n64emu_option *out)
 bool n64emu_set_option(const char *key, const char *value)
 {
     if (!initialized || !key || !value) return false;
-    if (!strcmp(key, "wtfn64_timing")) {
-        if (!strcmp(value, "accurate") || !strcmp(value, "cycle") || !strcmp(value, "cycle-based"))
-            value = "on";
-        else if (!strcmp(value, "compatible") || !strcmp(value, "fast") || !strcmp(value, "no-cache"))
-            value = "off";
-    }
     for (unsigned i = 0; i < option_count; ++i)
         if (!strcmp(key, definitions[i].key))
             for (unsigned j = 0; j < RETRO_NUM_CORE_OPTION_VALUES_MAX && definitions[i].values[j].value; ++j)

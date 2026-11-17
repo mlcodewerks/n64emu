@@ -8,8 +8,8 @@ extern "C" {
 enum controller_pak_option { CONTROLLER_PAK_NONE, CONTROLLER_PAK_MEMORY,
     CONTROLLER_PAK_RUMBLE, CONTROLLER_PAK_TRANSFER };
 struct renderer_settings {
-    /* Cycle-based timing selects full CPU cache contents and interlocks.
-     * Component clocks remain active when CPU timing is off. */
+    /* Games always use full CPU cache, pipeline and component timing.
+     * USF retains its separate snapshot-compatible clock. */
     bool per_cycle_timing;
     bool component_timing;
     unsigned threads, upscale;
@@ -17,7 +17,7 @@ struct renderer_settings {
     bool native_lod;
 };
 extern struct renderer_settings renderer_settings;
-/* Simplified CPU timing retains work-derived RSP/RDP deadlines. */
+/* Component deadlines follow the selected game/USF timing policy. */
 static inline bool renderer_component_timing(void)
 {
     return renderer_settings.per_cycle_timing || renderer_settings.component_timing;

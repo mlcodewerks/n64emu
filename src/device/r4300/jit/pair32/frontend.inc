@@ -83,19 +83,41 @@ class Compiler {
 public:
     Assembler host{32 * 1024};
     uint64_t calls=0,native=0;
+    uint32_t word_pending=0;
+    bool defer_words=false;
     static constexpr unsigned STATE=Assembler::STATE,FP=Assembler::FP;
     static int32_t gpr(unsigned n){return int32_t(offsetof(r4300_core,regs)+n*8);}
     void load(unsigned reg,unsigned low=0,unsigned high=2) {
-        if(reg){host.load(low,STATE,gpr(reg));host.load(high,STATE,gpr(reg)+4);}
+        if(reg){
+            host.load(low,STATE,gpr(reg));
+            if(word_pending&(1u<<reg)){
+                host.mov(high,low);host.shift(high,ASR,31);host.store(high,STATE,gpr(reg)+4);
+                word_pending&=~(1u<<reg);
+            } else host.load(high,STATE,gpr(reg)+4);
+        }
         else {host.imm(low,0);host.imm(high,0);}
     }
     void load_low(unsigned guest,unsigned host_reg) {
         if(guest)host.load(host_reg,STATE,gpr(guest));else host.imm(host_reg,0);
     }
-    void store(unsigned reg) { if(reg){host.store(0,STATE,gpr(reg));host.store(2,STATE,gpr(reg)+4);} }
+    void store(unsigned reg) { if(reg){word_pending&=~(1u<<reg);host.store(0,STATE,gpr(reg));host.store(2,STATE,gpr(reg)+4);} }
+    void store_word(unsigned reg) {
+        if(!reg)return;
+        host.store(0,STATE,gpr(reg));
+        if(defer_words)word_pending|=1u<<reg;
+        else {sign_word();host.store(2,STATE,gpr(reg)+4);}
+    }
+    void flush_words() {
+        for(unsigned reg=1;reg<32;++reg)if(word_pending&(1u<<reg)){
+            host.load(0,STATE,gpr(reg));sign_word();host.store(2,STATE,gpr(reg)+4);
+        }
+        word_pending=0;
+    }
+#include "link_pair32.inc"
     void sign_word() {host.mov(2,0);host.shift(2,ASR,31);}
     void constant(uint64_t value) {host.imm(0,uint32_t(value));host.imm(2,uint32_t(value>>32));}
     void step(void* block,unsigned index,unsigned phase,n64emujit_step callback,Label& exit) {
+        flush_words();
         // AAPCS and cdecl have different argument placement. Snapshot the state
         // pointer in its ABI slot before populating the remaining arguments.
         host.mov(0,STATE);host.argument(0,0);
@@ -195,7 +217,7 @@ bool Compiler::instruction(uint32_t op) {
     if(major==9 || (!major && (fn==33 || fn==35))) {
         load_low(rs,0);
         if(major)host.imm(1,uint32_t(int32_t(int16_t(op))));else load_low(rt,1);
-        host.alu(!major&&fn==35?SUB:ADD,0,1);sign_word();store(major?rt:rd);return true;
+        host.alu(!major&&fn==35?SUB:ADD,0,1);store_word(major?rt:rd);return true;
     }
     if(major==12) {
         load_low(rs,0);host.immediate(AND,0,uint16_t(op));host.imm(2,0);store(rt);return true;
@@ -231,7 +253,7 @@ bool Compiler::instruction(uint32_t op) {
         case 42:case 43:compare(fn==42);break;
         }
     }
-    if(word)sign_word();store(rd);return true;
+    if(word)store_word(rd);else store(rd);return true;
 }
 
 static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,unsigned count,
@@ -247,7 +269,9 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
                 Label done;
                 compiler.step(block,i,((end-i)<<8)|12,callback,exit);
                 host.immediate(CMP,0,2);host.branch(done,EQ);
+                compiler.defer_words=true;
                 for(unsigned j=i;j<end;++j){compiler.instruction(ops[j]);++compiler.native;}
+                compiler.flush_words();compiler.defer_words=false;
                 host.bind(done);i=end;continue;
             }
         }
@@ -268,16 +292,10 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
         ++i;
     }
     if(config&&config->link) {
+        if(config->links && config->epoch && config->previous_block && config->break_requested) compiler.direct_links(block,config);
         host.mov(0,Assembler::STATE);host.argument(0,0);host.call(reinterpret_cast<const void*>(config->link));++compiler.calls;
         host.immediate(CMP,0,0);host.branch(exit,EQ);
-#ifdef N64EMU_JIT32_ARM
-        host.mov(12,0);host.mov(0,Assembler::STATE);
-        host.leave();host.jump_register(12);
-#else
-        /* Publish ordinary ABI entries. Unwind this frame before the tail
-         * jump so a successor never inherits another block's frame layout. */
-        host.leave();host.jump_register(0);
-#endif
+        compiler.tail_jump(0);
     }
     host.bind(exit);host.leave();host.ret();
     size_t bytes=host.size(),reserve=(bytes+15)&~size_t(15);

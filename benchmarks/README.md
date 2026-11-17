@@ -1,5 +1,14 @@
 # Headless interpreter benchmarks
 
+[Joint video timing calibration](fast-timing-study/JOINT_VIDEO_REFINEMENT.md)
+compares the shared RDP model against Beetle, Knife Edge, Blues Brothers,
+Earthworm Jim and Body Harvest, with hardware bounds and game regressions.
+
+[CPU cache profile performance](CACHE_PROFILE_PERFORMANCE.md) compares Fast,
+cache-retaining Compatible and Accurate using production CPU/RSP JIT objects.
+[Mario Kart saved boot](MARIO_KART_SAVE_BOOT.md) checks existing/fresh saves and
+reopening with the Compatible cache policy.
+
 [Heavy-game frame budgets](HEAVY_GAMES.md) covers the audit's slow cases on
 SoftRDP and fenced paraLLEl-RDP, guarded native FPU preparation, and upstream
 conformance reruns. The strict 10 ms maximum remains a measured requirement.
@@ -273,9 +282,9 @@ python benchmarks/glrdp_intro_benchmark.py --core path/to/benchmark.dll --rom "p
 Use a separate `--capture --runs 1` run for screenshots and RAM hashes.
 Measurements and limits for these controls are recorded in
 [sampling validation](glrdp_sampling_validation.json). On the RTX 3050 laptop,
-three intro repeats averaged 157.7–158.8 VIs/s, with slowest rolling 60-VI
-windows of 83.2–85.2 VIs/s. Two 7,200-VI menu/Ancient Lake repeats averaged
-143.1–146.4 VIs/s and kept every such window above 64.7 VIs/s. A separate
+three intro repeats averaged 157.7â€“158.8 VIs/s, with slowest rolling 60-VI
+windows of 83.2â€“85.2 VIs/s. Two 7,200-VI menu/Ancient Lake repeats averaged
+143.1â€“146.4 VIs/s and kept every such window above 64.7 VIs/s. A separate
 captured race run also stayed above 60. Individual VI calls still exceed
 16.67 ms; this establishes throughput headroom for those replays, rather than
 a latency guarantee for all frontends or tracks. Default rendering matches
@@ -296,7 +305,7 @@ includes the production DLL hash, seven passing check suites, 620 VI cases on
 each backend/precision path, and all three measured intro repeats. Default
 settings match the original build at all twelve image samples and sixty
 CPU/RAM/audio checkpoints. The full performance configuration averaged
-112–142 VIs/s on the tested RTX 3050 laptop; two repeats stayed above 60 VIs/s
+112â€“142 VIs/s on the tested RTX 3050 laptop; two repeats stayed above 60 VIs/s
 in every rolling 60-VI window, while the third retained a 338 ms late stall.
 Consistent 60 VIs/s across every repeat is therefore not established. No startup
 frames or outliers were discarded.
@@ -358,7 +367,7 @@ python benchmarks/wdc_menu_validation.py --before path/to/before-menu.dll --afte
 
 Use `--backend gles2` for ES2. Build the benchmark core and VI harness as above;
 ordinary production cores omit the required debug exports. The replay captures
-VIs 4345–4385, compares both fields' brightness against Angrylion to detect
+VIs 4345â€“4385, compares both fields' brightness against Angrylion to detect
 missing picture rows, and checks VI registers and guest CPU/RAM/audio state.
 It does not require exact RGB agreement between different renderer defaults.
 [Recorded menu validation](wdc_menu_validation.json) includes the builds and

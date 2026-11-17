@@ -47,3 +47,11 @@ check: all
 	$(OUT)/fpu-cvt-abi-checks$(EXE)
 	$(OUT)/rsp-checks$(EXE)
 	$(OUT)/vector-checks$(EXE)
+
+all: $(OUT)/link-checks$(EXE)
+$(OUT)/link-checks$(EXE): benchmarks/jit32/link_checks.cpp $(CPU_EMITTER) $(wildcard src/device/r4300/jit/pair32/*.inc) src/device/r4300/jit/n64emujit.h src/jit32/assembler.hpp | $(OUT)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -std=c++17 $< $(CPU_EMITTER) -o $@
+check: check-links
+.PHONY: check-links
+check-links: $(OUT)/link-checks$(EXE)
+	$(OUT)/link-checks$(EXE)

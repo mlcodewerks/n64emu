@@ -1291,3 +1291,35 @@ The portable tests also cover alignment, bank boundaries, 1,323 row proofs,
 VI phase periodicity and saturated grants, in strict C99 and C++11 builds.
 Their 8,192-command differential now compares the standalone header with the
 current production header, rather than asserting equality to the old model.
+
+
+19. Joint recording calibration (2026-11-16)
+
+The buffered RGBA16 service model distinguishes two-cycle color/depth reads
+in separate banks of one RDRAM device. These share estimated exposed read
+turnaround that the independent-device calibration does not separately measure.
+Add RDP_SHARED_DEVICE_READ_RECOVERY_Q8 (256, one RCP clock) per buffered segment
+before partial-transfer credit, the raster/response maximum and live VI service.
+The existing response can cover the extra work; it is not charged again after
+the maximum. One-cycle, single-read, same-bank and independent-device service
+retain their old rates. Bank-crossing spans still use the conservative fallback.
+
+The live three-client same-bank read response estimate is 95 clocks per read
+stream, with its row, bank, enabled-scanout and vertical-phase guards retained.
+This bound and the exposed turnaround are aggregate recording calibrations,
+not independent measurements of per-request hardware latency. No ROM identity,
+test number, framebuffer dimensions or CPU-profile flag selects these estimates.
+
+The source and standalone headers remain byte-identical. All 200 original
+hardware counter bounds pass through the host transport. C99/C++11 checks cover
+288 short-span/topology cases, 1323 row proofs and the 8192-command fragmented
+stream. New boundary checks ensure that already-covered response work is not
+charged twice. No serialized state or clock-conversion ratio changes.
+
+Recording analysis uses logged AV_RATE events. Knife Edge's menu temporarily
+uses 59.940 Hz; its cinematic returns to 59.826 Hz before the reviewed anchors.
+Piecewise conversion avoids applying the menu rate to the movie. The old
+constant cinematic rate was correct for that interval; higher-resolution pose
+matching, rather than a guest-clock change, explains revised baseline anchors.
+See benchmarks/fast-timing-study/JOINT_VIDEO_REFINEMENT.md and its compact report
+for all fits, tradeoffs, candidate rejection, capture hashes and game checks.

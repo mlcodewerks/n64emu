@@ -6,6 +6,16 @@ static int allocated_source(unsigned guest, int temporary)
     }
     int h = cache_find(guest);
     if (h < 0) { h = cache_allocate(guest); emit_state_load_raw(guest_offset(guest),cache_host[h]); }
+    cache_materialize(unsigned(h));
+    return cache_host[h];
+}
+static int allocated_word_source(unsigned guest,int temporary)
+{
+    if(regcache.known&(UINT64_C(1)<<guest)) {
+        emit_movimm64(regcache.constants[guest],temporary);return temporary;
+    }
+    int h=cache_find(guest);
+    if(h<0){h=cache_allocate(guest);emit_state_load_raw(guest_offset(guest),cache_host[h]);}
     return cache_host[h];
 }
 static int allocated_destination(unsigned guest)
@@ -13,11 +23,15 @@ static int allocated_destination(unsigned guest)
     int h = cache_allocate(guest);
     regcache_forget(guest);
     regcache.known &= ~(UINT64_C(1) << guest); regcache.constant_dirty &= ~(UINT64_C(1) << guest);
+    regcache.word_pending &= ~(1u<<h);
     regcache.dirty |= 1u << h;
     return cache_host[h];
 }
 static void emit_word_extend(int reg)
 {
+    if(regcache.active)for(unsigned h=0;h<CACHE_REGS;++h)if(cache_host[h]==reg && regcache.map[h]>=0) {
+        regcache.word_pending|=1u<<h;return;
+    }
     JIT(movsxd(Xbyak::Reg64(reg),Xbyak::Reg32(reg)));
 }
 static void emit_word_copy(int source,int dest) { JIT(movsxd(Xbyak::Reg64(dest),Xbyak::Reg32(source))); }
@@ -65,7 +79,8 @@ static int regcache_direct(uint32_t instruction)
         extension=opcode==0x01?0:opcode==0x29?5:opcode==0x21?4:opcode==0x09?1:opcode==0x31?6:7;
         narrow_and=op==R4300_OP_AND && constant<=UINT32_MAX;
     }
-    int left=allocated_source(a,RAX),right=immediate?-1:allocated_source(b,RCX);
+    int left=word?allocated_word_source(a,RAX):allocated_source(a,RAX);
+    int right=immediate?-1:word?allocated_word_source(b,RCX):allocated_source(b,RCX);
     if (compare) {
         if (immediate) emit_imm_op(extension,left,immediate==2?uint32_t(constant):(uint32_t)(int32_t)(int16_t)instruction,1);
         else emit_reg_op(opcode,right,left,1);

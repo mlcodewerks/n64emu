@@ -6,7 +6,7 @@ static region_analysis analysis;
 static void regcache_forget(unsigned guest);
 struct regcache_state {
     int active, map[CACHE_REGS], allow_dead_store;
-    unsigned dirty, index, end;
+    unsigned dirty, word_pending, index, end;
     const uint32_t* ops;
     uint64_t constants[GUEST_REGS];
     uint64_t known, constant_dirty;
@@ -81,6 +81,14 @@ static int cache_find(unsigned reg)
     for (unsigned h = 0; h < CACHE_REGS; ++h) if (regcache.map[h] == (int)reg) return h;
     return -1;
 }
+/* Cached low words are extended only at a full-width boundary. */
+static void cache_materialize(unsigned h)
+{
+    if (regcache.word_pending & (1u << h)) {
+        JIT(sxtw(XReg(cache_host[h]), WReg(cache_host[h])));
+        regcache.word_pending &= ~(1u << h);
+    }
+}
 static int cache_allocate(unsigned reg)
 {
     int h = cache_find(reg);
@@ -94,9 +102,10 @@ static int cache_allocate(unsigned reg)
     }
     if (regcache.map[victim] >= 0 && (regcache.dirty & (1u << victim))) {
         int dead; next_use(regcache.map[victim], &dead);
-        if (!dead || !regcache.allow_dead_store) emit_state_store_raw(guest_offset(regcache.map[victim]), cache_host[victim]);
+        if (!dead || !regcache.allow_dead_store) { cache_materialize(victim); emit_state_store_raw(guest_offset(regcache.map[victim]), cache_host[victim]); }
         else regcache_forget(unsigned(regcache.map[victim]));
     }
+    regcache.word_pending &= ~(1u << victim);
     regcache.map[victim] = reg;
     regcache.dirty &= ~(1u << victim);
     return victim;
@@ -111,6 +120,7 @@ static void emit_state_load(size_t offset, int reg)
     }
     int h = cache_find(guest);
     if (h < 0) { h = cache_allocate(guest); emit_state_load_raw(offset, cache_host[h]); }
+    cache_materialize(unsigned(h));
     emit_mov64(cache_host[h], reg);
 }
 static void emit_state_store(size_t offset, int reg)
@@ -121,6 +131,7 @@ static void emit_state_store(size_t offset, int reg)
     regcache.known &= ~(UINT64_C(1) << guest);
     regcache.constant_dirty &= ~(UINT64_C(1) << guest);
     int h = cache_allocate(guest);
+    regcache.word_pending &= ~(1u << h);
     emit_mov64(reg, cache_host[h]);
     regcache.dirty |= 1u << h;
 }
@@ -201,7 +212,7 @@ static void regcache_begin(const uint32_t* ops, unsigned start, unsigned end)
 static void regcache_flush(void)
 {
     for (unsigned h = 0; h < CACHE_REGS; ++h)
-        if (regcache.dirty & (1u << h)) emit_state_store_raw(guest_offset(regcache.map[h]), cache_host[h]);
+        if (regcache.dirty & (1u << h)) { cache_materialize(h); emit_state_store_raw(guest_offset(regcache.map[h]), cache_host[h]); }
     for (unsigned g = 1; g < GUEST_REGS; ++g) {
         if (regcache.constant_dirty & (UINT64_C(1) << g)) {
             emit_movimm64(regcache.constants[g], T0);

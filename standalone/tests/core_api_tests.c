@@ -16,18 +16,21 @@ int main(int argc, char **argv)
     CHECK(!n64emu_init(NULL));
     CHECK(n64emu_init(&host));
     CHECK(!n64emu_init(&host));
-    CHECK(n64emu_option_count() == 10);
+    CHECK(n64emu_option_count() == 9);
     n64emu_option option;
     CHECK(n64emu_get_option(0, &option));
-    CHECK(!strcmp(option.key, "wtfn64_timing"));
-    CHECK(!strcmp(option.value, "off") && option.count == 2 && !strcmp(option.labels[0], "Compatible"));
-    CHECK(n64emu_set_option(option.key, "off"));
-    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "off"));
-    CHECK(n64emu_set_option(option.key, "on"));
-    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "on"));
-    CHECK(n64emu_set_option(option.key, "fast"));
-    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "off"));
+    CHECK(!strcmp(option.key, "wtfn64_angrylion_deinterlace"));
+    CHECK(!strcmp(option.value, "weave") && option.count == 2);
+    CHECK(n64emu_set_option(option.key, "bob"));
+    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "bob"));
     CHECK(!n64emu_set_option(option.key, "invalid"));
+    CHECK(!n64emu_set_option("wtfn64_timing", "off"));
+    CHECK(!n64emu_set_option("wtfn64_timing", "on"));
+    for (unsigned i = 0; i < n64emu_option_count(); ++i) {
+        CHECK(n64emu_get_option(i, &option));
+        CHECK(option.category == NULL);
+        CHECK(strcmp(option.key, "wtfn64_timing"));
+    }
     CHECK(!n64emu_get_option(100, &option));
     CHECK(!n64emu_set_option(NULL, "off"));
     unsigned char bad[8] = {0};
@@ -40,7 +43,7 @@ int main(int argc, char **argv)
     n64emu_run(); n64emu_reset(); n64emu_unload();
     n64emu_deinit(); n64emu_deinit();
     CHECK(n64emu_init(&host));
-    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "off"));
+    CHECK(n64emu_get_option(0, &option) && !strcmp(option.value, "weave"));
     if (argc > 1) {
         for (unsigned cycle = 0; cycle < 2; ++cycle) {
             CHECK(n64emu_load(argv[1], NULL, 0));

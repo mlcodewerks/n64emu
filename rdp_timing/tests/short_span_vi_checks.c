@@ -8,6 +8,7 @@
 
 /* Frozen Q8 costs from the pre-change policy for unaffected topologies and
  * long spans, and the published response floors for the changed short spans.
+ * The long two-cycle same-device tuple includes shared read recovery.
  * Addresses are eight-byte beats, as consumed by buffered_span. */
 static unsigned topology_checks(void)
 {
@@ -27,7 +28,7 @@ static unsigned topology_checks(void)
         {0,1,0x100000,0,15,4,100000,28928},
         {0,1,0,0x100000,13,4,100000,18465},
         {0,320,0,0x100000,15,4,100000,340106},
-        {1,320,0,0x100000,15,4,100000,333448}
+        {1,320,0,0x100000,15,4,100000,344968}
     };
     unsigned i;
     for (i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i) {
@@ -64,6 +65,44 @@ static uint64_t pipeline_cost(unsigned modes,unsigned cycle,uint64_t color,uint6
         color_read,depth_read,color_write,depth_write);
     assert(clocks!=UINT64_MAX);
     return clocks*256+t.span_fraction;
+}
+
+/* The unmeasured shared-device service term must remain hidden when the
+ * original response already covers it. Long two-cycle dual reads expose the
+ * calibrated turnaround per buffer; one-cycle and single-client controls retain
+ * their independently checked costs. Addresses below are bit offsets. */
+static unsigned paired_device_checks(void)
+{
+    const uint64_t paired = UINT64_C(0x800000);
+    const uint64_t independent = UINT64_C(0x1000000);
+    const unsigned widths[] = {1, 8, 32, 64, 320};
+    unsigned checks = 0;
+    for(unsigned i=0;i<sizeof(widths)/sizeof(widths[0]);++i) {
+        unsigned width=widths[i];
+        uint64_t a=pipeline_cost(0,1,0,paired,1,1,1,1,width);
+        uint64_t b=pipeline_cost(0,1,0,independent,1,1,1,1,width);
+        uint64_t recovery=((width+7)/8)*RDP_SHARED_DEVICE_READ_RECOVERY_Q8;
+        if(width<=8) { assert(a==135u*256u); ++checks; }
+        if(width==32) {
+            assert(a>=135u*256u); ++checks;
+            assert(a<=135u*256u+recovery); ++checks;
+        }
+        if(width>=64) { assert(a==b+recovery); ++checks; }
+        assert(pipeline_cost(0,0,0,paired,1,1,1,1,width)==
+               pipeline_cost(0,0,0,independent,1,1,1,1,width)); ++checks;
+        assert(pipeline_cost(0,1,0,paired,1,0,1,0,width)==
+               pipeline_cost(0,1,0,independent,1,0,1,0,width)); ++checks;
+        assert(pipeline_cost(0,1,0,paired,0,1,1,1,width)==
+               pipeline_cost(0,1,0,independent,0,1,1,1,width)); ++checks;
+    }
+    {
+        struct rdp_timing t;
+        memset(&t,0,sizeof(t));t.fb_size=2;t.cycle_type=1;
+        /* Mixed-bank partial buffers retain their conservative fallback. */
+        assert(rdp_timing_buffered_span(&t,0,8,UINT64_C(0x800000)-64,
+            independent,1,1,1,1)==UINT64_MAX); ++checks;
+    }
+    return checks;
 }
 
 static unsigned parallel_pipeline_checks(void)
@@ -133,6 +172,11 @@ static unsigned shared_bank_checks(void)
     t.fb_size = 2; t.vi_regs = vi; t.vi_field_ticks = 783000;
     t.deadline = 100000;
     assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    assert(rdp_timing_shared_bank_read_response(&t,
+        (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256-1,color,depth,1,1)==
+        RDP_SHARED_BANK_READ_RESPONSE); ++checks;
+    assert(!rdp_timing_shared_bank_read_response(&t,
+        (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256,color,depth,1,1)); ++checks;
     assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 0, 1)); ++checks;
     assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 0)); ++checks;
     assert(!rdp_timing_shared_bank_read_response(&t, 0, color, color + 8, 1, 1)); ++checks;
@@ -152,11 +196,26 @@ static unsigned shared_bank_checks(void)
     assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
     t.deadline = 100000 + t.vi_field_ticks;
     assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    assert(rdp_timing_shared_bank_read_response(&t,
+        (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256-1,color,depth,1,1)==
+        RDP_SHARED_BANK_READ_RESPONSE); ++checks;
+    assert(!rdp_timing_shared_bank_read_response(&t,
+        (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256,color,depth,1,1)); ++checks;
     t.vi_field_start = INT64_C(0x100000000);
     t.deadline = t.vi_field_start + 100000;
     assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    assert(rdp_timing_shared_bank_read_response(&t,
+        (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256-1,color,depth,1,1)==
+        RDP_SHARED_BANK_READ_RESPONSE); ++checks;
+    assert(!rdp_timing_shared_bank_read_response(&t,
+        (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256,color,depth,1,1)); ++checks;
     t.vi_field_start = t.deadline = 0; t.vi_elapsed = 133334;
     assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    assert(rdp_timing_shared_bank_read_response(&t,
+        (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256-1,color,depth,1,1)==
+        RDP_SHARED_BANK_READ_RESPONSE); ++checks;
+    assert(!rdp_timing_shared_bank_read_response(&t,
+        (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256,color,depth,1,1)); ++checks;
     t.vi_regs = NULL;
     assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
     return checks;
@@ -217,6 +276,7 @@ int main(void)
         UINT64_C(0x1800000), 1, 1, 1, 1) > 113);
     ++checks;
     checks += topology_checks();
+    checks += paired_device_checks();
     checks += shared_bank_checks();
     checks += parallel_pipeline_checks();
     printf("Short-span VI overlap and topology boundaries: %u checks passed\n", checks);
