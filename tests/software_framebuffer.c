@@ -4,7 +4,7 @@
 #include <libretro.h>
 #include "../src/device/rcp/rdp/softrdp/adapter.c"
 
-static unsigned char buffers[2][1024];
+static unsigned char buffers[2][65536];
 static unsigned turn, queries, submissions, mode;
 static void *submitted;
 static unsigned submitted_width, submitted_height;
@@ -24,7 +24,9 @@ static bool environment(unsigned command, void *data)
     memset(buffers[turn], 0xcd, sizeof(buffers[turn]));
     fb->data = buffers[turn];
     fb->format = mode == 2 ? RETRO_PIXEL_FORMAT_RGB565 : RETRO_PIXEL_FORMAT_XRGB8888;
-    fb->pitch = mode == 3 ? fb->width * 4 - 1 : (fb->width + 3) * 4;
+    fb->pitch = mode == 3 ? fb->width * 4 - 1 :
+        mode == 7 ? fb->width * 4 : (fb->width + 3) * 4;
+    assert(fb->pitch * fb->height <= sizeof(buffers[turn]));
     if (mode == 4) ++fb->width;
     if (mode == 5) fb->data = NULL;
     if (mode == 6) ++fb->pitch;
@@ -43,6 +45,8 @@ retro_video_refresh_t video_cb = video;
 void softrdp_present(bool new_frame);
 
 void sr_flush(sr_context *ctx) { (void)ctx; }
+void sr_set_vi_filters(sr_context *ctx, bool filter, bool dedither, bool divot)
+{ (void)ctx; (void)filter; (void)dedither; (void)divot; }
 sr_result sr_get_vi_frame_info(sr_context *ctx, sr_vi_frame_info *info)
 { (void)ctx; *info = vi; return SR_OK; }
 sr_result sr_update_screen(sr_context *ctx, sr_framebuffer *out)
@@ -65,6 +69,84 @@ static void pixel(unsigned x, unsigned y, unsigned r, unsigned g)
 {
     unsigned char *p = (unsigned char *)submitted + y * submitted_pitch + x * 4;
     assert(p[0] == 30 && p[1] == g && p[2] == r && p[3] == 255);
+}
+static void image(unsigned x0, unsigned y0, unsigned w, unsigned h)
+{
+    assert(submitted_width == w && submitted_height == h);
+    unsigned repeat = vi.interlaced ? 2 : 1;
+    for (unsigned y = 0; y < h; ++y) {
+        for (unsigned x = 0; x < w; ++x)
+            pixel(x, y, red + (y0 + y) / repeat, 20 + x0 + x);
+        if (submitted == buffers[turn])
+            for (size_t b = w * 4; b < submitted_pitch; ++b)
+                assert(buffers[turn][y * submitted_pitch + b] == 0xcd);
+    }
+}
+static void check_crops(void)
+{
+    /* Input active bounds and independently specified expected crop rectangles.
+     * Include both copy paths: full-width vertical crops and row-by-row crops. */
+    static const unsigned cases[][8] = {
+        {2, 7, 1, 3, 2, 1, 5, 2},
+        {0, 8, 1, 2, 0, 1, 8, 1},
+        {1, 7, 0, 3, 1, 0, 6, 3},
+        {0, 8, 0, 3, 0, 0, 8, 3},
+        {7, 8, 2, 3, 7, 2, 1, 1},
+        {2, 12, 1, 5, 2, 1, 6, 2}, /* Clamp to canvas. */
+        {0, 0, 0, 0, 0, 0, 8, 3}, /* Missing/empty/invalid bounds keep canvas. */
+        {4, 4, 1, 2, 0, 0, 8, 3},
+        {2, 7, 2, 2, 0, 0, 8, 3},
+        {7, 2, 1, 2, 0, 0, 8, 3},
+        {2, 7, 2, 1, 0, 0, 8, 3},
+        {9, 12, 1, 2, 0, 0, 8, 3},
+        {2, 7, 4, 5, 0, 0, 8, 3},
+    };
+    unsigned checks = 0;
+    for (unsigned scale = 1; scale <= 4; scale *= 2)
+    for (unsigned interlace = 0; interlace <= 1; ++interlace)
+    for (unsigned bob = 0; bob <= 1; ++bob)
+    for (mode = 0; mode <= 7; ++mode)
+    for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); ++c) {
+        const unsigned *v = cases[c];
+        unsigned repeat = interlace ? 2 : 1;
+        vi = (sr_vi_frame_info){0};
+        vi.width = 8 * scale; vi.height = 3 * scale;
+        vi.interlaced = interlace; vi.field = c & 1;
+        vi.active_x_begin = v[0] * scale; vi.active_x_end = v[1] * scale;
+        vi.active_y_begin = v[2] * scale; vi.active_y_end = v[3] * scale;
+        sr_field_output_reset(&fields);
+        n64video_set_vi_options(false, false, false, true, bob);
+        for (unsigned toggle = 0; toggle < 3; ++toggle) {
+            bool crop = toggle != 1;
+            n64video_set_vi_options(false, false, false, crop, bob);
+            turn ^= 1; red = 10 + toggle * 40;
+            render();
+            assert(submitted == ((mode == 0 || mode == 7) ?
+                (void *)buffers[turn] : (void *)presentation));
+            if (crop)
+                image(v[4] * scale, v[5] * scale * repeat,
+                      v[6] * scale, v[7] * scale * repeat);
+            else
+                image(0, 0, vi.width, vi.height * repeat);
+            ++checks;
+        }
+    }
+    printf("Overscan: %u pixel-exact crop/toggle checks at 1x/2x/4x, progressive/weave/bob, padded/tight/fallback buffers passed.\n", checks);
+
+    /* Cropping must retain the opposite field at the correct source rows. */
+    mode = 0;
+    vi = (sr_vi_frame_info){0};
+    vi.width = 8; vi.height = 3; vi.interlaced = true;
+    vi.active_x_begin = 2; vi.active_x_end = 7;
+    vi.active_y_begin = 1; vi.active_y_end = 3;
+    n64video_set_vi_options(false, false, false, true, false);
+    sr_field_output_reset(&fields);
+    red = 10; vi.field = false; render();
+    red = 50; vi.field = true; turn ^= 1; render();
+    assert(submitted_width == 5 && submitted_height == 4);
+    for (unsigned y = 0; y < 4; ++y)
+        for (unsigned x = 0; x < 5; ++x)
+            pixel(x, y, (y & 1 ? 10 : 50) + 1 + y / 2, 22 + x);
 }
 int main(void)
 {
@@ -113,6 +195,7 @@ int main(void)
     before = queries;
     n64video_update_screen();
     assert(queries == before);
+    check_crops();
     sr_field_output_reset(&fields);
     free(scanout); free(presentation);
     vdac_close();

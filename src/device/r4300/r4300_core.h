@@ -123,7 +123,7 @@ struct r4300_core
     uint32_t dcache_tags[512];
     unsigned int cache_timing; /* 0: off, 1: write-back contents and timing */
     /* Compatibility issue envelope, enabled on every power-on. */
-    unsigned int compat_issue_clock;
+    unsigned int compat_issue_clock; /* R4300_ISSUE_*; selected at content load. */
     /* Instruction-boundary approximation of the VR4300 pipeline hazards.
      * The interpreter commits architecturally one instruction at a time, so
      * only state which survives to the following issue boundary is kept here.

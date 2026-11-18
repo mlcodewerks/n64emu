@@ -22,6 +22,9 @@ limits each executable to 600 seconds and retains per-test output and
 `results.json` in `tests/.build/`. Build failures stop before execution.
 Tests run serially by default; `TEST_JOBS=4` enables concurrent independent
 processes. These are correctness checks, not host performance measurements.
+Overscan regressions verify production NTSC/PAL VI bounds at 1x/2x/4x,
+pixel-exact cropping and live toggles, progressive/weave/bob output, retained
+fields, frontend buffer pitches and fallback buffers, and option registration.
 The larger FPU suites can take several minutes each. Serial execution avoids
 competition between their page-protection and memory-intensive fixtures.
 The test-only root target keeps the core's generated build configuration intact.

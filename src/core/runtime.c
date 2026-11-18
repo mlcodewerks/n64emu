@@ -531,7 +531,8 @@ bool core_runtime_load_game(const struct retro_game_info *game)
     }
     if (log_cb)
         log_cb(RETRO_LOG_INFO, "Timing: %s.\n", renderer_settings.per_cycle_timing ?
-                "Accurate" : "Compatible (CPU caches retained)");
+                "Accurate" : renderer_settings.relaxed_fp_status ?
+                "Compatible (CPU caches retained, relaxed FP inexact status)" : "Compatible (CPU caches retained)");
     format_saved_memory();
     deinit_audio_libretro();
     init_audio_libretro(audio_buffer_size);

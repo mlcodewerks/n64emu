@@ -8,15 +8,19 @@ struct renderer_settings renderer_settings;
 /* Legacy options are supported by every libretro frontend; first value is default.
  * Renderer resources are latched at content load; shared VI controls update live. */
 static const struct retro_variable options[] = {
-    {"wtfn64_angrylion_deinterlace", "Deinterlacing; weave|bob"},
+#ifndef N64EMU_USF
+    {"n64emu_cycle_timing", "Cycle timing (restart required); on|off"},
+#endif
+    {"wtfn64_angrylion_deinterlace", "VI deinterlacing; weave|bob"},
     {"wtfn64_vi_filter", "VI filtering; enabled|disabled"},
     {"wtfn64_vi_dedither", "VI dedithering; enabled|disabled"},
     {"wtfn64_vi_blur", "VI divot filter; enabled|disabled"},
-    {"wtfn64_crop_overscan", "Crop overscan; disabled|enabled"},
+    {"wtfn64_crop_overscan", "Crop overscan; enabled|disabled"},
     {"mupen64plus-pak1", "Player 1 controller pak; memory|none|rumble|transfer"},
     {"mupen64plus-pak2", "Player 2 controller pak; none|memory|rumble|transfer"},
     {"mupen64plus-pak3", "Player 3 controller pak; none|memory|rumble|transfer"},
     {"mupen64plus-pak4", "Player 4 controller pak; none|memory|rumble|transfer"},
+
     {NULL, NULL}
 };
 
@@ -54,6 +58,8 @@ void renderer_register_options(retro_environment_t environment)
             d->info = strstr(d->desc, "(restart required)") ?
                 "Changes take effect when content is restarted." :
                 "Changes take effect while content is running.";
+            if (!strcmp(d->key, "n64emu_cycle_timing"))
+                d->info = "On uses accurate CPU timing. Off simplifies CPU memory scheduling and disabled floating-point inexact-status reporting for performance. Both retain caches, dependency interlocks, arithmetic results, enabled exceptions and RCP timing. Restart content after changing this option.";
             if (!strcmp(d->key, "wtfn64_vi_filter") || !strcmp(d->key, "wtfn64_vi_dedither") ||
                 !strcmp(d->key, "wtfn64_vi_blur"))
                 d->info = "Applies immediately to SoftRDP.";
@@ -119,9 +125,10 @@ void renderer_read_options(retro_environment_t env)
     s->per_cycle_timing = false;
     s->component_timing = false;
 #else
-    /* Game timing is always accurate, including when a frontend retains an
-     * obsolete wtfn64_timing=off setting. It is no longer a core option. */
-    s->per_cycle_timing = true;
+    /* Explicit opt-in; obsolete/invalid settings leave Accurate enabled. */
+    const char *timing = value(env, "n64emu_cycle_timing", "on");
+    s->per_cycle_timing = strcmp(timing, "off") != 0;
+    s->relaxed_fp_status = N64EMU_RELAXED_FP_STATUS_AVAILABLE && !s->per_cycle_timing;
     s->component_timing = true;
 #endif
     s->threads = rendering_thread_count();

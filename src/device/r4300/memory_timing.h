@@ -1,6 +1,26 @@
 #ifndef N64EMU_R4300_MEMORY_TIMING_H
 #define N64EMU_R4300_MEMORY_TIMING_H
 
+/* compat_issue_clock values; relaxed status retains Compatible's clocks. */
+enum { R4300_ISSUE_ACCURATE = 0, R4300_ISSUE_COMPATIBLE = 1, R4300_ISSUE_RELAXED_FP_STATUS = 2 };
+
+static inline unsigned r4300_fp_status_relaxed(unsigned profile)
+{
+#ifdef N64EMU_USF
+    (void)profile;
+    return 0;
+#else
+    return profile == R4300_ISSUE_RELAXED_FP_STATUS;
+#endif
+}
+
+/* Only disabled inexact reporting may be omitted. Mixed exception flags and
+ * enabled inexact traps retain the precise status/exception path. */
+static inline unsigned r4300_fpu_omit_inexact_status(unsigned profile, unsigned fcr31, unsigned flags)
+{
+    return r4300_fp_status_relaxed(profile) && flags == 1 && !(fcr31 & 0x80);
+}
+
 /* CPU clocks charged in addition to instruction issue (two CPU clocks per
  * CP0 COUNT tick). C paths, native emitters and their event-budget bounds must
  * use these same values. VI surcharges are separate; shared RDRAM arbitration
@@ -63,8 +83,7 @@ static inline unsigned r4300_fpu_compatibility_latency(unsigned cache_timing, un
     (void)cache_timing;
     return compatibility != 0;
 #else
-    /* Cache retention must not select the ripper's fixed FP latencies.
-     * Commercial-game profiles use operand-dependent hardware latencies. */
+    /* Commercial profiles keep operand-dependent FP execution latencies. */
     (void)cache_timing;
     (void)compatibility;
     return 0;

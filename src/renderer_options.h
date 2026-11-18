@@ -7,11 +7,17 @@ extern "C" {
 
 enum controller_pak_option { CONTROLLER_PAK_NONE, CONTROLLER_PAK_MEMORY,
     CONTROLLER_PAK_RUMBLE, CONTROLLER_PAK_TRANSFER };
+#if !defined(N64EMU_USF)
+#define N64EMU_RELAXED_FP_STATUS_AVAILABLE 1
+#else
+#define N64EMU_RELAXED_FP_STATUS_AVAILABLE 0
+#endif
 struct renderer_settings {
-    /* Games always use full CPU cache, pipeline and component timing.
-     * USF retains its separate snapshot-compatible clock. */
+    /* Games retain caches, hazards and component timing. Off may omit disabled
+     * FP inexact status updates; USF keeps its separate ripper clock. */
     bool per_cycle_timing;
     bool component_timing;
+    bool relaxed_fp_status;
     unsigned threads, upscale;
     bool vi_filter, dedither, blur, overscan, bob;
     bool native_lod;

@@ -33,5 +33,20 @@ int main(void)
             assert(r4300_fpu_compatibility_latency(detailed, compatibility) == expected);
         }
     puts("Timing policy: RAM cost, cache selection and all four FP policy combinations passed.");
+#ifndef N64EMU_USF
+    assert(r4300_fpu_compatibility_latency(1,R4300_ISSUE_RELAXED_FP_STATUS)==0);
+    assert(r4300_fpu_compatibility_latency(0,R4300_ISSUE_RELAXED_FP_STATUS)==0);
+    assert(r4300_cached_issue_reservation(R4300_ISSUE_RELAXED_FP_STATUS,1)==0);
+#endif
+    for(unsigned profile=0;profile<3;++profile)
+        for(unsigned enabled=0;enabled<32;++enabled)
+            for(unsigned flags=0;flags<64;++flags) {
+#ifdef N64EMU_USF
+                unsigned omit=0;
+#else
+                unsigned omit=profile==R4300_ISSUE_RELAXED_FP_STATUS && flags==1 && !(enabled&1);
+#endif
+                assert(r4300_fpu_omit_inexact_status(profile,enabled<<7,flags)==omit);
+            }
     return 0;
 }

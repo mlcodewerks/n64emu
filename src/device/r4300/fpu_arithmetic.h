@@ -20,6 +20,9 @@ static int fpu_unimplemented(struct r4300_core* cpu)
 /* flags: inexact, underflow, overflow, divide-by-zero, invalid. */
 static int fpu_flags(struct r4300_core* cpu, unsigned int flags)
 {
+    /* Paired-word x86/ARM32 backends use this shared path for arithmetic.
+     * Keep its Off contract identical to the native x64/AArch64 finishes. */
+    if (r4300_fpu_omit_inexact_status(cpu->compat_issue_clock, cpu->cp1.fcr31, flags)) return 0;
     unsigned int enabled = (cpu->cp1.fcr31 >> 7) & 31;
     cpu->cp1.fcr31 |= (flags << 12) | ((flags & ~enabled) << 2);
     if (flags & enabled) { fpu_exception(cpu); return 1; }

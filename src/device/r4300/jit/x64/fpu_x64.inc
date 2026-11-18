@@ -118,7 +118,10 @@ static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
         emit_mov(R8,RAX); emit_shift_reg(RAX,4,23,0);
         emit_mem(0x09,0,RAX,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31));
     } else {
-        if (fn != 6) {
+        /* This path admits only zero/inexact flags and excludes enabled
+         * inexact traps. Off may omit the disabled inexact status update; all
+         * other flags, numeric work and clocks retain their original paths. */
+        if (fn != 6 && !r4300_fp_status_relaxed(config->compat_issue_clock)) {
             emit_mov(R9,RAX); emit_shift_reg(RAX,4,12,0);
             emit_mov(R9,RDX); emit_shift_reg(RDX,4,2,0); emit_reg_op(0x09,RDX,RAX,0);
             emit_mem(0x09,0,RAX,R12,-1,0,offsetof(struct r4300_core,cp1.fcr31));

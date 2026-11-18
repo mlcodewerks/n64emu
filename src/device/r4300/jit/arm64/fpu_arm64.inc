@@ -70,7 +70,9 @@ static unsigned char* emit_fpu_fast_finish(uint32_t instruction, unsigned index,
         emit_mov(CACHE0,T0); emit_shift_reg(T0,4,23,0);
         emit_mem(0x09,0,T0,STATE,-1,0,offsetof(struct r4300_core,cp1.fcr31));
     } else {
-        if (fn != 6) {
+        /* The guards above admit only zero/inexact flags and disabled inexact
+         * traps, matching the shared Off policy on the paired-word backends. */
+        if (fn != 6 && !r4300_fp_status_relaxed(config->compat_issue_clock)) {
             emit_mov(CACHE1,T0); emit_shift_reg(T0,4,12,0);
             emit_mov(CACHE1,T2); emit_shift_reg(T2,4,2,0); emit_reg_op(0x09,T2,T0,0);
             emit_mem(0x09,0,T0,STATE,-1,0,offsetof(struct r4300_core,cp1.fcr31));
