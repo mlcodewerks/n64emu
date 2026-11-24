@@ -196,16 +196,27 @@ bool Video::set_format(retro_pixel_format value) { return value == RETRO_PIXEL_F
 unsigned Video::width() const { return impl->frame_w ? impl->frame_w : impl->geom.base_width; }
 unsigned Video::height() const { return impl->frame_h ? impl->frame_h : impl->geom.base_height; }
 float Video::aspect() const {
-    return impl->geom.aspect_ratio > 0 ? impl->geom.aspect_ratio : float(width()) / std::max(1u, height());
+    if (!square_pixels && impl->geom.aspect_ratio > 0)
+        return impl->geom.aspect_ratio;
+    return float(width()) / height();
 }
-vp Video::viewport(unsigned w, unsigned h) const {
-    unsigned dw = w, dh = unsigned(w / aspect());
-    if (dh > h) { dh = h; dw = unsigned(h * aspect()); }
-    if (integer_scale && width() && height()) {
-        unsigned scale = std::min(w / width(), h / height());
-        if (scale) { dw = width() * scale; dh = height() * scale; }
+vp Video::viewport(unsigned w, unsigned h, unsigned top) const {
+    top = std::min(top, h);
+    h -= top;
+    if (!w || !h) return {0, top, 0, 0};
+
+    const double ratio = aspect();
+    double fitted_height = std::min(double(h), w / ratio);
+    if (integer_scale) {
+        // Keep whole source scanlines. With square pixels this also scales
+        // both axes by the same integer. Allow rounding width to a screen pixel.
+        const double width_limit = (w + 0.5) / (height() * ratio);
+        const unsigned scale = unsigned(std::min(double(h / height()), width_limit));
+        if (scale) fitted_height = height() * scale;
     }
-    return {(w - dw) / 2, (h - dh) / 2, dw, dh};
+    const auto dw = unsigned(std::clamp(std::round(fitted_height * ratio), 1.0, double(w)));
+    const auto dh = unsigned(std::clamp(std::round(fitted_height), 1.0, double(h)));
+    return {(w - dw) / 2, top + (h - dh) / 2, dw, dh};
 }
 void Video::refresh(const void *data, unsigned w, unsigned h, size_t pitch) {
     if (!data) return;
@@ -221,12 +232,12 @@ void Video::refresh(const void *data, unsigned w, unsigned h, size_t pitch) {
     impl->frame_w = w; impl->frame_h = h; impl->dirty = true;
 }
 void Video::new_frame() { impl->available(); ImGui_ImplDX9_NewFrame(); }
-void Video::draw(unsigned w, unsigned h) {
+void Video::draw(unsigned w, unsigned h, unsigned top) {
     if (!impl->ready || impl->pixels.empty()) return;
     const bool uploaded = impl->dirty;
     impl->upload();
     if (verify_pixels && uploaded) verify_software(nullptr, width(), height(), 0);
-    const auto view = viewport(w, h);
+    const auto view = viewport(w, h, top);
     if (!view.width || !view.height) return;
     video_shaders().source_aspect = aspect();
     auto *texture = impl->filtered(view.width, view.height);

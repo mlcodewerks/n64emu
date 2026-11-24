@@ -1849,17 +1849,32 @@ void run_r4300(struct r4300_core* r4300)
 
 #ifdef HAVE_N64EMUJIT
     r4300->execute_one=r4300_jit_execute_one;
-#else
-    r4300->execute_one=r4300_ops_execute_one;
-#endif
-#ifdef HAVE_N64EMUJIT
     r4300_jit_run(r4300);
 #else
+    r4300->execute_one=r4300_ops_execute_one;
     while (!breakloop && !r4300->stop) {
 #ifdef N64EMU_USF
         if (!(r4300->retired_ops & 65535) && n64emu_usf_yield()) { breakloop = true; break; }
 #endif
         r4300_ops_execute_one(r4300);
+    }
+#endif
+#ifndef N64EMU_USF
+    /* A warm reset can leave VI events running while the display is blank.
+     * Wait until the guest opens the horizontal display window. */
+    if ((r4300->startup & R4300_STARTUP_CACHED_BOOT) && !r4300->stop &&
+        r4300->vi && r4300->vi->regs[VI_H_START_REG]) {
+        /* Commit boot writes and recompile under the selected Off profile. */
+        for (unsigned i = 0; i < 512; ++i)
+            if ((r4300->dcache_tags[i] & 3) == 3)
+                r4300_dcache_writeback(r4300, R4300_KSEG0 | i * 16);
+        r4300_icache_fill_wait(r4300);
+        r4300_write_buffer_drain(r4300);
+        memset(r4300->icache_tags, 0, sizeof(r4300->icache_tags));
+        memset(r4300->icache_shadow_tags, 0, sizeof(r4300->icache_shadow_tags));
+        memset(r4300->dcache_tags, 0, sizeof(r4300->dcache_tags));
+        r4300_pipeline_reset(r4300);
+        r4300_set_cached_boot(r4300, false);
     }
 #endif
 cpu_run_done: ;

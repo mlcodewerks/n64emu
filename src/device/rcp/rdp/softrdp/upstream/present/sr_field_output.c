@@ -23,6 +23,7 @@ bool sr_field_output_compose(sr_field_output *output,
         /* Invalidate retained fields. */
         output->width = 0;
         output->height = 0;
+        memset(output->bounds, 0, sizeof(output->bounds));
         *pixels = field_pixels;
         *output_height = height;
         return true;
@@ -40,6 +41,7 @@ bool sr_field_output_compose(sr_field_output *output,
         output->pixels = buffer;
         output->width = width;
         output->height = full_height;
+        memset(output->bounds, 0, sizeof(output->bounds));
         /* Seed both parities until the next field arrives. */
         for (uint32_t y = 0; y < height; y++) {
             const sr_rgba8 *source = field_pixels + (size_t)y * stride;

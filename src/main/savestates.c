@@ -36,6 +36,9 @@ enum { GB_CART_FINGERPRINT_OFFSET = 0x134 };
 
 enum { DD_DISK_ID_OFFSET = 0x43670 };
 
+/* The pipeline extension ends at 4080; older states zeroed this word. */
+enum { CPU_CACHED_BOOT_STATE_OFFSET = 4080 };
+
 _Static_assert(16384 + 4 + PARALLEL_RSP_STATE_WORDS * 4 + 24 <= RDP_RASTER_STATE_OFFSET,
     "RDP raster state overlaps native RSP state");
 _Static_assert(RDP_RASTER_STATE_OFFSET + 192 <= 20480,
@@ -966,6 +969,10 @@ int core_state_load(struct device* dev, const void *data)
         }
     }
 
+#ifndef N64EMU_USF
+    curr = data_0001_0200 + CPU_CACHED_BOOT_STATE_OFFSET;
+    r4300_set_cached_boot(&dev->r4300, (GETDATA(curr, uint32_t) & 1) != 0);
+#endif
     if (!dev->r4300.cache_timing) {
         struct r4300_core *cpu = &dev->r4300;
         /* Cached profiles can save dirty RDRAM lines that Off would never
@@ -1429,6 +1436,9 @@ int core_state_save(const struct device* dev, void *data)
     PUTARRAY(dev->r4300.pipeline_itlb_map, curr, uint32_t, 2);
     PUTDATA(curr, uint32_t, dev->r4300.pipeline_itlb_valid);
     PUTDATA(curr, uint32_t, dev->r4300.pipeline_itlb_lru);
+
+    curr = save->data + 16788288 + sizeof(queue) + 4 + CPU_CACHED_BOOT_STATE_OFFSET;
+    PUTDATA(curr, uint32_t, !!(dev->r4300.startup & R4300_STARTUP_CACHED_BOOT));
 
     /* Fixed extension offset keeps the original extra-state layout intact. */
     curr = save->data + 16788288 + sizeof(queue) + 4 + 4096;

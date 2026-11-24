@@ -63,6 +63,34 @@ static bool reserve(void **buffer, size_t *capacity, size_t bytes)
     if (!replacement) return false;
     *buffer = replacement; *capacity = bytes; return true;
 }
+
+static bool has_active_bounds(sr_field_bounds bounds)
+{
+    return bounds.x_begin < bounds.x_end && bounds.y_begin < bounds.y_end;
+}
+
+static sr_field_bounds scanout_bounds(const sr_vi_frame_info *info)
+{
+    sr_field_bounds bounds = {info->active_x_begin, info->active_x_end,
+                              info->active_y_begin, info->active_y_end};
+    if (!info->interlaced) return bounds;
+
+    /* Crop to the combined active area. VI windows can start on different
+     * lines in the two fields, even though the composed image is stationary. */
+    bounds.y_begin *= 2;
+    bounds.y_end *= 2;
+    fields.bounds[info->field] = bounds;
+    const sr_field_bounds other = fields.bounds[!info->field];
+    if (!has_active_bounds(other)) return bounds;
+    if (!has_active_bounds(bounds)) return other;
+
+    if (other.x_begin < bounds.x_begin) bounds.x_begin = other.x_begin;
+    if (other.x_end > bounds.x_end) bounds.x_end = other.x_end;
+    if (other.y_begin < bounds.y_begin) bounds.y_begin = other.y_begin;
+    if (other.y_end > bounds.y_end) bounds.y_end = other.y_end;
+    return bounds;
+}
+
 void n64video_update_screen(void)
 {
     if (!context) return;
@@ -80,13 +108,12 @@ void n64video_update_screen(void)
             info.interlaced, info.field, config.vi.bob_deinterlace, &pixels, &height)) return;
     struct frame_buffer output = {NULL, info.width, height, height, info.width};
     uint32_t crop_x = 0, crop_y = 0;
-    if (config.vi.hide_overscan && info.active_x_end>info.active_x_begin &&
-        info.active_y_end>info.active_y_begin) {
-        const uint32_t yscale=info.interlaced?2:1;
-        const uint32_t x0=info.active_x_begin<info.width?info.active_x_begin:info.width;
-        const uint32_t x1=info.active_x_end<info.width?info.active_x_end:info.width;
-        const uint32_t y0=info.active_y_begin*yscale<height?info.active_y_begin*yscale:height;
-        const uint32_t y1=info.active_y_end*yscale<height?info.active_y_end*yscale:height;
+    if (config.vi.hide_overscan) {
+        const sr_field_bounds bounds = scanout_bounds(&info);
+        const uint32_t x0 = bounds.x_begin < info.width ? bounds.x_begin : info.width;
+        const uint32_t x1 = bounds.x_end < info.width ? bounds.x_end : info.width;
+        const uint32_t y0 = bounds.y_begin < height ? bounds.y_begin : height;
+        const uint32_t y1 = bounds.y_end < height ? bounds.y_end : height;
         if(x1>x0 && y1>y0) {
             crop_x=x0;crop_y=y0;
             output.width=x1-x0;output.height=y1-y0;output.height_out=output.height;

@@ -98,6 +98,25 @@ void poweron_r4300(struct r4300_core* r4300)
     poweron_cp1(&r4300->cp1);
 }
 
+void r4300_set_cached_boot(struct r4300_core* r4300, bool enabled)
+{
+    if (enabled) {
+        if (r4300->cache_timing) return;
+        r4300->startup |= R4300_STARTUP_CACHED_BOOT;
+        if (r4300->compat_issue_clock == R4300_ISSUE_RELAXED_FP_STATUS)
+            r4300->startup |= R4300_STARTUP_RESTORE_RELAXED_FP;
+        r4300->cache_timing = 1;
+        r4300->compat_issue_clock = R4300_ISSUE_ACCURATE;
+    } else {
+        if (!(r4300->startup & R4300_STARTUP_CACHED_BOOT)) return;
+        r4300->cache_timing = 0;
+        r4300->compat_issue_clock = (r4300->startup & R4300_STARTUP_RESTORE_RELAXED_FP) ?
+            R4300_ISSUE_RELAXED_FP_STATUS : R4300_ISSUE_COMPATIBLE;
+        r4300->startup &= ~(R4300_STARTUP_CACHED_BOOT | R4300_STARTUP_RESTORE_RELAXED_FP);
+    }
+    r4300_jit_invalidate(r4300, 0, 0);
+}
+
 int64_t* r4300_regs(struct r4300_core* r4300)
 {
 

@@ -6,11 +6,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef struct sr_field_bounds {
+    uint32_t x_begin, x_end, y_begin, y_end;
+} sr_field_bounds;
+
 /* Interleave fields while retaining the opposite field's rows. */
 typedef struct sr_field_output {
     sr_rgba8 *pixels;
     uint32_t width;
     uint32_t height;
+    sr_field_bounds bounds[2];
 } sr_field_output;
 
 void sr_field_output_reset(sr_field_output *output);

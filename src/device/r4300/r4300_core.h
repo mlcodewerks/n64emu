@@ -3,6 +3,7 @@
 #ifndef N64EMU_DEVICE_R4300_R4300_CORE_H
 #define N64EMU_DEVICE_R4300_R4300_CORE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -73,6 +74,8 @@ enum {
 
 enum {
     R4300_STARTUP_INIT = 1,
+    R4300_STARTUP_CACHED_BOOT = 2,
+    R4300_STARTUP_RESTORE_RELAXED_FP = 4,
 };
 
 struct r4300_core
@@ -191,6 +194,7 @@ static osal_force_inline void r4300_itlb_reset(struct r4300_core* r)
 
 void init_r4300(struct r4300_core* r4300, struct memory* mem, struct mi_controller* mi, struct rdram* rdram, const struct interrupt_handler* interrupt_handlers, unsigned int emumode, int no_compiled_jump, int randomize_interrupt, uint32_t start_address);
 void poweron_r4300(struct r4300_core* r4300);
+void r4300_set_cached_boot(struct r4300_core* r4300, bool enabled);
 
 
 

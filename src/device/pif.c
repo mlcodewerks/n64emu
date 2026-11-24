@@ -36,6 +36,12 @@ void pif_bootrom_hle_execute(struct r4300_core* r4300)
 {
     if (r4300->start_address == 0xbfc00000) return;
 
+#ifndef N64EMU_USF
+    /* Keep IPL3 timing and separate instruction/data caches during boot.
+     * Startup code can write to cached data over code it still executes. */
+    r4300_set_cached_boot(r4300, true);
+#endif
+
     uint32_t pif24;
     unsigned int seed;       /* seed (depends on CIC version) */
     unsigned int rom_type;   /* 0:Cart, 1:DD */

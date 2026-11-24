@@ -344,7 +344,7 @@ bool shader_source_editor::draw(const std::string &compile_error, const shader_d
                         focus = false;
                         selected.clear();
                     }
-                    ImGui::PushFont(editor_font, ImGui::GetFontSize());
+                    ImGui::PushFont(editor_font, 0.0f);
                     // Let the dialog's translucent background show through the editor.
                     ImGui::SetNextWindowBgAlpha(0.0f);
                     if (doc.editor.Render("##source", ImVec2(-1, -1)))

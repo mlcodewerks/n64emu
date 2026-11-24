@@ -20,16 +20,36 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <shellapi.h>
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 namespace {
 Input *input = nullptr;
 bool rescan_input = false;
 std::vector<fs::path> dropped;
+constexpr int ui_scale_percentages[] = {0, 50, 75, 100, 125, 150, 175, 200};
+constexpr const char *ui_scale_labels[] = {"Auto (fit window)", "50%", "75%", "100%", "125%", "150%", "175%", "200%"};
+
+void fit_window_to_monitor(HWND window, const RECT &bounds) {
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    if (!GetMonitorInfoW(MonitorFromRect(&bounds, MONITOR_DEFAULTTONEAREST), &monitor))
+        return;
+    const auto &area = monitor.rcWork;
+    const LONG width = std::min(bounds.right - bounds.left, area.right - area.left);
+    const LONG height = std::min(bounds.bottom - bounds.top, area.bottom - area.top);
+    const LONG x = std::clamp(bounds.left, area.left, area.right - width);
+    const LONG y = std::clamp(bounds.top, area.top, area.bottom - height);
+    SetWindowPos(window, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     if (ImGui::GetCurrentContext())
         ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam);
     switch (message) {
+    case WM_DPICHANGED:
+        fit_window_to_monitor(window, *reinterpret_cast<const RECT *>(lparam));
+        return 0;
     case WM_CHAR:
         if (input)
             input->character(wchar_t(wparam));
@@ -185,11 +205,12 @@ int main() {
                             CW_USEDEFAULT, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
         if (!window)
             throw std::runtime_error("Window creation failed");
+        RECT window_bounds;
+        if (GetWindowRect(window, &window_bounds))
+            fit_window_to_monitor(window, window_bounds);
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
-        const float dpi_scale = ImGui_ImplWin32_GetDpiScaleForHwnd(window);
-        apply_imgui_theme(dpi_scale);
-        init_ui_fonts(dpi_scale);
+        init_ui_fonts();
         shader_source_editor_init_font();
         auto directory = executable_directory();
         config_initialize(directory);
@@ -237,20 +258,35 @@ int main() {
             dsp_chain_window dsp_window;
             bool running = true, settings = false, input_settings = false, options = false, logs = false, fast_forward = false;
             unsigned slot = 0;
+            int ui_scale_choice = 0;
+            float applied_ui_scale = 0;
             auto frontend = config_section(directory, "frontend");
             if (frontend) {
                 auto scale = cJSON_GetObjectItemCaseSensitive(frontend.get(), "integer_scale");
+                auto pixels = cJSON_GetObjectItemCaseSensitive(frontend.get(), "square_pixels");
+                auto ui_scale = cJSON_GetObjectItemCaseSensitive(frontend.get(), "ui_scale_percent");
                 auto saved_slot = cJSON_GetObjectItemCaseSensitive(frontend.get(), "state_slot");
                 if (!cJSON_IsObject(frontend.get()) || !cJSON_IsBool(scale) || !cJSON_IsNumber(saved_slot) ||
+                    (pixels && !cJSON_IsBool(pixels)) ||
                     saved_slot->valuedouble < 0 || saved_slot->valuedouble > 9 ||
                     saved_slot->valuedouble != std::floor(saved_slot->valuedouble))
                     throw std::runtime_error("Invalid frontend settings in n64emu.json");
                 video.integer_scale = cJSON_IsTrue(scale);
+                video.square_pixels = cJSON_IsTrue(pixels);
                 slot = unsigned(saved_slot->valuedouble);
+                if (ui_scale) {
+                    const auto *end = std::end(ui_scale_percentages);
+                    const auto *choice = std::find(std::begin(ui_scale_percentages), end, ui_scale->valueint);
+                    if (!cJSON_IsNumber(ui_scale) || ui_scale->valuedouble != ui_scale->valueint || choice == end)
+                        throw std::runtime_error("Invalid UI scale in n64emu.json");
+                    ui_scale_choice = int(choice - std::begin(ui_scale_percentages));
+                }
             }
             auto save_frontend = [&] {
                 Json value(cJSON_CreateObject(), cJSON_Delete);
                 cJSON_AddBoolToObject(value.get(), "integer_scale", video.integer_scale);
+                cJSON_AddBoolToObject(value.get(), "square_pixels", video.square_pixels);
+                cJSON_AddNumberToObject(value.get(), "ui_scale_percent", ui_scale_percentages[ui_scale_choice]);
                 cJSON_AddNumberToObject(value.get(), "state_slot", slot);
                 config_write_section(directory, "frontend", value.get());
             };
@@ -302,13 +338,25 @@ int main() {
                         core.log(failure + "\n");
                     }
                 }
-                auto &io = ImGui::GetIO();
-                int input_w = 0, input_h = 0;
-                native_client_size(window, input_w, input_h);
-                const auto input_view = video.viewport(std::max(1, input_w), std::max(1, input_h));
+                int width, height;
+                native_client_size(window, width, height);
+                if (width > 0 && height > 0) {
+                    const float scale = ui_scale_for_window(ImGui_ImplWin32_GetDpiScaleForHwnd(window),
+                        width, height, ui_scale_percentages[ui_scale_choice]);
+                    if (scale != applied_ui_scale) {
+                        apply_imgui_theme(scale);
+                        applied_ui_scale = scale;
+                    }
+                }
+                video.new_frame();
+                ImGui_ImplWin32_NewFrame();
+                ImGui::NewFrame();
+                const unsigned menu_height = unsigned(std::ceil(ImGui::GetFrameHeight()));
+                const auto input_view = video.viewport(width, height, menu_height);
                 controls.set_pointer_viewport({LONG(input_view.x), LONG(input_view.y),
                                                LONG(input_view.x + input_view.width),
                                                LONG(input_view.y + input_view.height)});
+                const auto &io = ImGui::GetIO();
                 controls.poll(io.WantCaptureKeyboard, io.WantCaptureMouse);
                 try {
                     core.run();
@@ -318,12 +366,7 @@ int main() {
                     if (hidden)
                         throw;
                 }
-                video.new_frame();
-                ImGui_ImplWin32_NewFrame();
-                ImGui::NewFrame();
-                int width, height;
-                native_client_size(window, width, height);
-                video.draw(std::max(1, width), std::max(1, height));
+                video.draw(width, height, menu_height);
                 if (!shader.empty() && !video_shaders().error.empty())
                     throw std::runtime_error(video_shaders().error);
                 if (ImGui::BeginMainMenuBar()) {
@@ -368,14 +411,33 @@ int main() {
                                         });
                         ImGui::EndMenu();
                     }
-                    ImGui::MenuItem(ICON_FK_COG " Settings", nullptr, &settings);
-                    ImGui::MenuItem("Input Settings...", nullptr, &input_settings);
-                    ImGui::MenuItem("Audio DSP Chains...", nullptr, &dsp_window.visible);
-                    ImGui::MenuItem("Shader chains", nullptr, &shader_window_visible);
-                    ImGui::MenuItem("Core options", nullptr, &options, core.loaded());
-                    ImGui::MenuItem("Log", nullptr, &logs);
-                    ImGui::Separator();
-                    ImGui::TextUnformatted(core.loaded() ? core.name().c_str() : "n64emu - no ROM loaded");
+                    const struct {
+                        const char *label;
+                        bool *visible;
+                        bool enabled = true;
+                    } tools[] = {
+                        {ICON_FK_COG " Settings", &settings},
+                        {"Input Settings...", &input_settings},
+                        {"Audio DSP Chains...", &dsp_window.visible},
+                        {"Shader chains", &shader_window_visible},
+                        {"Core options", &options, core.loaded()},
+                        {"Log", &logs},
+                    };
+                    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+                    float tools_width = 0;
+                    for (const auto &tool : tools)
+                        tools_width += ImGui::CalcTextSize(tool.label).x + 2 * spacing;
+                    const bool compact = tools_width > ImGui::GetContentRegionAvail().x;
+                    if (!compact || ImGui::BeginMenu("Tools")) {
+                        for (const auto &tool : tools)
+                            ImGui::MenuItem(tool.label, nullptr, tool.visible, tool.enabled);
+                        if (compact) ImGui::EndMenu();
+                    }
+                    const char *title = core.loaded() ? core.name().c_str() : "n64emu - no ROM loaded";
+                    if (ImGui::CalcTextSize(title).x + 3 * spacing < ImGui::GetContentRegionAvail().x) {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted(title);
+                    }
                     ImGui::EndMainMenuBar();
                 }
                 try {
@@ -391,11 +453,22 @@ int main() {
                     ImGui::Begin("Settings", &settings);
                     if (ImGui::BeginTabBar("settings")) {
                         if (ImGui::BeginTabItem("Video")) {
-                            if (ImGui::Checkbox("Integer scale", &video.integer_scale))
+                            int aspect = video.square_pixels;
+                            if (ImGui::Combo("Aspect ratio", &aspect, "Core aspect\0Square pixels\0")) {
+                                video.square_pixels = aspect != 0;
                                 save_frontend();
+                            }
+                            if (ImGui::Checkbox("Integer scaling", &video.integer_scale))
+                                save_frontend();
+                            ImGui::SetItemTooltip("Scale by whole source scanlines. Square pixels uses whole multiples on both axes.");
                             ImGui::TextUnformatted("Renderer: Direct3D 9");
                             if (ImGui::Button("Shader chains..."))
                                 shader_window_visible = true;
+                            ImGui::EndTabItem();
+                        }
+                        if (ImGui::BeginTabItem("Interface")) {
+                            if (ImGui::Combo("UI scale", &ui_scale_choice, ui_scale_labels, int(std::size(ui_scale_labels))))
+                                save_frontend();
                             ImGui::EndTabItem();
                         }
                         if (ImGui::BeginTabItem("Audio")) {

@@ -147,6 +147,29 @@ static void check_crops(void)
     for (unsigned y = 0; y < 4; ++y)
         for (unsigned x = 0; x < 5; ++x)
             pixel(x, y, (y & 1 ? 10 : 50) + 1 + y / 2, 22 + x);
+
+    /* Some ROMs shift the VI window by one field row on alternate fields.
+     * Both parities must share the same crop origin and output size. */
+    for (unsigned scale = 1; scale <= 4; scale *= 2) {
+        sr_field_output_reset(&fields);
+        vi.width = 8 * scale;
+        vi.height = 4 * scale;
+        for (unsigned field = 0; field < 4; ++field) {
+            vi.field = field & 1;
+            vi.active_x_begin = (vi.field ? 1 : 2) * scale;
+            vi.active_x_end = (vi.field ? 6 : 7) * scale;
+            vi.active_y_begin = (vi.field ? 0 : 1) * scale;
+            vi.active_y_end = (vi.field ? 3 : 4) * scale;
+            red = 10 + field * 30;
+            turn ^= 1;
+            render();
+            if (field) {
+                assert(submitted_width == 6 * scale && submitted_height == 8 * scale);
+                pixel(0, 0, red - (vi.field ? 0 : 30), 20 + scale);
+                pixel(0, 1, red - (vi.field ? 30 : 0), 20 + scale);
+            }
+        }
+    }
 }
 int main(void)
 {

@@ -13,7 +13,7 @@ class Video {
     void geometry(const retro_game_geometry &geometry, bool allocate = false);
     void refresh(const void *data, unsigned width, unsigned height, size_t pitch);
     void new_frame();
-    void draw(unsigned width, unsigned height);
+    void draw(unsigned width, unsigned height, unsigned top = 0);
     void present();
     void capture(const fs::path &path);
     void verify_software(const void *data, unsigned width, unsigned height, size_t pitch);
@@ -21,8 +21,9 @@ class Video {
     unsigned width() const;
     unsigned height() const;
     float aspect() const;
-    vp viewport(unsigned width, unsigned height) const;
+    vp viewport(unsigned width, unsigned height, unsigned top = 0) const;
     bool integer_scale = false;
+    bool square_pixels = false;
     bool verify_pixels = false;
     uint64_t verified_frames = 0;
 
