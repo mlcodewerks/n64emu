@@ -53,6 +53,7 @@ struct rdp_timing {
     uint32_t vi_field_ticks;
     uint64_t vi_elapsed;
     uint32_t span_fraction; /* Submission-local Q8 remainder; never serialized. */
+    uint32_t overlap_span_startup; /* Derived timing policy; never serialized. */
 };
 
 /* Command-derived uniform regions are proofs, not samples from GPU-stale
@@ -506,6 +507,21 @@ static inline unsigned rdp_timing_shared_bank_read_response(
     return (address >> 20) == (color >> 23) ? RDP_SHARED_BANK_READ_RESPONSE : 0;
 }
 
+static inline unsigned rdp_timing_span_startup(const struct rdp_timing *t, int memory_overlap)
+{
+    if (t->reject)
+        return 4u + 2u * t->cycle_type;
+
+    unsigned op = (t->words[0] >> 24) & 63;
+    if (t->atomic_primitive || op < 8 || op > 15 || t->vi_elapsed <= t->length / 2)
+        return 15u;
+
+    /* Later triangle spans can stage setup while the previous span drains.
+     * The detailed estimate credits this only for short spans with separate
+     * color/Z banks and memory service beyond the raster floor. */
+    return t->overlap_span_startup ? 9u : memory_overlap ? 11u : 15u;
+}
+
 static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned left,unsigned right,
     uint64_t color,uint64_t depth,unsigned color_read,unsigned depth_read,
     unsigned color_write,unsigned depth_write)
@@ -602,7 +618,9 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
         RDP_TIMING_OBSERVE_RESPONSE(t,transient>q?(transient-q+255)/256:0);
         if(q<transient)q=transient;
     }
-    unsigned startup=t->reject?4u+2u*t->cycle_type:15u;
+    int memory_overlap = pixels <= 64 && q > raster + 8 * 256 &&
+        color_live && depth_live && (color >> 23) != (depth >> 23);
+    unsigned startup = rdp_timing_span_startup(t, memory_overlap);
     if(parallel_depth) {
         uint64_t pipeline=raster+startup*256u;
         if(q<pipeline)q=pipeline;
@@ -751,7 +769,10 @@ static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, in
     transient = transient > occupied ? transient - occupied : 0;
     if (transient > uncovered) uncovered = transient;
     RDP_TIMING_OBSERVE_RESPONSE(t, uncovered);
-    unsigned startup = t->reject ? 4u + 2u * t->cycle_type : 15u;
+    int memory_overlap = pixels <= 64 && occupied > raster + 8 &&
+        (color_read || color_write) && (depth_read || depth_write) &&
+        (first >> 23) != (depth >> 23);
+    unsigned startup = rdp_timing_span_startup(t, memory_overlap);
     uint64_t work = startup + occupied + uncovered;
     t->vi_elapsed += work;
     return work;

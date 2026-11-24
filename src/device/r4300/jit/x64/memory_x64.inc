@@ -754,19 +754,21 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_fetch_native(config, index, exit->start, 1, check_line);
         unsigned ram_cycles = r4300_off_ram_cycles(config->fast_memory_timing);
         if (ram_cycles) emit_addimm(R13, ram_cycles, R13);
-        emit_state_imm(offsetof(struct r4300_core, pipeline_cached_store), 0, 0);
+        /* Native cacheless RAM operations never create hazard history.
+         * An ALU predecessor or the first RAM operation has cleared it. */
+        if (index == exit->start) emit_pipeline_clear();
     }
-    if (!deferred_pipeline(config)) {
-    emit_movimm64(config->cache_timing && !write && (rt || fp) ? UINT64_C(1) << (rt + (fp ? 32 : 0)) : 0, RAX);
-    if (fp && config->cache_timing && !write && (rt & 1)) {
-        emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
-        unsigned char* fr = emit_jump(5); emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)),RAX); patch_jump(fr,out);
-    }
-    emit_mem(0x89, 1, RAX, R12, -1, 0, offsetof(struct r4300_core, pipeline_load_mask));
-    if (index == exit->start) {
-        emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_result_mask), 0, 1);
-        emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_cc), 0, 0);
-    }
+    if (config->cache_timing && !deferred_pipeline(config)) {
+        emit_movimm64(!write && (rt || fp) ? UINT64_C(1) << (rt + (fp ? 32 : 0)) : 0, RAX);
+        if (fp && !write && (rt & 1)) {
+            emit_mem_imm(0xf7,0,0,R12,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
+            unsigned char* fr = emit_jump(5); emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)),RAX); patch_jump(fr,out);
+        }
+        emit_mem(0x89, 1, RAX, R12, -1, 0, offsetof(struct r4300_core, pipeline_load_mask));
+        if (index == exit->start) {
+            emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_result_mask), 0, 1);
+            emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_cc), 0, 0);
+        }
     }
     if (size < 4) {
         if(constant_address)emit_movimm((address^(size==1?3:2))&(size==1?3:2),RDX);

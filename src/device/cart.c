@@ -333,7 +333,13 @@ void af_rtc_write_block(struct af_rtc* rtc,
     }
 }
 
-#define CART_ROM_ADDR_MASK UINT32_C(0x03ffffff);
+static uint32_t cart_rom_offset(const struct cart_rom* cart_rom, uint32_t address)
+{
+    /* Keep the legacy 64 MiB mirror for ordinary cartridges. Large
+     * cartridges use the full linear PI ROM window. */
+    return address & (cart_rom->rom_size > CART_ROM_LEGACY_SIZE ?
+        UINT32_C(0x0fffffff) : CART_ROM_LEGACY_SIZE - 1);
+}
 
 void init_cart_rom(struct cart_rom* cart_rom,
                    uint8_t* rom, size_t rom_size,
@@ -369,7 +375,7 @@ void poweron_cart_rom(struct cart_rom* cart_rom)
 void read_cart_rom(void* opaque, uint32_t address, uint32_t* value)
 {
     struct cart_rom* cart_rom = (struct cart_rom*)opaque;
-    uint32_t addr = rom_address(address);
+    uint32_t addr = cart_rom_offset(cart_rom, address) & ~UINT32_C(3);
 
     if (cart_rom->pi->regs[PI_STATUS_REG] & PI_STATUS_IO_BUSY)
     {
@@ -387,7 +393,8 @@ void read_cart_rom(void* opaque, uint32_t address, uint32_t* value)
          * phase on AD16 instead. Apply this to every ROM, independent of
          * its header, page setting or release duration. This deliberately
          * does not claim measured per-chip thresholds near normal timings. */
-        if ((address & UINT32_C(0x1c000000)) == UINT32_C(0x10000000) &&
+        if ((cart_rom->rom_size > CART_ROM_LEGACY_SIZE ||
+             (address & UINT32_C(0x1c000000)) == UINT32_C(0x10000000)) &&
             cart_rom->pi->regs[PI_BSD_DOM1_LAT_REG] <= 2 &&
             cart_rom->pi->regs[PI_BSD_DOM1_PWD_REG] <= 2)
             *value = ((address & 0xfffeu) << 16) | (address & 0xfffeu);
@@ -417,7 +424,7 @@ void write_cart_rom(void* opaque, uint32_t address, uint32_t value, uint32_t mas
 
 unsigned int cart_rom_dma_read(void* opaque, const uint8_t* dram, uint32_t dram_addr, uint32_t cart_addr, uint32_t length)
 {
-    cart_addr &= CART_ROM_ADDR_MASK;
+    cart_addr = cart_rom_offset(opaque, cart_addr);
 
     core_log(CORE_LOG_WARNING, "DMA Writing to CART_ROM: 0x%" PRIX32 " -> 0x%" PRIX32 " (0x%" PRIX32 ")", dram_addr, cart_addr, length);
 
@@ -430,7 +437,7 @@ unsigned int cart_rom_dma_write(void* opaque, uint8_t* dram, uint32_t dram_addr,
     struct cart_rom* cart_rom = (struct cart_rom*)opaque;
     const uint8_t* mem = cart_rom->rom;
 
-    cart_addr &= CART_ROM_ADDR_MASK;
+    cart_addr = cart_rom_offset(cart_rom, cart_addr);
 
     if (cart_addr + length < cart_rom->rom_size)
     {

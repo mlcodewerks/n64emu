@@ -543,17 +543,21 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_fetch_native(config, index, exit->start, 1, check_line);
         unsigned ram_cycles = r4300_off_ram_cycles(config->fast_memory_timing);
         if (ram_cycles) emit_addimm(CLOCKS, ram_cycles, CLOCKS);
-        emit_state_imm(offsetof(struct r4300_core, pipeline_cached_store), 0, 0);
+        /* Native cacheless RAM operations never create hazard history.
+         * An ALU predecessor or the first RAM operation has cleared it. */
+        if (index == exit->start) emit_pipeline_clear();
     }
-    emit_movimm64(config->cache_timing && !write && (rt || fp) ? UINT64_C(1) << (rt + (fp ? 32 : 0)) : 0, T0);
-    if (fp && config->cache_timing && !write && (rt & 1)) {
-        emit_mem_imm(0xf7,0,0,STATE,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
-        unsigned char* fr = emit_jump(5); emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)),T0); patch_jump(fr,out);
-    }
-    emit_mem(0x89, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, pipeline_load_mask));
-    if (index == exit->start) {
-        emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_result_mask), 0, 1);
-        emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_cc), 0, 0);
+    if (config->cache_timing) {
+        emit_movimm64(!write && (rt || fp) ? UINT64_C(1) << (rt + (fp ? 32 : 0)) : 0, T0);
+        if (fp && !write && (rt & 1)) {
+            emit_mem_imm(0xf7,0,0,STATE,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
+            unsigned char* fr = emit_jump(5); emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)),T0); patch_jump(fr,out);
+        }
+        emit_mem(0x89, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, pipeline_load_mask));
+        if (index == exit->start) {
+            emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_result_mask), 0, 1);
+            emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_cc), 0, 0);
+        }
     }
     if (size < 4) {
         if(constant_address)emit_movimm((address^(size==1?3:2))&(size==1?3:2),T2);

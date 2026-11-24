@@ -36,17 +36,6 @@ void pif_bootrom_hle_execute(struct r4300_core* r4300)
 {
     if (r4300->start_address == 0xbfc00000) return;
 
-#ifndef N64EMU_USF
-    /* IPL3's calibration time is observable even when gameplay uses Fast
-     * timing. Keep the native clock through the first VI so early controller
-     * initialization also observes its normal startup delay. */
-    if (!r4300->cache_timing) {
-        r4300->startup |= R4300_STARTUP_FAST_BOOT;
-        r4300->cache_timing = 1;
-        r4300->compat_issue_clock = 0;
-    }
-#endif
-
     uint32_t pif24;
     unsigned int seed;       /* seed (depends on CIC version) */
     unsigned int rom_type;   /* 0:Cart, 1:DD */

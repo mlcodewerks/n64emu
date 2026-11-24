@@ -13,8 +13,8 @@ enum controller_pak_option { CONTROLLER_PAK_NONE, CONTROLLER_PAK_MEMORY,
 #define N64EMU_RELAXED_FP_STATUS_AVAILABLE 0
 #endif
 struct renderer_settings {
-    /* Games retain caches, hazards and component timing. Off may omit disabled
-     * FP inexact status updates; USF keeps its separate ripper clock. */
+    /* Game profiles share component timing. Off bypasses CPU caches and may
+     * omit disabled FP inexact status updates. USF uses its ripper clock. */
     bool per_cycle_timing;
     bool component_timing;
     bool relaxed_fp_status;

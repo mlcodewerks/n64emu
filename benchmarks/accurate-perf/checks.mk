@@ -104,8 +104,8 @@ $(OUT)/cpu-cache-checks$(EXE): $(CPU_OBJECTS) $(CPU_JIT_OBJECTS)
 	$(CXX) $^ -Wl,--gc-sections -lm -o $@
 $(OUT)/cart-dongle-checks$(EXE): benchmarks/cart_dongle_checks.c src/device/cart.c src/device/cart.h | $(OUT)
 	$(CC) $(CFLAGS) $(INCLUDES) -O2 -std=gnu99 -flto -fwhole-program $(filter %.c,$^) -o $@
-$(OUT)/rom-database-checks$(EXE): benchmarks/rom_database_checks.c src/main/rom_database.h src/main/rom_database_ares.h | $(OUT)
-	$(CC) $(CFLAGS) $(INCLUDES) -O2 $< -o $@
+$(OUT)/rom-database-checks$(EXE): benchmarks/rom_database_checks.c src/main/rom_database.c src/main/rom_database.h src/main/rom_database_ares.h src/main/rom_database_mister.h | $(OUT)
+	$(CC) $(CFLAGS) $(INCLUDES) -O2 $(filter %.c,$^) -o $@
 $(OUT)/rdram-checks$(EXE): benchmarks/rdram_checks.c src/device/rdram.c src/device/rdram.h src/device/memory.h src/device/rcp/rcp.h | $(OUT)
 	$(CC) $(CFLAGS) $(INCLUDES) -O2 -std=gnu99 $(filter %.c,$^) -o $@
 $(OUT)/boot-timing-checks$(EXE): $(OUT)/benchmarks/boot_timing_checks.o $(filter-out $(OUT)/benchmarks/accurate-perf/cpu_cache_checks.o,$(CPU_OBJECTS)) $(CPU_JIT_OBJECTS)

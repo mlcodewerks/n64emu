@@ -49,7 +49,7 @@ make -f tests/unit.mk check-new -j6
 | --- | --- |
 | CPU integer operations | Independent result vectors in Accurate and Off; shifts, arithmetic, branches/annulled delay slots, links, multiply/divide, zero register, overflow, alignment and privilege exceptions |
 | CP0 and interrupts | Queue ordering, Count wrap, save/restore, duplicate events, IE/EXL/ERL and masks, EPC/BD, deferred interrupts and delay slots |
-| CPU timing | Instruction and FPU latency, Off's seven-clock RAM estimate, half-clock phase, monotonic clock, Count writes/wrap, MMIO, pipeline hazards and SDK poll shortcut versus ordinary execution; separate game/USF policy builds |
+| CPU timing | Instruction and FPU latency, cacheless RAM estimates, half-clock phase, monotonic clock, Count writes/wrap, MMIO, pipeline hazards and SDK poll shortcut versus ordinary execution; separate game/USF policy builds |
 | Caches, TLB and JIT | Existing precise/native state and clock comparisons, cache/write-buffer/coherence, mapped/uncached memory, protection faults, event exits, arena and resume guards |
 | Floating point | Existing native/precise value, FCR31, exception, rounding and host FP environment tests; mapped execution and branch/delay-slot paths |
 | RDRAM and memory map | RDRAM register/data tests; inclusive region dispatch, masked writes, live remapping and fastmem invalidation |

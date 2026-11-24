@@ -9,7 +9,8 @@
 #include "osal/preproc.h"
 
 enum { RDRAM_MAX_SIZE = 0x800000 };
-enum { CART_ROM_MAX_SIZE = 0x4000000 };
+/* PI Domain 1 Address 2 ends immediately before the PIF window. */
+enum { CART_ROM_LEGACY_SIZE = 0x04000000, CART_ROM_MAX_SIZE = 0x0fc00000 };
 enum { DD_ROM_MAX_SIZE = 0x400000 };
 
 typedef void (*read32fn)(void*,uint32_t,uint32_t*);

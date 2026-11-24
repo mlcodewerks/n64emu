@@ -34,6 +34,9 @@ static void attach_timing(struct rdp_core *dp)
     dp->timing.vi_regs = dp->vi_regs;
     dp->timing.vi_field_start = vi ? vi->field_start_count_clock : 0;
     dp->timing.vi_field_ticks = vi ? vi->field_ticks : 0;
+#ifndef N64EMU_USF
+    dp->timing.overlap_span_startup = !dp->mi->r4300->cache_timing;
+#endif
     if (dp->timing.validate_uniform_ram) {
         /* Restoring clears frontend framebuffer protection. Verify every
          * saved proof against synchronized RDRAM before its first use, so
@@ -124,28 +127,31 @@ static void read_busy(struct rdp_core *dp, unsigned reg, int from_rsp)
 
 uint32_t rdp_sync_full_delay(const struct rdp_core* dp)
 {
-    /* Whole-frame completion approximation used by simple64. Unlike the
-     * previous fixed 4000 ticks, scale with native VI output geometry.
-     * This is not a per-command RDP pipeline or RDRAM contention model. */
-    if (!dp->vi_regs) return 4000;
+    /* The fallback estimates a whole frame from programmed VI geometry. */
+    /* An idle FullSync has one RDP delivery clock, rounded up to one COUNT
+     * tick. Any known queued work is accounted for by the caller. */
+    const uint32_t min_delay = 1;
+    if (!dp->vi_regs) return min_delay;
     const uint32_t* vi = dp->vi_regs;
     uint32_t hs = (vi[VI_H_START_REG] >> 16) & 1023, he = vi[VI_H_START_REG] & 1023;
     uint32_t vs = (vi[VI_V_START_REG] >> 16) & 1023, ve = vi[VI_V_START_REG] & 1023;
-    uint32_t w = (hs > he ? hs - he : he - hs);
-    uint32_t h = (vs > ve ? vs - ve : ve - vs);
-    if (!w) w = vi[VI_WIDTH_REG];
-    w = (vi[VI_X_SCALE_REG] & 4095) ? w * (vi[VI_X_SCALE_REG] & 4095) / 1024 : 320;
-    h = (vi[VI_Y_SCALE_REG] & 4095) ? h * (vi[VI_Y_SCALE_REG] & 4095) / 2048 : 240;
+    uint32_t pitch = vi[VI_WIDTH_REG] & 4095;
+    uint32_t x_scale = vi[VI_X_SCALE_REG] & 4095, y_scale = vi[VI_Y_SCALE_REG] & 4095;
+    if (ve <= vs || !y_scale) return min_delay;
+    /* The programmed source pitch is already in pixels. Scale only the
+     * output window, whose width is in video clocks and height in halflines. */
+    uint32_t w = he > hs && x_scale ? (he - hs) * x_scale / 1024 : pitch;
+    uint32_t h = (ve - vs) * y_scale / 2048;
     /* A doubled VI pitch scans alternate rows of an interlaced color image.
      * The geometry above counts one field, but SyncFull completes the whole
      * rendered frame. Y_SCALE-based interlace already counts both fields;
      * distinguish the two layouts using the native color-image pitch. */
     if (dp->instruction_timing && (vi[VI_STATUS_REG] & 0x40) &&
         dp->timing.fb_width &&
-        (vi[VI_WIDTH_REG] & 0xfff) == dp->timing.fb_width * 2u)
+        pitch == dp->timing.fb_width * 2u)
         h *= 2;
     uint32_t ticks = w * h * 2;
-    return ticks > 4000 ? ticks : 4000;
+    return ticks > min_delay ? ticks : min_delay;
 }
 
 static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
@@ -213,23 +219,57 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
             if (!get_event(&dp->mi->r4300->cp0.q, DP_INT))
             {
                 cp0_update_count(dp->mi->r4300);
-                uint32_t delay = rdp_sync_full_delay(dp);
-#if defined(HAVE_PARALLEL_RSP)
-                if (from_rsp)
-                    delay += (uint32_t)(((uint64_t)parallelRSPExecutedCycles() * 3 + 3) / 4);
-#endif
-                /* Work after the first FullSync belongs to the next fence.
-                 * Keep a fallback for backends that raise DP without a
-                 * matching native packet in this submission. */
+                /* Use the decoded fence when available. It already includes
+                 * packet delivery and excludes work after the first FullSync. */
                 int64_t deadline = sync.seen ? sync.deadline : dp->timing.deadline;
                 int64_t work = dp->instruction_timing ? deadline - dp->mi->r4300->cp0.count_clock : 0;
-                /* A decoded FullSync already includes packet delivery and
-                 * queued raster work. The geometry fallback is not another
-                 * minimum frame cost: it delays small/blank lists and can
-                 * move a buffer swap across a retrace. */
-                if (dp->instruction_timing && sync.seen)
-                    delay = work <= 0 ? 0 : work > UINT32_MAX ? UINT32_MAX : (uint32_t)work;
-                else if (work > delay) delay = work > UINT32_MAX ? UINT32_MAX : (uint32_t)work;
+                uint64_t remaining = work > 0 ? (uint64_t)work : 0;
+                if (!sync.seen) {
+                    uint64_t fallback = rdp_sync_full_delay(dp);
+#if defined(HAVE_PARALLEL_RSP)
+                    if (from_rsp)
+                        fallback += rsp_count_ticks(parallelRSPExecutedCycles(), 0);
+#endif
+                    if (remaining < fallback)
+                        remaining = fallback;
+                }
+                uint32_t delay = remaining > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining;
+#ifndef N64EMU_USF
+                if (dp->instruction_timing && !dp->mi->r4300->cache_timing) {
+                    /* Keep short fences close to the raster estimate.
+                     * Ramp up the allowance past 1.6 VI fields.
+                     * Bound the resulting delay by three fields while
+                     * preserving any longer raster deadline. */
+                    uint64_t estimated_delay = (uint64_t)delay * 5 / 4;
+                    uint32_t field_ticks = dp->timing.vi_field_ticks;
+                    if (field_ticks) {
+                        uint64_t ramp_start = (uint64_t)field_ticks * 8 / 5;
+                        uint64_t excess = delay > ramp_start ? delay - ramp_start : 0;
+                        uint64_t ramped_delay = ((uint64_t)delay * 105 + excess * 175) / 100;
+                        uint64_t field_limit = (uint64_t)field_ticks * 3;
+                        if (estimated_delay > ramped_delay)
+                            estimated_delay = ramped_delay;
+                        if (estimated_delay > field_limit)
+                            estimated_delay = delay > field_limit ? delay : field_limit;
+                        /* For work within two fields, keep the estimated allowance
+                         * from moving an on-time raster fence past a retrace. */
+                        if (estimated_delay > delay && delay <= (uint64_t)field_ticks * 2) {
+                            const struct cp0* cp0 = &dp->mi->r4300->cp0;
+                            const unsigned int* vi_event = get_event(&cp0->q, VI_INT);
+                            if (vi_event) {
+                                uint32_t next_vi = *vi_event - cp0->regs[CP0_COUNT_REG];
+                                if (next_vi <= field_ticks) {
+                                    uint32_t until_vi = delay < next_vi ? next_vi - delay :
+                                        field_ticks - (delay - next_vi) % field_ticks;
+                                    if (estimated_delay - delay >= until_vi)
+                                        estimated_delay = (uint64_t)delay + until_vi - 1;
+                                }
+                            }
+                        }
+                    }
+                    delay = estimated_delay > UINT32_MAX ? UINT32_MAX : (uint32_t)estimated_delay;
+                }
+#endif
                 add_interrupt_event(&dp->mi->r4300->cp0, DP_INT, delay);
             }
         }

@@ -1,9 +1,51 @@
 #include "support.h"
 #include "device/cart.h"
+#include "device/memory.h"
+#include "device/rcp/rcp.h"
 #include "core/types.h"
+
+unsigned int add_random_interrupt_time(struct r4300_core *cpu)
+{
+    (void)cpu;
+    return 0;
+}
+
+static void check_large_cart(void)
+{
+    const size_t size = CART_ROM_LEGACY_SIZE + 8;
+    uint32_t *rom = calloc(1, size);
+    assert(rom);
+    rom[0] = 0x8090a0b0;
+    rom[CART_ROM_LEGACY_SIZE / 4 - 1] = 0x11223344;
+    rom[CART_ROM_LEGACY_SIZE / 4] = 0x55667788;
+    rom[CART_ROM_LEGACY_SIZE / 4 + 1] = 0x99aabbcc;
+    struct pi_controller pi = {0};
+    pi.regs[PI_BSD_DOM1_LAT_REG] = 0xff;
+    pi.regs[PI_BSD_DOM1_PWD_REG] = 0xff;
+    struct cart_rom cart;
+    uint32_t value, dma[4];
+
+    init_cart_rom(&cart, (uint8_t*)rom, size, NULL, &pi);
+    read_cart_rom(&cart, 0x14000000, &value);
+    assert(value == 0x55667788);
+    read_cart_rom(&cart, 0x14000008, &value);
+    assert(value == 0);
+    cart_rom_dma_write(&cart, (uint8_t*)dma, 0, 0x13fffffc, sizeof(dma));
+    assert(dma[0] == 0x11223344 && dma[1] == 0x55667788);
+    assert(dma[2] == 0x99aabbcc && dma[3] == 0);
+
+    init_cart_rom(&cart, (uint8_t*)rom, CART_ROM_LEGACY_SIZE, NULL, &pi);
+    read_cart_rom(&cart, 0x14000000, &value);
+    assert(value == 0x8090a0b0);
+    cart_rom_dma_write(&cart, (uint8_t*)dma, 0, 0x14000000, 4);
+    assert(dma[0] == 0x8090a0b0);
+    free(rom);
+}
+
 int main(void)
 {
     unit_headless();
+    check_large_cart();
     uint8_t bytes[FLASHRAM_SIZE],ram[256],out[16],pattern[8]={0x12,0x34,0x56,0x78,0x9a,0xbc,0xde,0xf0};
     unsigned cases=0;
     for(unsigned large=0;large<2;++large){
@@ -34,5 +76,7 @@ int main(void)
     struct sram sr;s.length=SRAM_SIZE;s.saves=0;memset(bytes,0,SRAM_SIZE);init_sram(&sr,&s,&test_storage_api);
     write_sram(&sr,0x08000004,0x12345678,UINT32_MAX);write_sram(&sr,0x08000004,0xabcd0000,0xffff0000);
     read_sram(&sr,0x08000004,&value);assert(value==0xabcd5678 && s.saves==2);++cases;
-    printf("Cartridge saves: %u EEPROM/FlashRAM/SRAM boundary and persistence cases passed.\n",cases);return 0;
+    printf("Cartridge saves: %u EEPROM/FlashRAM/SRAM boundary and persistence cases passed.\n",cases);
+    puts("Cartridge ROM: CPU reads, PI DMA, end of image and 64 MiB mirroring passed.");
+    return 0;
 }

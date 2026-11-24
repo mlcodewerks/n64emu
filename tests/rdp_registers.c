@@ -13,9 +13,42 @@ void init_fb(struct fb* f,struct memory* m,struct rdram* r,struct r4300_core* c)
 void poweron_fb(struct fb* f){(void)f;}
 void protect_framebuffers(struct fb* f){(void)f;assert(!"unexpected framebuffer protection");}
 void unprotect_framebuffers(struct fb* f){(void)f;assert(!"unexpected framebuffer protection");}
+
+static void check_sync_full_delay(void)
+{
+    uint32_t vi[VI_REGS_COUNT] = {
+        [VI_STATUS_REG] = 2,
+        [VI_WIDTH_REG] = 320,
+        [VI_H_START_REG] = (108u << 16) | 748u,
+        [VI_V_START_REG] = (34u << 16) | 514u,
+        [VI_X_SCALE_REG] = 512,
+        [VI_Y_SCALE_REG] = 1024
+    };
+    struct rdp_core dp = {0};
+    assert(rdp_sync_full_delay(&dp) == 1);
+    dp.vi_regs = vi;
+    assert(rdp_sync_full_delay(&dp) == 320 * 240 * 2);
+
+    /* The fallback pitch is in source pixels and ignores reserved bits. */
+    vi[VI_WIDTH_REG] = 0xa0000140u;
+    vi[VI_H_START_REG] = 0;
+    assert(rdp_sync_full_delay(&dp) == 320 * 240 * 2);
+
+    vi[VI_STATUS_REG] |= 0x40;
+    vi[VI_WIDTH_REG] = 640;
+    vi[VI_H_START_REG] = (108u << 16) | 748u;
+    dp.instruction_timing = 1;
+    dp.timing.fb_width = 320;
+    assert(rdp_sync_full_delay(&dp) == 320 * 480 * 2);
+
+    vi[VI_V_START_REG] = (514u << 16) | 34u;
+    assert(rdp_sync_full_delay(&dp) == 1);
+}
+
 int main(void)
 {
     unit_headless();static struct r4300_core cpu;static struct rsp_core sp;
+    check_sync_full_delay();
     struct mi_controller mi={0};mi.r4300=&cpu;struct rdp_core dp={0};uint32_t value;
     init_rdp(&dp,&sp,&mi,NULL,NULL,&cpu);poweron_rdp(&dp);
     read_dpc_regs(&dp,DPC_STATUS_REG*4,&value);assert(value==DPC_STATUS_START_GCLK);
@@ -45,5 +78,5 @@ int main(void)
     write_dpc_regs(&dp,DPC_STATUS_REG*4,DPC_CLR_CMD_CTR|DPC_CLR_PIPE_CTR|DPC_CLR_TMEM_CTR,UINT32_MAX);
     assert(!dp.dpc_regs[DPC_BUFBUSY_REG] && !dp.dpc_regs[DPC_PIPEBUSY_REG] && !dp.dpc_regs[DPC_TMEM_REG]);
     poweron_rdp(&dp);
-    puts("RDP: DPC flags/latches, unfreeze notifications, clock wrap/restore, DPS masks passed.");return 0;
+    puts("RDP: DPC flags/latches, unfreeze notifications, clock wrap/restore, SyncFull delay, DPS masks passed.");return 0;
 }

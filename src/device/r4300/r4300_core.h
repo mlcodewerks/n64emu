@@ -73,7 +73,6 @@ enum {
 
 enum {
     R4300_STARTUP_INIT = 1,
-    R4300_STARTUP_FAST_BOOT = 2, /* Restore Fast timing after the first VI. */
 };
 
 struct r4300_core

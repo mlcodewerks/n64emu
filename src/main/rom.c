@@ -116,7 +116,8 @@ core_result open_rom(const unsigned char* romimage, unsigned int size)
     int i;
 
     /* check input requirements */
-    if (romimage == NULL || size < sizeof(core_rom_header) || !is_valid_rom(romimage))
+    if (romimage == NULL || size < sizeof(core_rom_header) ||
+        size > CART_ROM_MAX_SIZE || (size & 3) || !is_valid_rom(romimage))
     {
         core_log(CORE_LOG_ERROR, "open_rom(): not a valid ROM image");
         return CORE_INVALID_INPUT;
@@ -148,6 +149,8 @@ core_result open_rom(const unsigned char* romimage, unsigned int size)
     trim(ROM_PARAMS.headername); /* Remove trailing whitespace from ROM name. */
 
     rom_database_settings((const uint8_t*)&ROM_HEADER, &ROM_SETTINGS);
+    rom_database_mister((const uint8_t*)mem_base_u32(g_mem_base, MM_CART_ROM), size, digest,
+        &ROM_SETTINGS, &ROM_PARAMS.systemtype);
 
     /* print out a bunch of info about the ROM */
     core_log(CORE_LOG_INFO, "Name: %s", ROM_PARAMS.headername);

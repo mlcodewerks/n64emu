@@ -53,11 +53,6 @@ struct cart_rom
     struct pi_controller* pi;
 };
 
-static osal_inline uint32_t rom_address(uint32_t address)
-{
-    return (address & 0x03fffffc);
-}
-
 void init_cart_rom(struct cart_rom* cart_rom,
                    uint8_t* rom, size_t rom_size,
                    struct r4300_core* r4300,

@@ -55,16 +55,10 @@ enum { R4300_OFF_RAM_CYCLES = 0 };
 enum { R4300_OFF_RAM_CYCLES = 7 };
 #endif
 
-/* Both commercial-game profiles preserve caches. USF keeps its separate
- * ripper clock and memory policy. */
+/* Only accurate CPU timing uses the cache and pipeline models. */
 static inline unsigned r4300_profile_cache_enabled(unsigned accurate)
 {
-#ifdef N64EMU_USF
     return accurate != 0;
-#else
-    (void)accurate;
-    return 1;
-#endif
 }
 
 static inline unsigned r4300_off_ram_cycles(unsigned faster)

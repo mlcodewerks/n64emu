@@ -13,12 +13,11 @@ int main(void)
     assert(r4300_off_ram_cycles(0) == 7 && r4300_off_ram_cycles(1) == 3);
 #endif
     for (unsigned cycle = 0; cycle < 2; ++cycle) {
-#ifdef N64EMU_USF
         assert(r4300_profile_cache_enabled(cycle) == cycle);
+#ifdef N64EMU_USF
         assert(r4300_cached_issue_reservation(cycle, 0) == 3);
         assert(r4300_cached_issue_reservation(cycle, 1) == 3);
 #else
-        assert(r4300_profile_cache_enabled(cycle) == 1);
         assert(r4300_cached_issue_reservation(cycle, 0) == cycle);
         assert(r4300_cached_issue_reservation(cycle, 1) == 0);
 #endif

@@ -59,7 +59,7 @@ void renderer_register_options(retro_environment_t environment)
                 "Changes take effect when content is restarted." :
                 "Changes take effect while content is running.";
             if (!strcmp(d->key, "n64emu_cycle_timing"))
-                d->info = "On uses accurate CPU timing. Off simplifies CPU memory scheduling and disabled floating-point inexact-status reporting for performance. Both retain caches, dependency interlocks, arithmetic results, enabled exceptions and RCP timing. Restart content after changing this option.";
+                d->info = "On models CPU caches and pipeline interlocks. Off uses a fixed CPU RAM timing estimate and may skip disabled floating-point inexact-status reporting. Both retain arithmetic results, enabled exceptions and RCP timing. Restart content after changing this option.";
             if (!strcmp(d->key, "wtfn64_vi_filter") || !strcmp(d->key, "wtfn64_vi_dedither") ||
                 !strcmp(d->key, "wtfn64_vi_blur"))
                 d->info = "Applies immediately to SoftRDP.";

@@ -82,6 +82,9 @@ void poweron_r4300(struct r4300_core* r4300)
     r4300->compat_issue_clock = 1;
 #ifdef __LIBRETRO__
     r4300->cache_timing = r4300_profile_cache_enabled(renderer_settings.per_cycle_timing);
+#ifndef N64EMU_USF
+    r4300->fast_memory_timing = !r4300->cache_timing;
+#endif
     r4300->compat_issue_clock = renderer_settings.relaxed_fp_status ? R4300_ISSUE_RELAXED_FP_STATUS :
         renderer_settings.per_cycle_timing ? R4300_ISSUE_ACCURATE : R4300_ISSUE_COMPATIBLE;
 #endif

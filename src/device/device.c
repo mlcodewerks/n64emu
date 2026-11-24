@@ -130,8 +130,7 @@ void init_device(struct device* dev,
         { A(MM_DOM2_ADDR1, 0xffffff), CORE_MEMORY_NOTHING, { NULL, RW(open_bus) } },
         { A(MM_DD_ROM, 0x1ffffff), CORE_MEMORY_NOTHING, { NULL, RW(open_bus) } },
         { A(MM_DOM2_ADDR2, 0x1ffff), CORE_MEMORY_FLASHRAMSTAT, { &dev->cart, RW(cart_dom2)  } },
-        { MM_CART_ROM, UINT32_C(0x1fbfffff), CORE_MEMORY_ROM, { &dev->cart.cart_rom, RW(cart_rom) } },
-        { A(MM_IS_VIEWER, 0xfff), CORE_MEMORY_NOTHING, { &dev->is, RW(is_viewer) } },
+        { MM_CART_ROM, MM_CART_ROM + CART_ROM_MAX_SIZE - 1, CORE_MEMORY_ROM, { &dev->cart.cart_rom, RW(cart_rom) } },
         { A(MM_PIF_MEM, 0xffff), CORE_MEMORY_PIF, { &dev->pif, RW(pif_mem) } }
     };
 
@@ -154,6 +153,14 @@ void init_device(struct device* dev,
 #undef RW
 
     init_memory(&dev->mem, mappings, ARRAY_SIZE(mappings), base, &dbg_handler);
+    /* IS-Viewer shares a ROM page. Keep it available for legacy images. */
+    if (rom_size <= CART_ROM_LEGACY_SIZE) {
+        const struct mem_mapping viewer = {
+            MM_IS_VIEWER, MM_IS_VIEWER + 0xfff, CORE_MEMORY_NOTHING,
+            { &dev->is, read_is_viewer, write_is_viewer }
+        };
+        apply_mem_mapping(&dev->mem, &viewer);
+    }
 
     init_rdram(&dev->rdram, mem_base_u32(base, MM_RDRAM_DRAM), dram_size, &dev->r4300);
 

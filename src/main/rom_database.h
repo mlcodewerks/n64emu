@@ -1,7 +1,12 @@
 #ifndef N64EMU_ROM_DATABASE_H
 #define N64EMU_ROM_DATABASE_H
 
+#include <stddef.h>
 #include "rom_database_ares.h"
+
+/* The ROM and its MD5 must use the original big-endian byte order. */
+void rom_database_mister(const uint8_t *rom, size_t size, const uint8_t rom_md5[16],
+    core_rom_settings *settings, core_system_type *region);
 
 /* Local board variants and homebrew additions stay outside the generated
  * upstream database so regenerating it does not remove compatibility fixes. */

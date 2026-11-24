@@ -966,6 +966,28 @@ int core_state_load(struct device* dev, const void *data)
         }
     }
 
+    if (!dev->r4300.cache_timing) {
+        struct r4300_core *cpu = &dev->r4300;
+        /* Cached profiles can save dirty RDRAM lines that Off would never
+         * read. Materialize them without advancing the restored clock. */
+        for (unsigned index = 0; index < sizeof(cpu->dcache_tags) / sizeof(cpu->dcache_tags[0]); ++index) {
+            uint32_t tag = cpu->dcache_tags[index];
+            if ((tag & 3) != 3)
+                continue;
+            uint32_t address = (tag & 0x1ffff000) | ((index << 4) & 0xff0);
+            if (address < dev->rdram.dram_size) {
+                unsigned word = rdram_dram_address(address);
+                memcpy(dev->rdram.dram + word, cpu->dcache_words[index], sizeof(cpu->dcache_words[index]));
+            }
+        }
+        memset(cpu->dcache_tags, 0, sizeof(cpu->dcache_tags));
+        memset(cpu->icache_tags, 0, sizeof(cpu->icache_tags));
+        memset(cpu->icache_shadow_tags, 0, sizeof(cpu->icache_shadow_tags));
+        cpu->icache_fill_end = 0;
+        cpu->write_buffer_count = 0;
+        cpu->prefetch_valid = 0;
+    }
+
     free(savestateData);
     return 1;
 }
