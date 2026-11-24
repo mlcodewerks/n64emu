@@ -516,6 +516,13 @@ static inline unsigned rdp_timing_span_startup(const struct rdp_timing *t, int m
     if (t->atomic_primitive || op < 8 || op > 15 || t->vi_elapsed <= t->length / 2)
         return 15u;
 
+    /* Both profiles use the same video-calibrated startup when 16-bit
+     * one-cycle triangles enable framebuffer reads and Z compare, with
+     * neither interpolated Z nor Z writes. */
+    if (t->cycle_type == 0 && t->fb_size == 2 && !(op & 1u) &&
+        (t->modes & 0x70u) == 0x50u)
+        return 11u;
+
     /* Later triangle spans can stage setup while the previous span drains.
      * The detailed estimate credits this only for short spans with separate
      * color/Z banks and memory service beyond the raster floor. */
@@ -1027,6 +1034,8 @@ static inline uint32_t rdp_timing_command(struct rdp_timing* t)
 /* Submission-local milestone, never part of serialized timing state. */
 struct rdp_timing_sync {
     int seen;
+    int one_cycle_without_image_read;
+    uint32_t fb_width;
     int64_t deadline;
 };
 
@@ -1071,6 +1080,8 @@ static inline void rdp_timing_finish(struct rdp_timing* t, int64_t submitted,
     }
     if (sync && !sync->seen && ((t->words[0] >> 24) & 63) == 0x29) {
         sync->seen = 1;
+        sync->one_cycle_without_image_read = t->cycle_type == 0 && !(t->modes & 0x40u);
+        sync->fb_width = t->fb_width;
         sync->deadline = t->deadline;
     }
     RDP_TIMING_OBSERVE_FINISH(t, submitted);

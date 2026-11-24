@@ -125,6 +125,12 @@ static void read_busy(struct rdp_core *dp, unsigned reg, int from_rsp)
     retire_counters(dp, now);
 }
 
+static int vi_uses_alternate_rows(const uint32_t* vi, uint32_t fb_width)
+{
+    return vi && (vi[VI_STATUS_REG] & 0x40u) && fb_width &&
+        (vi[VI_WIDTH_REG] & 4095u) == fb_width * 2u;
+}
+
 uint32_t rdp_sync_full_delay(const struct rdp_core* dp)
 {
     /* The fallback estimates a whole frame from programmed VI geometry. */
@@ -146,9 +152,7 @@ uint32_t rdp_sync_full_delay(const struct rdp_core* dp)
      * The geometry above counts one field, but SyncFull completes the whole
      * rendered frame. Y_SCALE-based interlace already counts both fields;
      * distinguish the two layouts using the native color-image pitch. */
-    if (dp->instruction_timing && (vi[VI_STATUS_REG] & 0x40) &&
-        dp->timing.fb_width &&
-        pitch == dp->timing.fb_width * 2u)
+    if (dp->instruction_timing && vi_uses_alternate_rows(vi, dp->timing.fb_width))
         h *= 2;
     uint32_t ticks = w * h * 2;
     return ticks > min_delay ? ticks : min_delay;
@@ -165,7 +169,7 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
 
     attach_timing(dp);
     dp_pending = dp->mi->regs[MI_INTR_REG] & MI_INTR_DP;
-    if (dp->vi_regs && dp->instruction_timing) {
+    if (dp->instruction_timing && (from_rsp || dp->vi_regs)) {
         int64_t submitted = dp->mi->r4300->cp0.count_clock;
 #if defined(HAVE_PARALLEL_RSP)
         if (from_rsp) submitted = dp->sp->slice_start_clock +
@@ -202,20 +206,23 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
     if (sync.seen && !dp->timing.pos && ((dp->timing.words[0] >> 24) & 63) == 0x29)
         dp->pipe_sync_deadline = dp->timing.deadline > 0 ? dp->timing.deadline : 1;
 
-    /* Only SyncFull raises a DP edge. Preserve already pending interrupts. */
+    /* Native RSP submissions can publish a decoded FullSync even when the
+     * renderer has no completion signal. Preserve any latched DP interrupt. */
+    const int decoded_rsp_fence = from_rsp && sync.seen;
 #ifdef RDP_TIMING_OBSERVE_QUEUE
     if (sync.seen)
         RDP_TIMING_OBSERVE_QUEUE(0, dp->mi->r4300->cp0.count_clock,
             sync.deadline, dp->timing.deadline, dp_pending,
             get_event(&dp->mi->r4300->cp0.q, DP_INT) != NULL);
 #endif
-    if (!dp_pending && (dp->mi->regs[MI_INTR_REG] & MI_INTR_DP))
+    if (decoded_rsp_fence || (!dp_pending && (dp->mi->regs[MI_INTR_REG] & MI_INTR_DP)))
     {
         if (from_rsp || dp->vi_regs)
         {
             /* Retain the LLE completion approximation at SyncFull, rather
              * than consuming any pending DP bit at graphics-task return. */
-            dp->mi->regs[MI_INTR_REG] &= ~MI_INTR_DP;
+            if (!dp_pending)
+                dp->mi->regs[MI_INTR_REG] &= ~MI_INTR_DP;
             if (!get_event(&dp->mi->r4300->cp0.q, DP_INT))
             {
                 cp0_update_count(dp->mi->r4300);
@@ -235,7 +242,13 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
                 }
                 uint32_t delay = remaining > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining;
 #ifndef N64EMU_USF
-                if (dp->instruction_timing && !dp->mi->r4300->cache_timing) {
+                /* Use the decoded deadline for one-cycle RSP fences with
+                 * framebuffer reads disabled. Keep the scanout allowance
+                 * for interlace that fetches alternating framebuffer rows. */
+                int unadjusted_rsp_fence = decoded_rsp_fence && sync.one_cycle_without_image_read &&
+                    !vi_uses_alternate_rows(dp->vi_regs, sync.fb_width);
+                if (dp->instruction_timing && !dp->mi->r4300->cache_timing &&
+                    !unadjusted_rsp_fence) {
                     /* Keep short fences close to the raster estimate.
                      * Ramp up the allowance past 1.6 VI fields.
                      * Bound the resulting delay by three fields while
@@ -270,7 +283,8 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
                     delay = estimated_delay > UINT32_MAX ? UINT32_MAX : (uint32_t)estimated_delay;
                 }
 #endif
-                add_interrupt_event(&dp->mi->r4300->cp0, DP_INT, delay);
+                if (!dp_pending || delay)
+                    add_interrupt_event(&dp->mi->r4300->cp0, DP_INT, delay);
             }
         }
         else

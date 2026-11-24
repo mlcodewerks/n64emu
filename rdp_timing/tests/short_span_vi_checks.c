@@ -221,6 +221,43 @@ static unsigned shared_bank_checks(void)
     return checks;
 }
 
+static unsigned readback_span_startup_checks(void)
+{
+    static const struct {
+        unsigned op, modes, size, cycle, later_span, atomic, reject;
+        unsigned on, off;
+    } cases[] = {
+        {0x0e, 0x50, 2, 0, 1, 0, 0, 11, 11},
+        {0x0e, 0x50, 2, 0, 0, 0, 0, 15, 15},
+        {0x0e, 0x50, 2, 0, 1, 1, 0, 15, 15},
+        {0x0e, 0x50, 2, 0, 1, 0, 1,  4,  4},
+        {0x0f, 0x50, 2, 0, 1, 0, 0, 15,  9},
+        {0x0e, 0x70, 2, 0, 1, 0, 0, 15,  9},
+        {0x0e, 0x40, 2, 0, 1, 0, 0, 15,  9},
+        {0x0e, 0x10, 2, 0, 1, 0, 0, 15,  9},
+        {0x0e, 0x50, 2, 1, 1, 0, 0, 15,  9},
+        {0x0e, 0x50, 3, 0, 1, 0, 0, 15,  9},
+        {0x24, 0x50, 2, 0, 1, 0, 0, 15, 15},
+    };
+    unsigned i;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        struct rdp_timing t;
+        memset(&t, 0, sizeof(t));
+        t.words[0] = cases[i].op << 24;
+        t.length = rdp_timing_packet_words(t.words[0]);
+        t.modes = cases[i].modes;
+        t.fb_size = cases[i].size;
+        t.cycle_type = cases[i].cycle;
+        t.vi_elapsed = t.length / 2 + cases[i].later_span;
+        t.atomic_primitive = cases[i].atomic;
+        t.reject = cases[i].reject;
+        assert(rdp_timing_span_startup(&t, 0) == cases[i].on);
+        t.overlap_span_startup = 1;
+        assert(rdp_timing_span_startup(&t, 0) == cases[i].off);
+    }
+    return 2 * i;
+}
+
 int main(void)
 {
     uint32_t vi[14];
@@ -279,6 +316,7 @@ int main(void)
     checks += paired_device_checks();
     checks += shared_bank_checks();
     checks += parallel_pipeline_checks();
+    checks += readback_span_startup_checks();
     printf("Short-span VI overlap and topology boundaries: %u checks passed\n", checks);
     return 0;
 }
