@@ -105,7 +105,8 @@ void n64video_update_screen(void)
     const sr_rgba8 *pixels = scanout;
     uint32_t height = info.height;
     if (!sr_field_output_compose(&fields, pixels, info.width, height, info.width,
-            info.interlaced, info.field, config.vi.bob_deinterlace, &pixels, &height)) return;
+            info.interlaced, info.field, config.vi.bob_deinterlace,
+            info.source_origin, info.alternate_row_bytes, &pixels, &height)) return;
     struct frame_buffer output = {NULL, info.width, height, height, info.width};
     uint32_t crop_x = 0, crop_y = 0;
     if (config.vi.hide_overscan) {

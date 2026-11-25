@@ -20,6 +20,8 @@ This includes:
 - Vectorised+threaded LLE RDP (SoftRDP).
 - Cycle-based JITs for both RSP and main CPU.
 - Cycle-based timing of all components, including RDP stalls/delays.
+- Cacheless CPU timing in the optional Cycle timing Off profile.
+- Cartridge ROM images up to 252 MiB.
 - USF playback support.
 
 Many bits of info was gleaned from CEN64 and Ares. \
@@ -35,6 +37,11 @@ This emulator fork is based on  **very** extensive tests such as:
 - Various demoscene demos which exercise RDP/RSP/main CPU timing, and weird Nintendo 64 hardware quirks.
 
 ## Building
+
+The compiled ROM database uses save, controller-pak and region metadata from
+the [MiSTer N64 ROM Database](https://github.com/MiSTer-devel/N64_ROM_Database).
+The [source data and its GPL-3.0 license](data/mister) accompany the generated
+header. Run `python tools/update_mister_rom_database.py --check` to verify it.
 
 ### Libretro and USF libraries
 

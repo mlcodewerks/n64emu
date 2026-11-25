@@ -13,6 +13,8 @@ typedef struct sr_vi_frame_info {
     uint32_t display_width;
     uint32_t display_height;
     uint32_t active_x_begin,active_x_end,active_y_begin,active_y_end;
+    uint32_t source_origin;
+    uint32_t alternate_row_bytes;
     bool display;
     bool interlaced;
     bool field;

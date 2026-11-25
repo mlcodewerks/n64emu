@@ -1163,6 +1163,10 @@ sr_result sr_get_vi_frame_info(sr_context *ctx, sr_vi_frame_info *info)
     info->active_y_end=ctx->vi_plan.active_y_end*SOFTRDP_SCALE;
     info->display = ctx->vi_plan.state == VI_SCANOUT_READY;
     info->interlaced = ctx->vi_plan.serrate;
+    info->source_origin = ctx->vi_plan.origin;
+    info->alternate_row_bytes = info->display && info->interlaced &&
+                                ctx->vi_plan.sample_y_add == 0x800 ?
+        ctx->vi_plan.source_stride * ctx->vi_plan.bytes_per_pixel : 0;
     info->field = (ctx->vi.current & 1u) != 0;
     info->hold = ctx->vi_plan.state == VI_SCANOUT_HOLD ||
                  ctx->vi_plan.state == VI_SCANOUT_INVALID_MEMORY;

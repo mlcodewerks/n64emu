@@ -171,6 +171,53 @@ static void check_crops(void)
         }
     }
 }
+static void check_field_buffer_switch(void)
+{
+    mode = 0;
+    sr_field_output_reset(&fields);
+    n64video_set_vi_options(false, false, false, false, false);
+    vi = (sr_vi_frame_info){
+        .width = 8, .height = 3, .interlaced = true, .alternate_row_bytes = 800,
+    };
+    static const struct {
+        unsigned origin, red, even, odd;
+        bool field;
+    } frames[] = {
+        {0x588320, 10, 10, 10, false},
+        {0x588640, 20, 20, 10, true},
+        {0x5dfb20, 30, 30, 30, false},
+        {0x5dfb20, 40, 40, 40, false},
+        {0x5dfe40, 50, 50, 40, true},
+        {0x588320, 60, 60, 60, false},
+        {0x588320, 70, 70, 70, false},
+        {0x5dfb20, 80, 80, 80, false},
+        {0x5dfe40, 90, 90, 80, true},
+    };
+    for (unsigned i = 0; i < sizeof(frames) / sizeof(frames[0]); ++i) {
+        vi.source_origin = frames[i].origin;
+        vi.field = frames[i].field;
+        red = frames[i].red;
+        turn ^= 1;
+        render();
+        assert(submitted_width == 8 && submitted_height == 6);
+        pixel(0, 0, frames[i].even, 20);
+        pixel(0, 1, frames[i].odd, 20);
+    }
+
+    /* A separated field layout does not establish the adjacent-row pattern. */
+    sr_field_output_reset(&fields);
+    vi.field = false;
+    vi.source_origin = 0x588320;
+    red = 10;
+    render();
+    vi.field = true;
+    vi.source_origin = 0x5dfe40;
+    red = 20;
+    render();
+    pixel(0, 0, 20, 20);
+    pixel(0, 1, 10, 20);
+}
+
 int main(void)
 {
     context = (sr_context *)&vi;
@@ -219,6 +266,7 @@ int main(void)
     n64video_update_screen();
     assert(queries == before);
     check_crops();
+    check_field_buffer_switch();
     sr_field_output_reset(&fields);
     free(scanout); free(presentation);
     vdac_close();
