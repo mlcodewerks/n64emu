@@ -38,6 +38,14 @@ UNAME=$(shell uname -a)
 ROOT_DIR := .
 DEPSDIR	:=	$(CURDIR)/
 
+# Resolve Pi shortcuts before validating the host's default platform.
+# The recursive recipes still select their own platform when both are requested.
+ifneq (,$(filter rpi4 rpi5,$(MAKECMDGOALS)))
+ifeq (,$(filter-out rpi4 rpi5,$(MAKECMDGOALS)))
+override platform := $(firstword $(MAKECMDGOALS))
+endif
+endif
+
 ifeq ($(platform),)
    platform = unix
    ifeq ($(UNAME),)

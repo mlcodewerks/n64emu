@@ -1,13 +1,17 @@
-/* Admission for paired-word integer regions. Timing is still charged by the
- * precise per-instruction fetch/pipeline functions, before register arithmetic.
+/* Admission for paired-word integer regions. Accurate mode uses the exact
+ * fetch/pipeline functions before executing the generated register arithmetic.
  * No instruction in an admitted run can trap, access data, or change mappings. */
 static int ci_alu_region_admitted(struct r4300_core* r, uint32_t pc,
     unsigned count, unsigned base)
 {
     uint32_t status=r->cp0.regs[CP0_STATUS_REG];
-    if(r->cache_timing!=1 || breakloop || r->skip_jump || r->stop ||
+    if(r->cache_timing>1 || breakloop || r->skip_jump || r->stop ||
        r->prefetch_valid || r->irq_writeback_pending || r->delay_slot || r->pc_extension ||
        ((status&CP0_STATUS_MODE_MASK) && !(status&(CP0_STATUS_EXL|CP0_STATUS_ERL))))return 0;
+    if (!r->cache_timing) {
+        unsigned bound = base + count * r4300_cached_issue_reservation(r->compat_issue_clock,0);
+        return r->cp0.cycle_count < -(int64_t)((bound + 1) >> 1);
+    }
     unsigned cached=r4300_access_cached(r,pc);
     unsigned lines=((pc+(count-1)*4)>>5)-(pc>>5)+1;
     unsigned common=base+count+1+((pc&UINT32_C(0xc0000000))!=UINT32_C(0x80000000)?3:0);

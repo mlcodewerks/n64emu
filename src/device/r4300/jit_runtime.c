@@ -23,6 +23,8 @@
 #include <string.h>
 #if defined(__SSE2__) || defined(_M_X64)
 #include <emmintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
 #endif
 
 
@@ -864,6 +866,14 @@ static void ci_snapshot_icache_page(struct r4300_core* r, uint32_t physical_page
         const unsigned mask = (unsigned)_mm_movemask_ps(_mm_castsi128_ps(
             _mm_andnot_si128(_mm_cmpeq_epi32(shadows,keys), _mm_cmpeq_epi32(tags,keys))));
         if (!mask) continue;
+#elif defined(__ARM_NEON)
+        const uint32x4_t keys = vdupq_n_u32(key);
+        const uint32x4_t tags = vld1q_u32(r->icache_tags + first);
+        const uint32x4_t shadows = vld1q_u32(r->icache_shadow_tags + first);
+        const uint32x4_t matches = vbicq_u32(vceqq_u32(tags,keys),vceqq_u32(shadows,keys));
+        const uint32x2_t any = vorr_u32(vget_low_u32(matches),vget_high_u32(matches));
+        if (!(vget_lane_u32(any,0) | vget_lane_u32(any,1))) continue;
+        const unsigned mask = 15;
 #else
         const unsigned mask = 15;
 #endif
@@ -1558,12 +1568,18 @@ static int ci_jit_step(struct r4300_core* r, void* opaque, unsigned i, unsigned 
         /* The admission bound prevents events throughout this nontrapping
          * register-only run. Keep the exact fetch, prefetch and hazard order;
          * native arithmetic observes no intermediate timing state. */
-        for(unsigned n=0;n<count;++n) {
-            unsigned index=i+n;
-            int ok=r4300_begin_instruction_cycles(r,block->instructions[index].op,
-                pc+n*4,block->instructions[index].cycles,r->cache_timing);
-            assert(ok);(void)ok;
+        if (r->cache_timing) {
+            for (unsigned n=0; n<count; ++n) {
+                unsigned index=i+n;
+                int ok=r4300_begin_instruction_cycles(r,block->instructions[index].op,
+                    pc+n*4,block->instructions[index].cycles,r->cache_timing);
+                assert(ok);(void)ok;
+            }
+        } else {
+            r4300_pipeline_reset(r);
+            cp0_step_cycles(&r->cp0,base + count * r4300_cached_issue_reservation(r->compat_issue_clock,0));
         }
+        state->pending_delay_valid=0;
         r->retired_ops+=count;state->jit_fast_commits+=count;
         r->regs[0]=0;r->instruction_pc.addr=pc+count*4;
         return 1;

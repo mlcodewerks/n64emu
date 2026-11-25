@@ -18,7 +18,7 @@
 #endif
 
 namespace n64emu32 {
-enum Condition { EQ, NE, LO, HS, LT, GE, LE, GT, HI, LS, MI, PL, AL };
+enum Condition { EQ, NE, LO, HS, LT, GE, LE, GT, HI, LS, MI, PL, VS, AL };
 enum Operation { ADD, ADC, SUB, SBC, AND, OR, XOR, CMP, TEST };
 enum Shift { LSL, LSR, ASR };
 struct Label { size_t offset = size_t(-1); std::vector<size_t> sites; };
@@ -66,6 +66,8 @@ public:
         if(kind==LSL)code.shl(reg(d),code.cl);else if(kind==LSR)code.shr(reg(d),code.cl);else code.sar(reg(d),code.cl);
     }
     void clz(unsigned d,unsigned s) { code.bsr(reg(d),reg(s));code.xor_(reg(d),31); }
+    void multiply_low(unsigned d,unsigned s) { code.imul(reg(d),reg(s)); }
+    void multiply_unsigned_pair() { code.mul(code.ecx); }
     void load(unsigned d,unsigned base,int32_t off,unsigned bytes=4,bool sign=false) {
         if(bytes==4)code.mov(reg(d),mem(32,base,off));
         else if(sign)code.movsx(reg(d),mem(bytes*8,base,off));
@@ -82,7 +84,7 @@ public:
     void jump(const void* target) { imm(0,uint32_t(uintptr_t(target)));jump_register(0); }
     void ret() { code.ret(); }
     void branch(Label& label,Condition condition=AL) {
-        static const uint8_t cc[]={4,5,2,3,12,13,14,15,7,6,8,9};
+        static const uint8_t cc[]={4,5,2,3,12,13,14,15,7,6,8,9,0};
         if(condition==AL)code.db(0xe9);else {code.db(0x0f);code.db(0x80+cc[condition]);}
         size_t site=size();code.dd(0);label.sites.push_back(site);
         if(label.offset!=size_t(-1))patch(label,site);
@@ -101,11 +103,15 @@ public:
     }
     void argument(unsigned n,unsigned source) { store(source,4,int32_t(n*4)); }
     void incoming_state() { load(STATE,FP,8); }
+    void align_chain_entry() {
+        const size_t padding = (32 - size() % 32) % 32;
+        if (padding) code.nop(padding);
+    }
     void stack_adjust(int amount) { if(amount<0)code.sub(code.esp,-amount);else if(amount)code.add(code.esp,amount); }
 #else
     std::vector<uint8_t> buffer;
     static unsigned condition_bits(Condition condition) {
-        static const unsigned cc[]={0,1,3,2,11,10,13,12,8,9,4,5,14};return cc[condition];
+        static const unsigned cc[]={0,1,3,2,11,10,13,12,8,9,4,5,6,14};return cc[condition];
     }
 public:
     explicit Assembler(size_t capacity=0) { if(capacity)buffer.reserve(capacity); }
@@ -149,6 +155,8 @@ public:
         word(0xe1a00010u|(d<<12)|(count<<8)|(unsigned(kind)<<5)|d);
     }
     void clz(unsigned d,unsigned s) { word(0xe16f0f10u|(d<<12)|s); }
+    void multiply_low(unsigned d,unsigned s) { word(0xe0000090u|(d<<16)|(s<<8)|d); }
+    void multiply_unsigned_pair() { word(0xe0820190u); } // UMULL r0,r2,r0,r1
     void memory(bool write,unsigned r,unsigned base,int32_t off,unsigned bytes,bool sign) {
         int limit=bytes==2||sign?255:4095;
         if(off>limit||off< -limit) {
@@ -188,6 +196,7 @@ public:
         if(n<4)mov(n,source);else store(source,13,int32_t((n-4)*4));
     }
     void incoming_state() { mov(STATE,0); }
+    void align_chain_entry() { while (size() & 31) word(0xe320f000); }
     void stack_adjust(int amount) { if(amount)immediate(amount<0?SUB:ADD,13,uint32_t(amount<0?-amount:amount)); }
 #endif
     void bind(Label& label) {

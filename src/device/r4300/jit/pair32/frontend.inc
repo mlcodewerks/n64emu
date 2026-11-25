@@ -85,6 +85,7 @@ public:
     uint64_t calls=0,native=0;
     uint32_t word_pending=0;
     bool defer_words=false;
+    bool shared_frame=false;
     static constexpr unsigned STATE=Assembler::STATE,FP=Assembler::FP;
     static int32_t gpr(unsigned n){return int32_t(offsetof(r4300_core,regs)+n*8);}
     void load(unsigned reg,unsigned low=0,unsigned high=2) {
@@ -130,30 +131,146 @@ public:
         host.call(reinterpret_cast<const void*>(callback));++calls;
         host.immediate(CMP,0,0);host.branch(exit,EQ);
     }
+    void transfer_commit(void* block, unsigned index, n64emujit_step callback,
+        const n64emujit_config* config, Label& exit) {
+        if (!config || !config->commits || !config->break_requested) {
+            step(block,index,1,callback,exit);
+            return;
+        }
+        Label precise, done;
+        host.load(0,STATE,offsetof(r4300_core,cp0.cycle_count) + 4);
+        host.immediate(CMP,0,0);
+        host.branch(precise,GE);
+        for (size_t offset : {offsetof(r4300_core,irq_writeback_pending), offsetof(r4300_core,prefetch_valid)}) {
+            host.load(0,STATE,int32_t(offset));
+            host.immediate(CMP,0,0);
+            host.branch(precise,NE);
+        }
+        host.imm(0,config->virtual_pc + (index + 1) * 4);
+        host.store(0,STATE,offsetof(r4300_core,instruction_pc.addr));
+        host.imm(0,0);
+        host.store(0,STATE,gpr(0));
+        host.store(0,STATE,gpr(0) + 4);
+        host.imm(1,uint32_t(uintptr_t(config->commits)));
+        increment_counter(1);
+        host.imm(1,uint32_t(uintptr_t(config->break_requested)));
+        host.load(0,1,0,1);
+        host.immediate(CMP,0,0);
+        host.branch(exit,NE);
+        host.branch(done);
+        host.bind(precise);
+        step(block,index,1,callback,exit);
+        host.bind(done);
+    }
+    void guarded_addi(void* block, uint32_t op, unsigned index, n64emujit_step callback, Label& exit) {
+        Label overflow, done;
+        const unsigned rs = (op >> 21) & 31;
+        const uint32_t immediate = uint32_t(int32_t(int16_t(op)));
+        if (rs && immediate) {
+            load_low(rs,0);
+            host.immediate(ADD,0,immediate);
+            host.branch(overflow,VS);
+        }
+        step(block,index,0,callback,exit);
+        load_low(rs,0);
+        host.immediate(ADD,0,immediate);
+        store_word((op >> 16) & 31);
+        step(block,index,1,callback,exit);
+        if (rs && immediate) {
+            host.branch(done);
+            host.bind(overflow);
+            step(block,index,2,callback,exit);
+            host.bind(done);
+        }
+    }
     void compare(bool signed_compare) {
         Label yes,no,done;
         host.alu(CMP,2,3);host.branch(yes,signed_compare?LT:LO);host.branch(no,signed_compare?GT:HI);
         host.alu(CMP,0,1);host.branch(yes,LO);
         host.bind(no);host.imm(0,0);host.branch(done);host.bind(yes);host.imm(0,1);host.bind(done);host.imm(2,0);
     }
+    void shift64(Shift kind, unsigned amount) {
+        if (!amount) return;
+        if (amount >= 32) {
+            if (kind == LSL) {
+                host.mov(2,0);
+                host.shift(2,LSL,amount - 32);
+                host.imm(0,0);
+            } else {
+                host.mov(0,2);
+                host.shift(0,kind,amount - 32);
+                if (kind == ASR) host.shift(2,ASR,31);
+                else host.imm(2,0);
+            }
+            return;
+        }
+        if (kind == LSL) {
+            host.mov(3,0);
+            host.shift(3,LSR,32 - amount);
+            host.shift(2,LSL,amount);
+            host.alu(OR,2,3);
+            host.shift(0,LSL,amount);
+        } else {
+            host.mov(3,2);
+            host.shift(3,LSL,32 - amount);
+            host.shift(0,LSR,amount);
+            host.alu(OR,0,3);
+            host.shift(2,kind,amount);
+        }
+    }
     void shift64(Shift kind) {
         Label done,large;
         host.immediate(AND,1,63);host.immediate(CMP,1,0);host.branch(done,EQ);
-        host.immediate(CMP,1,32);host.branch(large,HS);host.store(1,FP,-68);
-        host.imm(3,32);host.alu(SUB,3,1);host.store(3,FP,-72);
+        host.immediate(CMP,1,32);host.branch(large,HS);
+#ifdef N64EMU_JIT32_X86
+        if (kind == LSL) {
+            host.code.shld(host.code.edx,host.code.eax,host.code.cl);
+            host.shift_register(0,LSL,1);
+        } else {
+            host.code.shrd(host.code.eax,host.code.edx,host.code.cl);
+            host.shift_register(2,kind,1);
+        }
+#else
+        host.imm(12,32);host.alu(SUB,12,1);
         if(kind==LSL) {
             host.shift_register(2,LSL,1);host.mov(3,0);
-            host.load(1,FP,-72);host.shift_register(3,LSR,1);host.alu(OR,2,3);
-            host.load(1,FP,-68);host.shift_register(0,LSL,1);
+            host.shift_register(3,LSR,12);host.alu(OR,2,3);
+            host.shift_register(0,LSL,1);
         } else {
             host.shift_register(0,LSR,1);host.mov(3,2);
-            host.load(1,FP,-72);host.shift_register(3,LSL,1);host.alu(OR,0,3);
-            host.load(1,FP,-68);host.shift_register(2,kind,1);
+            host.shift_register(3,LSL,12);host.alu(OR,0,3);
+            host.shift_register(2,kind,1);
         }
+#endif
         host.branch(done);host.bind(large);host.immediate(SUB,1,32);
         if(kind==LSL){host.mov(2,0);host.shift_register(2,LSL,1);host.imm(0,0);}
         else {host.mov(0,2);host.shift_register(0,kind,1);if(kind==ASR)host.shift(2,ASR,31);else host.imm(2,0);}
         host.bind(done);
+    }
+    void multiply_word(unsigned rs, unsigned rt, bool signed_multiply) {
+        if (signed_multiply) {
+            /* MULT takes a full 64-bit lhs and a signed 35-bit rhs. Only
+             * the low 64 result bits survive, so both cross products add
+             * their low word to the unsigned low-by-low product's high word. */
+            load(rs,0,2);
+            load(rt,1,3);
+            host.shift(3,LSL,29);
+            host.shift(3,ASR,29);
+            host.multiply_low(3,0);
+            host.multiply_low(2,1);
+            host.alu(ADD,3,2);
+        } else {
+            load_low(rs,0);
+            load_low(rt,1);
+        }
+        host.multiply_unsigned_pair();
+        if (signed_multiply) host.alu(ADD,2,3);
+        host.store(0,STATE,offsetof(r4300_core,lo));
+        host.store(2,STATE,offsetof(r4300_core,hi));
+        host.shift(0,ASR,31);
+        host.shift(2,ASR,31);
+        host.store(0,STATE,offsetof(r4300_core,lo) + 4);
+        host.store(2,STATE,offsetof(r4300_core,hi) + 4);
     }
     bool instruction(uint32_t instruction);
     void fpu_compare(uint32_t instruction,unsigned index,const n64emujit_config* config,Label& exit);
@@ -195,7 +312,7 @@ static bool native_instruction(uint32_t instruction) {
     if(major)return major==9||major==10||major==11||major==12||major==13||major==14||major==15||major==25;
     switch(fn) {
     case 0:case 2:case 3:case 4:case 6:case 7:case 15:
-    case 16:case 17:case 18:case 19:case 20:case 22:case 23:
+    case 16:case 17:case 18:case 19:case 20:case 22:case 23:case 24:case 25:
     case 33:case 35:case 36:case 37:case 38:case 39:case 42:case 43:case 45:case 47:
     case 56:case 58:case 59:case 60:case 62:case 63:return true;
     default:return false;
@@ -205,6 +322,10 @@ bool Compiler::instruction(uint32_t op) {
     if(!native_instruction(op))return false;
     unsigned major=op>>26,fn=op&63,rs=(op>>21)&31,rt=(op>>16)&31,rd=(op>>11)&31,amount=(op>>6)&31;
     if(!op||(!major&&fn==15))return true;
+    if (!major && (fn == 24 || fn == 25)) {
+        multiply_word(rs,rt,fn == 24);
+        return true;
+    }
     if(!major&&(fn==16||fn==18)) {
         unsigned offset=fn==16?offsetof(r4300_core,hi):offsetof(r4300_core,lo);
         host.load(0,STATE,int32_t(offset));host.load(2,STATE,int32_t(offset+4));store(rd);return true;
@@ -225,12 +346,18 @@ bool Compiler::instruction(uint32_t op) {
     bool word=false;
     if(!major&&(fn<=7||fn==20||fn==22||fn==23||fn>=56)) {
         bool variable=(fn>=4&&fn<=7)||(fn>=20&&fn<=23);
-        if(variable){load_low(rs,0);host.store(0,FP,-60);}
-        load(rt);if(variable)host.load(1,FP,-60);else host.imm(1,amount+(fn>=60?32:0));
         Shift kind=(fn&3)==0?LSL:(fn&3)==2?LSR:ASR;
         word=fn<=7;
-        if(word)host.immediate(AND,1,31);
-        if(word&&kind!=ASR)host.shift_register(0,kind,1);else shift64(kind);
+        const bool low_only = word && kind != ASR;
+        if (low_only) load_low(rt,0);
+        else load(rt);
+        if (variable) {
+            load_low(rs,1);
+            if (word) host.immediate(AND,1,31);
+            if (low_only) host.shift_register(0,kind,1);
+            else shift64(kind);
+        } else if (low_only) host.shift(0,kind,amount);
+        else shift64(kind,amount + (fn>=60 ? 32 : 0));
     } else {
         load(rs);if(!major)load(rt,1,3);
         if(major) {
@@ -259,13 +386,19 @@ bool Compiler::instruction(uint32_t op) {
 static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,unsigned count,
     n64emujit_step callback,const n64emujit_config* config) {
     if(!jit||!ops||!callback||!count||count>32)return nullptr;
-    Compiler compiler;auto& host=compiler.host;host.frame();host.incoming_state();
+    Compiler compiler;
+    auto& host=compiler.host;
+    compiler.shared_frame = config && config->links && config->chain_entry;
+    host.frame();
+    host.incoming_state();
+    if (compiler.shared_frame) host.align_chain_entry();
+    const size_t chain_offset = compiler.shared_frame ? host.size() : 0;
     Label exit;
     for(unsigned i=0;i<count;) {
-        if(config && config->alu_regions && config->cache_timing==1 && native_instruction(ops[i])) {
+        if(config && config->alu_regions && config->cache_timing<=1 && native_instruction(ops[i])) {
             unsigned end=i+1;
             while(end<count && native_instruction(ops[end]))++end;
-            if(end-i>=2) {
+            if(end-i>=2 || !config->cache_timing) {
                 Label done;
                 compiler.step(block,i,((end-i)<<8)|12,callback,exit);
                 host.immediate(CMP,0,2);host.branch(done,EQ);
@@ -284,7 +417,10 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
              * FR-selected pointers are refreshed by the precise CPU model;
              * the generated move uses integer word pairs on both hosts. */
             compiler.step(block,i,11,callback,exit);compiler.fpu_transfer(ops[i]);++compiler.native;
-            compiler.step(block,i,1,callback,exit);
+            compiler.transfer_commit(block,i,callback,config,exit);
+        } else if (config && config->alu_regions && (ops[i] >> 26) == 8) {
+            compiler.guarded_addi(block,ops[i],i,callback,exit);
+            ++compiler.native;
         } else if(native_instruction(ops[i])) {
             compiler.step(block,i,0,callback,exit);compiler.instruction(ops[i]);++compiler.native;
             compiler.step(block,i,1,callback,exit);
@@ -298,7 +434,7 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
         compiler.tail_jump(0);
     }
     host.bind(exit);host.leave();host.ret();
-    size_t bytes=host.size(),reserve=(bytes+15)&~size_t(15);
+    size_t bytes=host.size(),reserve=(bytes+31)&~size_t(31);
     if(reserve>SEGMENT_BYTES)return nullptr;
     bool entering=jit->used && jit->used%SEGMENT_BYTES==0;
     jit->used%=ARENA_BYTES;
@@ -317,12 +453,12 @@ static n64emujit_entry compile(n64emujit* jit,void* block,const uint32_t* ops,un
 #endif
     if(!code_protect(jit->code+page_start,page_end-page_start,1))return nullptr;
     publication.published=true;jit->used+=reserve;++jit->blocks;jit->native+=compiler.native;jit->bytes+=bytes;jit->calls+=compiler.calls;
-    if(config&&config->chain_entry)*config->chain_entry=reinterpret_cast<n64emujit_entry>(entry);
+    if(config&&config->chain_entry)*config->chain_entry=reinterpret_cast<n64emujit_entry>(entry + chain_offset);
     return reinterpret_cast<n64emujit_entry>(entry);
 }
 }
 int n64emujit_has_native(const uint32_t* ops,unsigned count,uint32_t,unsigned,unsigned) {
-    for(unsigned i=0;i<count;i++)if(native_instruction(ops[i])||native_fpu_transfer(ops[i])||native_fpu_compare(ops[i])||native_fpu_word_to_double(ops[i]))return 1;return 0;
+    for(unsigned i=0;i<count;i++)if(native_instruction(ops[i])||(ops[i]>>26)==8||native_fpu_transfer(ops[i])||native_fpu_compare(ops[i])||native_fpu_word_to_double(ops[i]))return 1;return 0;
 }
 n64emujit_entry n64emujit_compile(n64emujit* jit,void* block,const uint32_t* ops,unsigned count,n64emujit_step step) {
     try{return compile(jit,block,ops,count,step,nullptr);}catch(const std::exception& error){core_log(CORE_LOG_ERROR,"32-bit JIT emission failed: %s",error.what());return nullptr;}

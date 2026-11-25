@@ -52,7 +52,7 @@ static void emit_pending_transfer_guard(const struct n64emujit_config* config,
 }
 
 static void emit_region_guard(const struct n64emujit_config* config, unsigned start,
-    unsigned count, unsigned base, unsigned memory_count, struct memory_exit* failure)
+    unsigned count, unsigned base, unsigned memory_count, struct memory_exit* failure, unsigned memory_flags = 0)
 {
     emit_movimm64((intptr_t)&breakloop, ADDRESS);
     emit_mem_imm(0x80, 0, 7, ADDRESS, -1, 0, 0,0); memory_guard(failure, 5);
@@ -73,6 +73,14 @@ static void emit_region_guard(const struct n64emujit_config* config, unsigned st
     JIT(tst(WReg(T0),CP0_STATUS_MODE_MASK));unsigned char* kernel=emit_jump(4);
     JIT(tst(WReg(T0),CP0_STATUS_EXL|CP0_STATUS_ERL));memory_guard(failure,4);
     patch_jump(kernel, out);
+    if (memory_flags & 2) {
+        JIT(tst(WReg(T0),CP0_STATUS_CU1)); memory_guard(failure,4);
+    }
+    if (memory_flags & 1) {
+        emit_mem(0x8b,1,T0,STATE,-1,0,offsetof(r4300_core,mi));
+        emit_mem_imm(0xf7,0,0,T0,-1,0,offsetof(struct mi_controller,regs[MI_INIT_MODE_REG]),0x80);
+        memory_guard(failure,5);
+    }
     if (config->cache_timing) {
         uint32_t pc = config->virtual_pc + start * 4;
         if ((pc & UINT32_C(0xe0000000)) == UINT32_C(0x80000000)) {

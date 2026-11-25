@@ -144,7 +144,8 @@ static FPU_NOINLINE uint64_t fpu_sse_calc(unsigned int fmt, unsigned int fn,
     return (uint64_t)result.dword;
 }
 
-#if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
+#if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
+#define FPU_INLINE_SSE2_ARITHMETIC 1
 /* Keep the MXCSR transaction and arithmetic in one side-effecting assembly
  * block. This removes the out-of-line helper, volatile operand spills and
  * result reload without letting the compiler speculate across FP controls. */
@@ -153,14 +154,21 @@ static inline unsigned int fpu_sse_arithmetic(unsigned int fmt, unsigned int fn,
 {
     unsigned int saved, raised;
     uint64_t result;
+#ifdef __x86_64__
+#define FPU_SSE_INPUT "r"
+#define FPU_SSE_OUTPUT "=r"
+#else
+#define FPU_SSE_INPUT "m"
+#define FPU_SSE_OUTPUT "=m"
+#endif
 #define FPU_SSE_TRANSACTION(operation) \
     __asm__ volatile ( \
         "stmxcsr %[saved]\n\tldmxcsr %[control]\n\t" \
         "movq %[left], %%xmm0\n\tmovq %[right], %%xmm1\n\t" \
         operation "\n\tmovq %%xmm0, %[result]\n\t" \
         "stmxcsr %[raised]\n\tldmxcsr %[saved]" \
-        : [saved] "=m" (saved), [raised] "=m" (raised), [result] "=r" (result) \
-        : [control] "m" (control), [left] "r" (abits), [right] "r" (bbits) \
+        : [saved] "=m" (saved), [raised] "=m" (raised), [result] FPU_SSE_OUTPUT (result) \
+        : [control] "m" (control), [left] FPU_SSE_INPUT (abits), [right] FPU_SSE_INPUT (bbits) \
         : "xmm0", "xmm1", "memory")
 #define FPU_SSE_BINARY(name) do { \
     if (fmt == 16) FPU_SSE_TRANSACTION(name "ss %%xmm1, %%xmm0"); \
@@ -178,6 +186,8 @@ static inline unsigned int fpu_sse_arithmetic(unsigned int fmt, unsigned int fn,
     }
 #undef FPU_SSE_BINARY
 #undef FPU_SSE_TRANSACTION
+#undef FPU_SSE_OUTPUT
+#undef FPU_SSE_INPUT
     *bits = fmt == 16 ? (uint32_t)result : result;
     return ((raised >> 5) & 1) | ((raised >> 3) & 2) |
         ((raised >> 1) & 4) | ((raised << 1) & 8) | ((raised << 4) & 16);
@@ -190,6 +200,8 @@ unsigned int fpu_native_eval(unsigned int fmt, unsigned int fn,
 {
 #ifdef FPU_NATIVE_NEON
     return fpu_neon_eval(fmt, fn, abits, bbits, rm, bits);
+#elif defined(FPU_NATIVE_VFP)
+    if (fn <= 4) return fpu_vfp_arithmetic(fmt, fn, abits, bbits, rm, bits);
 #endif
 #ifdef FPU_NATIVE_SSE2
     if (fn <= 4
@@ -198,7 +210,7 @@ unsigned int fpu_native_eval(unsigned int fmt, unsigned int fn,
 #endif
     ) {
         static const unsigned int modes[4] = {0, 3, 2, 1};
-#if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
+#ifdef FPU_INLINE_SSE2_ARITHMETIC
         if (fn <= 4)
             return fpu_sse_arithmetic(fmt, fn, abits, bbits,
                 0x1f80 | (modes[rm] << 13), bits);

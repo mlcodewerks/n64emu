@@ -84,6 +84,29 @@ static void emit_icache_prefetch_native(const struct n64emujit_config* config,un
     emit_mem(0x8b,1,T0,SP,-1,0,0);emit_mem(0x8b,1,T2,SP,-1,0,8);emit_mem(0x8b,1,T1,SP,-1,0,16);
     JIT(add(assembler->sp,assembler->sp,32));
 }
+/* Native regions can batch resident instruction translations. A refill can
+ * overlap an older cache/bus transfer; let precise fetch establish its actual
+ * order before another region resumes. This guard reads state only. */
+static unsigned char* emit_itlb_miss_guard(uint32_t pc)
+{
+    if((pc&UINT32_C(0xc0000000))==UINT32_C(0x80000000))return nullptr;
+    emit_mem(0x8b,0,T0,STATE,-1,0,offsetof(struct r4300_core,cp0.tlb.LUT_r)+(pc>>12)*4);
+    emit_imm_op(4,T0,UINT32_C(0xfffff000),0);
+    unsigned char* hits[2];
+    for(unsigned slot=0;slot<2;++slot) {
+        unsigned char* miss[3];
+        emit_mem_imm(0xf7,0,0,STATE,-1,0,offsetof(struct r4300_core,pipeline_itlb_valid),1u<<slot);
+        miss[0]=emit_jump(4);
+        emit_mem(0x39,0,T0,STATE,-1,0,offsetof(struct r4300_core,pipeline_itlb_map)+slot*4);
+        miss[1]=emit_jump(5);
+        emit_mem_imm(0x81,0,7,STATE,-1,0,offsetof(struct r4300_core,pipeline_itlb_vpn)+slot*4,pc>>12);
+        miss[2]=emit_jump(5);hits[slot]=emit_b();
+        for(auto* branch:miss)patch_jump(branch,out);
+    }
+    auto* miss=emit_b();
+    for(auto* branch:hits)patch_jump(branch,out);
+    return miss;
+}
 static void emit_itlb_native(uint32_t pc)
 {
     uint32_t vpn = pc >> 12;
@@ -121,30 +144,55 @@ static void emit_itlb_native(uint32_t pc)
     emit_addimm(CLOCKS, 3, CLOCKS);
     patch_jump(hits[0], out); patch_jump(hits[1], out);
 }
-static void emit_branch_prefetch(const struct n64emujit_config* config)
+static void emit_branch_prefetch(const n64emujit_config* config, uint32_t instruction, uint32_t pc, unsigned char** cold_exit)
 {
     if(!config->cache_timing||config->compat_issue_clock)return;
+    unsigned major=instruction>>26;
+    bool fixed=false;
+    uint32_t target=0;
+    if(major==2 || major==3) {
+        target=((pc+4)&UINT32_C(0xf0000000))|((instruction&UINT32_C(0x03ffffff))<<2);
+        fixed=true;
+    } else if(major==1 || major==17 || (major>=4 && major<=7) || (major>=20 && major<=23)) {
+        target=pc+4+int32_t(int16_t(instruction))*4;
+        // Both outcomes fetch the identical line, including its page/tag.
+        fixed=(target>>5)==((pc+8)>>5);
+    }
+    if(fixed && (target>>12)!=(config->virtual_pc>>12))return;
+    // The branch's own fetch has already made this line resident. Native
+    // instructions cannot evict it, and the hit path has no other effects.
+    if(fixed && (target>>5)==(pc>>5))return;
     emit_mem_imm(0xf7,0,0,SP,-1,0,4,2);auto *uncached=emit_jump(4);
-    JIT(sub(assembler->sp,assembler->sp,32));
-    emit_mem(0x89,1,T0,SP,-1,0,0);emit_mem(0x89,1,T1,SP,-1,0,8);emit_mem(0x89,1,T2,SP,-1,0,16);
-    emit_mov(TARGET,T0);emit_imm_op(4,T0,UINT32_C(0xfffff000),0);
-    emit_imm_op(7,T0,config->virtual_pc&UINT32_C(0xfffff000),0);auto *different_page=emit_jump(5);
-    emit_mov(TARGET,T1);emit_shift_reg(T1,5,5,0);emit_imm_op(4,T1,511,0);
+    unsigned char *different_page=nullptr;
+    if(!fixed) {
+        emit_mov(TARGET,T1);emit_imm_op(4,T1,UINT32_C(0xfffff000),0);
+        emit_imm_op(7,T1,config->virtual_pc&UINT32_C(0xfffff000),0);different_page=emit_jump(5);
+        emit_mov(TARGET,T1);emit_shift_reg(T1,5,5,0);emit_imm_op(4,T1,511,0);
+    }
     uint32_t key=(config->physical_page<<12)|1;
-    emit_mem_imm(0x81,0,7,STATE,T1,2,offsetof(struct r4300_core,icache_tags),key);auto *hit=emit_jump(4);
+    size_t tag=offsetof(struct r4300_core,icache_tags)+(fixed?((target>>5)&511)*4:0);
+    emit_mem_imm(0x81,0,7,STATE,fixed?-1:T1,2,tag,key);auto *hit=emit_jump(4);
+    if (cold_exit) {
+        *cold_exit = emit_b();
+        patch_jump(hit,out);
+        if (different_page) patch_jump(different_page,out);
+        patch_jump(uncached,out);
+        return;
+    }
+    if (fixed) emit_movimm((target >> 5) & 511,T1);
     emit_icache_fill_wait_native(config);
     emit_mem(0x8b,0,T0,STATE,T1,2,offsetof(struct r4300_core,icache_shadow_tags));
     emit_reg_op(0x85,T0,T0,0);auto *plain=emit_jump(4);
     emit_mem(0x8b,1,T2,STATE,-1,0,offsetof(struct r4300_core,code_page_generation));
     emit_reg_op(0x85,T2,T2,1);auto *no_generation=emit_jump(4);
     emit_imm_op(4,T0,0x1ffff000,0);emit_shift_reg(T0,5,12,0);
-    emit_mem_imm(0x81,0,0,T2,T0,2,0,1);patch_jump(no_generation,out);
+    emit_mem_imm(0x81,0,0,T2,T0,2,0,1);
+    patch_jump(no_generation,out);
     emit_mem_imm(0xc7,0,0,STATE,T1,2,offsetof(struct r4300_core,icache_shadow_tags),0);
     patch_jump(plain,out);
     emit_mem_imm(0xc7,0,0,STATE,T1,2,offsetof(struct r4300_core,icache_tags),key);
-    emit_icache_prefetch_native(config,0,UINT32_MAX);patch_jump(hit,out);patch_jump(different_page,out);
-    emit_mem(0x8b,1,T0,SP,-1,0,0);emit_mem(0x8b,1,T1,SP,-1,0,8);emit_mem(0x8b,1,T2,SP,-1,0,16);
-    JIT(add(assembler->sp,assembler->sp,32));patch_jump(uncached,out);
+    emit_icache_prefetch_native(config,0,fixed?(target>>5)&511:UINT32_MAX);
+    patch_jump(hit,out);if(different_page)patch_jump(different_page,out);patch_jump(uncached,out);
 }
 /* Fetch state changes happen only after the current instruction's guards.
  * A region stays on one code page, so its first fetch establishes the exact
@@ -204,10 +252,57 @@ static void emit_fetch_native(const struct n64emujit_config* config, unsigned in
 }
 static void emit_pipeline_clear(void)
 {
-    emit_state_imm(offsetof(struct r4300_core, pipeline_load_mask), 0, 1);
-    emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_result_mask), 0, 1);
-    emit_state_imm(offsetof(struct r4300_core, pipeline_fpu_cc), 0, 0);
-    emit_state_imm(offsetof(struct r4300_core, pipeline_cached_store), 0, 0);
+    static_assert(offsetof(r4300_core,pipeline_fpu_result_mask) == offsetof(r4300_core,pipeline_load_mask) + 8 &&
+        offsetof(r4300_core,pipeline_fpu_cc) == offsetof(r4300_core,pipeline_load_mask) + 16 &&
+        offsetof(r4300_core,pipeline_cached_store) == offsetof(r4300_core,pipeline_load_mask) + 20,
+        "packed pipeline history");
+    emit_address(STATE,-1,0,offsetof(r4300_core,pipeline_load_mask));
+    JIT(stp(assembler->xzr,assembler->xzr,ptr(XReg(13))));
+    JIT(str(assembler->xzr,ptr(XReg(13),16)));
+}
+static bool deferred_pipeline(const struct n64emujit_config* config)
+{
+    return config->cache_timing == 1 && !r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
+}
+static bool native_store(uint32_t instruction)
+{
+    unsigned major = instruction >> 26;
+    return major == 0x28 || major == 0x29 || major == 0x2b ||
+        major == 0x3f || major == 0x39 || major == 0x3d;
+}
+static unsigned native_memory_flags(uint32_t instruction)
+{
+    if (!native_ram_opcode(r4300_get_idec(instruction)->opcode)) return 0;
+    unsigned major = instruction >> 26;
+    return unsigned(native_store(instruction)) |
+        ((major == 0x31 || major == 0x35 || major == 0x39 || major == 0x3d) ? 2 : 0);
+}
+/* Within a native region, LDI uses the decoded predecessor. Store cacheability
+ * remains live because a resumed precise store may have been uncached.
+ * Materialize history only where C or a successor region can observe it.
+ * This also runs in cold exits before committing their executed prefix. */
+static void emit_pipeline_history(uint32_t instruction)
+{
+    if (native_store(instruction)) {
+        emit_state_imm(offsetof(struct r4300_core,pipeline_load_mask),0, 1);
+        emit_state_imm(offsetof(struct r4300_core,pipeline_fpu_result_mask),0, 1);
+        emit_state_imm(offsetof(struct r4300_core,pipeline_fpu_cc),0, 0);
+        return;
+    }
+    emit_pipeline_clear();
+    if (!native_ram_opcode(r4300_get_idec(instruction)->opcode)) return;
+    unsigned rt = (instruction >> 16) & 31;
+    unsigned major = instruction >> 26;
+    bool fp = major == 0x31 || major == 0x35;
+    if (!rt && !fp) return;
+    emit_movimm64(UINT64_C(1) << (rt + (fp ? 32 : 0)), T0);
+    if (fp && (rt & 1)) {
+        emit_mem_imm(0xf7,0,0,STATE,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);
+        auto *fr = emit_jump(5);
+        emit_movimm64(UINT64_C(1) << (32 + (rt & ~1u)),T0);
+        patch_jump(fr,out);
+    }
+    emit_mem(0x89,1,T0,STATE,-1,0,offsetof(struct r4300_core,pipeline_load_mask));
 }
 /* Native timing cannot absorb LDI in a compatibility issue reservation. Test
  * raw fields just like the hardware's deliberately imprecise detector. */
@@ -370,18 +465,48 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         emit_reg_op(0x39, T1, T0, 1);
         memory_guard(exit, 5);
     }
-    if (write) {
-        emit_mem(0x8b, 1, T0, STATE, -1, 0, offsetof(struct r4300_core, mi));
-        emit_mem_imm(0xf7, 0, 0, T0, -1, 0, offsetof(struct mi_controller, regs[MI_INIT_MODE_REG]), 0x80);
-        memory_guard(exit, 5);
-    }
-    if (fp) {
-        emit_mem_imm(0xf7,0,0,STATE,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_CU1);
-        memory_guard(exit,4);
-    }
     if (size > 1 && (!constant_address || (address & (size-1)))) {
         emit_mov(ADDRESS, T0); emit_imm_op(4, T0, size - 1, 0);
         emit_reg_op(0x85, T0, T0, 0); memory_guard(exit, 5);
+    }
+    unsigned char *direct_cache_hit = nullptr;
+    if (config->cache_timing == 1 &&
+        (!constant_address || (fixed_direct && !(address & UINT32_C(0x20000000))))) {
+        // A real D-cache hit uses its resident bytes, even if backing RAM is
+        // GPU-owned or its handler has changed. The region already checked
+        // CU1 and MI, and the access checked the address and alignment.
+        // Tracked-code stores still need the shared invalidator; all misses,
+        // mapped accesses retain the guarded memory path.
+        unsigned char *misses[4]; unsigned misses_count = 0;
+        if (!constant_address) {
+            emit_mov(ADDRESS,T0);emit_imm_op(4,T0,UINT32_C(0xe0000000),0);
+            emit_imm_op(7,T0,UINT32_C(0x80000000),0);
+            misses[misses_count++] = emit_jump(5);
+        }
+        if ((config->virtual_pc & UINT32_C(0xe0000000)) == UINT32_C(0x80000000))
+            emit_mem_imm(0xf7,0,0,SP,-1,0,4,2);
+        else {
+            emit_mem(0x8b,0,T0,STATE,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_CONFIG_REG]));
+            emit_imm_op(4,T0,7,0);emit_imm_op(7,T0,2,0);
+        }
+        misses[misses_count++] = emit_jump(4);
+        emit_mov(ADDRESS,T1);emit_shift_reg(T1,5,4,0);emit_imm_op(4,T1,511,0);
+        emit_mem(0x8b,0,T0,STATE,T1,2,offsetof(struct r4300_core,dcache_tags));
+        emit_imm_op(4,T0,~UINT32_C(2),0);
+        emit_mov(ADDRESS,T2);emit_imm_op(4,T2,UINT32_C(0x1ffff000),0);emit_imm_op(1,T2,1,0);
+        emit_reg_op(0x39,T2,T0,0);misses[misses_count++] = emit_jump(5);
+        if (write) {
+            emit_mov(ADDRESS,T2);emit_imm_op(4,T2,UINT32_C(0x1ffff000),0);emit_shift_reg(T2,5,12,0);
+            emit_mem(0x8b,1,T0,STATE,-1,0,offsetof(struct r4300_core,cached_code_pages));
+            emit_bit_test(T0,T2);
+            misses[misses_count++] = emit_jump(2);
+            emit_mem_imm(0x81,0,1,STATE,T1,2,offsetof(struct r4300_core,dcache_tags),2);
+        }
+        emit_mov(ADDRESS,TARGET);emit_imm_op(4,TARGET,UINT32_C(0x1ffc),0);
+        emit_mem(0x8d,1,TARGET,STATE,TARGET,0,offsetof(struct r4300_core,dcache_words));
+        emit_movimm(1,T1);emit_movimm(r4300_dcache_hit_cycles(config->compat_issue_clock),T2);
+        direct_cache_hit = emit_b();
+        for (unsigned n=0;n<misses_count;++n)patch_jump(misses[n],out);
     }
     // Fold fixed KSEG translation, retaining the live memory safety checks.
     if(fixed_direct)emit_movimm(physical,T2);
@@ -496,15 +621,18 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
             patch_jump(larger, out); emit_movimm(R4300_UNCACHED_DATA_CYCLES, T2); patch_jump(bus_ready, out);
         } else emit_movimm(R4300_UNCACHED_DATA_CYCLES, T2);
         if(data_ready)patch_jump(data_ready,out);
+        if (direct_cache_hit) patch_jump(direct_cache_hit,out);
         emit_fetch_native(config, index, exit->start, 1, check_line);
         emit_reg_op(0x01, T2, CLOCKS, 0);
         if (!r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing)) {
             emit_ldi_native(instruction, fp, previous, known);
-            emit_reg_op(0x85, T1, T1, 0); unsigned char* no_cache = emit_jump(4);
-            emit_mem_imm(0x81, 0, 7, STATE, -1, 0, offsetof(struct r4300_core, pipeline_cached_store),0);
-            unsigned char* no_store = emit_jump(4);
-            emit_addimm(CLOCKS, 1, CLOCKS);
-            patch_jump(no_store, out); patch_jump(no_cache, out);
+            if (!known || native_store(previous)) {
+                emit_reg_op(0x85, T1, T1, 0); unsigned char* no_cache = emit_jump(4);
+                emit_mem_imm(0x81, 0, 7, STATE, -1, 0, offsetof(struct r4300_core, pipeline_cached_store),0);
+                unsigned char* no_store = emit_jump(4);
+                emit_addimm(CLOCKS, 1, CLOCKS);
+                patch_jump(no_store, out); patch_jump(no_cache, out);
+            }
         } else {
         /* LDI and DCB can coexist in restored/test history at region entry.
          * Thereafter every instruction writes mutually exclusive load/store
@@ -537,8 +665,10 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
         if (fpr_history) patch_jump(fpr_history, out);
         }
         }
-        if (!write) emit_movimm(0, T1);
-        emit_mem(0x89, 0, T1, STATE, -1, 0, offsetof(struct r4300_core, pipeline_cached_store));
+        if (write || !deferred_pipeline(config)) {
+            if (!write) emit_movimm(0, T1);
+            emit_mem(0x89, 0, T1, STATE, -1, 0, offsetof(struct r4300_core, pipeline_cached_store));
+        }
     } else {
         emit_fetch_native(config, index, exit->start, 1, check_line);
         unsigned ram_cycles = r4300_off_ram_cycles(config->fast_memory_timing);
@@ -547,7 +677,7 @@ static void emit_memory_native(uint32_t instruction, unsigned index,
          * An ALU predecessor or the first RAM operation has cleared it. */
         if (index == exit->start) emit_pipeline_clear();
     }
-    if (config->cache_timing) {
+    if (config->cache_timing && !deferred_pipeline(config)) {
         emit_movimm64(!write && (rt || fp) ? UINT64_C(1) << (rt + (fp ? 32 : 0)) : 0, T0);
         if (fp && !write && (rt & 1)) {
             emit_mem_imm(0xf7,0,0,STATE,-1,0,offsetof(struct r4300_core,cp0.regs[CP0_STATUS_REG]),CP0_STATUS_FR);

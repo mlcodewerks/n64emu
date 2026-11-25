@@ -153,6 +153,8 @@ static void emit_mem(unsigned opcode,int wide,int reg,int base,int index,unsigne
     case 0x39: case 0x3b: case 0x38:
         emit_load_at(14,wide,opcode==0x38?1:wide?8:4,0);
         emit_reg_op(0x39,opcode==0x3b?14:reg,opcode==0x3b?reg:14,wide); break;
+    case 0x85:
+        emit_load_at(14,wide,wide?8:4,0); emit_reg_op(0x85,reg,14,wide); break;
     case 0x01: case 0x09:
         emit_load_at(14,wide,wide?8:4,0); emit_reg_op(opcode,reg,14,wide); emit_store_at(14,wide,wide?8:4); break;
     case 0xff: emit_load_at(16,1,8,0); JIT(br(XReg(16))); break;
@@ -187,14 +189,14 @@ static void emit_bit_test(int base,int index)
 static void emit_frame_enter()
 {
     JIT(hint(34)); /* BTI c */
-    JIT(sub(assembler->sp,assembler->sp,160));
-    JIT(stp(XReg(29),XReg(30),ptr(assembler->sp,144)));
-    JIT(add(XReg(29),assembler->sp,144));
-    for(unsigned i=0;i<5;++i) JIT(stp(XReg(19+2*i),XReg(20+2*i),ptr(assembler->sp,(int)(64+16*i))));
+    JIT(sub(assembler->sp,assembler->sp,192));
+    JIT(stp(XReg(29),XReg(30),ptr(assembler->sp,176)));
+    JIT(add(XReg(29),assembler->sp,176));
+    for(unsigned i=0;i<5;++i) JIT(stp(XReg(19+2*i),XReg(20+2*i),ptr(assembler->sp,(int)(96+16*i))));
 }
 static void emit_frame_leave()
 {
-    for(unsigned i=0;i<5;++i) JIT(ldp(XReg(19+2*i),XReg(20+2*i),ptr(assembler->sp,(int)(64+16*i))));
-    JIT(ldp(XReg(29),XReg(30),ptr(assembler->sp,144)));
-    JIT(add(assembler->sp,assembler->sp,160));
+    for(unsigned i=0;i<5;++i) JIT(ldp(XReg(19+2*i),XReg(20+2*i),ptr(assembler->sp,(int)(96+16*i))));
+    JIT(ldp(XReg(29),XReg(30),ptr(assembler->sp,176)));
+    JIT(add(assembler->sp,assembler->sp,192));
 }

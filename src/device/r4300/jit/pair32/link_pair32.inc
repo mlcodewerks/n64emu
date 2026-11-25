@@ -3,6 +3,10 @@
         host.load(0,pointer,4);host.imm(2,0);host.alu(ADC,0,2);host.store(0,pointer,4);
     }
     void tail_jump(unsigned target) {
+        if (shared_frame) {
+            host.jump_register(target);
+            return;
+        }
 #ifdef N64EMU_JIT32_ARM
         host.mov(12,target);host.mov(0,STATE);host.leave();host.jump_register(12);
 #else
@@ -18,7 +22,8 @@
         guard_zero(offsetof(r4300_core,pc_extension)+4);
         host.load(0,STATE,offsetof(r4300_core,cp0.regs[CP0_STATUS_REG]));
         host.immediate(TEST,0,CP0_STATUS_MODE_MASK);host.branch(miss,NE);
-        if(!config->compat_issue_clock)guard_zero(offsetof(r4300_core,irq_writeback_pending));
+        guard_zero(offsetof(r4300_core,irq_writeback_pending));
+        guard_zero(offsetof(r4300_core,prefetch_valid));
         host.imm(1,uint32_t(uintptr_t(config->break_requested)));
         host.load(0,1,0,1);host.immediate(CMP,0,0);host.branch(miss,NE);
         guard_zero(offsetof(r4300_core,delay_slot));guard_zero(offsetof(r4300_core,stop));

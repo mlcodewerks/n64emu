@@ -348,7 +348,6 @@ int main(int argc, char **argv)
     size_t ram_size;
     void *ram = NULL;
     uint64_t last_logged_vi = UINT64_MAX;
-    char save_dir[512];
     const char *control_path=getenv("M64P_BENCH_CONTROL");
     FILE *control=NULL,*input_record=NULL;
     uint64_t control_end=0;
@@ -437,8 +436,6 @@ int main(int argc, char **argv)
         g_directory = bench_dir;
 
     mkdir(g_directory, 0777);
-    snprintf(save_dir, sizeof(save_dir), "%s/Mupen64plus", g_directory);
-    mkdir(save_dir, 0777);
 
     rom_file = fopen(rom_path, "rb");
     if (!rom_file)

@@ -105,5 +105,51 @@ static unsigned int fpu_neon_eval(unsigned int fmt, unsigned int fn,
     return ((status >> 4) & 1) | ((status >> 2) & 2) | (status & 4) |
         ((status << 2) & 8) | ((status << 4) & 16);
 }
+#elif defined(__arm__) && defined(__ARM_FP) && (__ARM_FP & 8) && \
+    (defined(__GNUC__) || defined(__clang__)) && !defined(N64EMU_FPU_PORTABLE)
+#define FPU_NATIVE_VFP 1
+
+/* Execute the scalar operation between explicit FPSCR writes so the compiler
+ * and CRT cannot change its rounding or handle exceptional results differently. */
+static inline unsigned int fpu_vfp_arithmetic(unsigned fmt, unsigned fn,
+    uint64_t a, uint64_t b, unsigned rm, uint64_t* bits)
+{
+    static const unsigned modes[4] = {0, 3, 1, 2};
+    const unsigned control = modes[rm] << 22;
+    unsigned saved, status;
+    uint32_t single;
+    uint64_t wide;
+#define VFP_TRANSACTION(load, arithmetic, store, result) \
+    __asm__ volatile( \
+        "vmrs %[saved], fpscr\n\tvmsr fpscr, %[control]\n\t" \
+        load "\n\t" arithmetic "\n\t" store "\n\t" \
+        "vmrs %[status], fpscr\n\tvmsr fpscr, %[saved]" \
+        : [saved] "=&r" (saved), [status] "=&r" (status) \
+        : [control] "r" (control), [left] "r" (&a), [right] "r" (&b), [out] "r" (&result) \
+        : "d0", "d1", "memory")
+#define VFP_BINARY(name) do { \
+    if (fmt == 16) \
+        VFP_TRANSACTION("vldr s0, [%[left]]\n\tvldr s2, [%[right]]", name ".f32 s0, s0, s2", \
+            "vstr s0, [%[out]]", single); \
+    else \
+        VFP_TRANSACTION("vldr d0, [%[left]]\n\tvldr d1, [%[right]]", name ".f64 d0, d0, d1", \
+            "vstr d0, [%[out]]", wide); \
+} while (0)
+    switch (fn) {
+    case 0: VFP_BINARY("vadd"); break;
+    case 1: VFP_BINARY("vsub"); break;
+    case 2: VFP_BINARY("vmul"); break;
+    case 3: VFP_BINARY("vdiv"); break;
+    default:
+        if (fmt == 16) VFP_TRANSACTION("vldr s0, [%[left]]","vsqrt.f32 s0, s0","vstr s0, [%[out]]",single);
+        else VFP_TRANSACTION("vldr d0, [%[left]]","vsqrt.f64 d0, d0","vstr d0, [%[out]]",wide);
+        break;
+    }
+#undef VFP_BINARY
+#undef VFP_TRANSACTION
+    *bits = fmt == 16 ? single : wide;
+    return ((status >> 4) & 1) | ((status >> 2) & 2) | (status & 4) |
+           ((status << 2) & 8) | ((status << 4) & 16);
+}
 #endif
 #endif
