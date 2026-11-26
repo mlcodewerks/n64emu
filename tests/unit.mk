@@ -22,7 +22,7 @@ UNIT_EXES += $(OUT)/software-framebuffer$(EXE)
 UNIT_EXES += $(foreach s,1 2 4,$(OUT)/overscan-vi-s$(s)$(EXE))
 define overscan_vi_rule
 $(OUT)/overscan-vi-s$(1)$(EXE): tests/overscan_vi.c $$(wildcard src/device/rcp/rdp/softrdp/upstream/core/*.[ch]) $$(wildcard src/device/rcp/rdp/softrdp/*.h) | $(OUT)
-	$$(CC) $$(CFLAGS) -O2 -std=c17 -flto -fwhole-program -DSOFTRDP_SCALE=$(1) $$< -o $$@
+	$$(CC) $$(CFLAGS) $$(INCLUDES) -O2 -std=c17 -flto -fwhole-program -DSOFTRDP_SCALE=$(1) $$< -o $$@
 endef
 $(foreach s,1 2 4,$(eval $(call overscan_vi_rule,$(s))))
 UNIT_EXES += $(OUT)/input$(EXE)

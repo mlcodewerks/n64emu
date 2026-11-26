@@ -7,6 +7,7 @@
  */
 
 #include "rdp_memory.h"
+#include "../../simd.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -120,30 +121,63 @@ static uint32_t clamp_words(const sr_memory *mem, uint32_t addr, uint32_t bytes,
     return words;
 }
 
+static inline void import_word(sr_memory *mem, uint32_t word, uint32_t value,
+                               uint32_t *reference)
+{
+    const uint32_t plane_words = mem->rdram_size >> 2;
+    const uint32_t hidden_plane = mem->rdram_size >> 1;
+    const uint32_t hidden_index = word * 2u;
+    for (uint32_t sample = 0; sample < (uint32_t)SR_SCALE_SIDE_SAMPLES; sample++) {
+        ((uint32_t *)(void *)mem->sample_pixels)[word + sample * plane_words] = value;
+        if (mem->sample_hidden && mem->hidden) {
+            uint8_t *plane = mem->sample_hidden + sample * hidden_plane;
+            memcpy(plane + hidden_index, mem->hidden + hidden_index, 2);
+        }
+    }
+    reference[word] = value;
+}
+
 void sr_memory_import_foreign(sr_memory *mem, uint32_t addr, uint32_t bytes)
 {
     if (!mem) return;
-    uint32_t first = 0u;
-    const uint32_t words = clamp_words(mem, addr, bytes, &first);
-    uint32_t *const live = (uint32_t *)(void *)mem->rdram;
+    uint32_t word = 0;
+    const uint32_t words = clamp_words(mem, addr, bytes, &word);
+    const uint32_t end = word + words;
+    const uint32_t *const live = (const uint32_t *)(const void *)mem->rdram;
     uint32_t *const reference = (uint32_t *)(void *)mem->reference;
-    const uint32_t plane_words = mem->rdram_size >> 2;
-    const uint32_t hidden_plane = mem->rdram_size >> 1;
 
-    for (uint32_t i = 0; i < words; i++) {
-        const uint32_t word = first + i;
-        if (live[word] == reference[word]) continue;
-        const uint32_t hidden_index = word * 2u;
-        for (uint32_t sample = 1u; sample < (uint32_t)SR_SCALE_SAMPLES; sample++) {
-            ((uint32_t *)(void *)mem->sample_pixels)[word +
-                (sample - 1u) * plane_words] = live[word];
-            if (mem->sample_hidden && mem->hidden) {
-                uint8_t *plane = mem->sample_hidden + (sample - 1u) * hidden_plane;
-                plane[hidden_index] = mem->hidden[hidden_index];
-                plane[hidden_index + 1u] = mem->hidden[hidden_index + 1u];
+#ifdef SR_PACKED
+    const uint32_t hidden_plane = mem->rdram_size >> 1;
+    for (; end - word >= 4; word += 4) {
+        const __m128i values = _mm_loadu_si128((const __m128i *)(live + word));
+        const __m128i prev = _mm_loadu_si128((const __m128i *)(reference + word));
+        const __m128i same = _mm_cmpeq_epi32(values, prev);
+        if (sr_all_mask32(same)) continue;
+        if (!sr_any_mask32(same)) {
+            const uint32_t hidden_index = word * 2u;
+            for (uint32_t sample = 0; sample < (uint32_t)SR_SCALE_SIDE_SAMPLES; sample++) {
+                uint8_t *plane = mem->sample_pixels + sample * (mem->rdram_size & ~3u);
+                _mm_storeu_si128((__m128i *)(plane + word * 4u), values);
+                if (mem->sample_hidden && mem->hidden) {
+                    uint8_t *hidden = mem->sample_hidden + sample * hidden_plane;
+                    memcpy(hidden + hidden_index, mem->hidden + hidden_index, 8);
+                }
+            }
+            _mm_storeu_si128((__m128i *)(reference + word), values);
+        } else {
+            /* Clean lanes can still hold distinct RDP samples. */
+            unsigned changed = 15u ^ (unsigned)_mm_movemask_ps(_mm_castsi128_ps(same));
+            while (changed) {
+                const uint32_t index = word + (unsigned)__builtin_ctz(changed);
+                import_word(mem, index, live[index], reference);
+                changed &= changed - 1u;
             }
         }
-        reference[word] = live[word];
+    }
+#endif
+    for (; word < end; word++) {
+        if (live[word] != reference[word])
+            import_word(mem, word, live[word], reference);
     }
 }
 

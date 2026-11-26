@@ -417,6 +417,9 @@ typedef struct vi_aa_texel {
     uint8_t coverage;
 } vi_aa_texel;
 
+_Static_assert(sizeof(vi_aa_texel) == 4 && sizeof(sr_rgba8) == 4,
+               "VI row filters use packed RGB and coverage bytes");
+
 /*
  * One AA tap, addressed in RASTER coordinates.
  *
@@ -499,6 +502,24 @@ static const int32_t vi_aa_tap_y[6] = { -1, -1,  0,  0, +1, +1 };
 static void vi_aa_resolve(const vi_aa_texel taps[6], uint32_t coverage,
                           sr_rgba8 *restrict out)
 {
+#ifdef SR_PACKED
+    /* The sparse AA path gathers from RDRAM one pixel at a time, but each
+     * tap still applies the same extrema and correction to all channels. */
+    const __m128i center = sr_vi_load1(out);
+    sr_vi_extrema extrema = { center, center, center, center };
+    for (unsigned i = 0; i < 6; i++) {
+        if (taps[i].coverage == 7u)
+            sr_vi_aa_fold(&extrema, sr_vi_load1(taps + i));
+    }
+    const __m128i zero = _mm_setzero_si128();
+    const __m128i rgb = sr_vi_aa_adjust(_mm_unpacklo_epi8(center, zero),
+        _mm_unpacklo_epi8(extrema.second_low, zero), _mm_unpacklo_epi8(extrema.second_high, zero),
+        _mm_set1_epi16((short)(7u - coverage)));
+    const uint32_t color = (uint32_t)_mm_cvtsi128_si32(_mm_packus_epi16(rgb, zero));
+    out->r = (uint8_t)color;
+    out->g = (uint8_t)(color >> 8);
+    out->b = (uint8_t)(color >> 16);
+#else
     const uint8_t centre[3] = { out->r, out->g, out->b };
     uint8_t lo[3] = { centre[0], centre[1], centre[2] };
     uint8_t hi[3] = { centre[0], centre[1], centre[2] };
@@ -519,6 +540,7 @@ static void vi_aa_resolve(const vi_aa_texel taps[6], uint32_t coverage,
     out->r = result[0];
     out->g = result[1];
     out->b = result[2];
+#endif
 }
 
 /* The per-pixel AA path of the unfiltered decode loops: the neighbours come
@@ -536,11 +558,6 @@ static void vi_filter_pixel(const vi_scanout_plan *plan, const sr_memory *memory
     }
     vi_aa_resolve(taps, coverage, out);
 }
-
-typedef struct vi_filtered_texel {
-    sr_rgba8 color;
-    uint8_t coverage;
-} vi_filtered_texel;
 
 static inline int32_t vi_clamp_unit(int32_t value)
 {
@@ -587,30 +604,61 @@ static void vi_dither_row(const vi_aa_texel *const rows[3], int32_t first,
     }
 }
 
-/* AA for a partially covered pixel, dither reconstruction for a fully covered
- * one, whichever the plan enables. `dither` is vi_dither_row's output for this
- * row, starting at x = -1; unread when the dither filter is off. */
-static inline vi_filtered_texel vi_filter_stage(const vi_scanout_plan *plan,
-                                                const vi_aa_texel *const rows[3],
-                                                const uint8_t *dither,
-                                                int32_t x, bool fetch_bug)
+/* AA applies to partial coverage and dither reconstruction to full coverage.
+ * The divot pass needs the original coverage, which travels in the alpha byte
+ * of its temporary row. */
+static void vi_filter_row(const vi_scanout_plan *plan,
+                           const vi_aa_texel *const rows[3],
+                           int32_t first, int32_t end, bool fetch_bug,
+                           sr_rgba8 *restrict out, bool keep_coverage)
 {
-    const vi_aa_texel source = rows[1][x];
-    vi_filtered_texel result = {
-        {source.r, source.g, source.b, 0xffu}, source.coverage
-    };
-    if (plan->aa_mode < VI_AA_RESAMP_ONLY && source.coverage != 7u) {
-        vi_aa_texel taps[6];
-        for (uint32_t i = 0; i < 6u; i++) {
-            const uint32_t tap = fetch_bug && i >= 4u ? i - 2u : i;
-            taps[i] = rows[1 + vi_aa_tap_y[tap]][x + vi_aa_tap_x[tap]];
+    const bool apply_aa = plan->aa_mode < VI_AA_RESAMP_ONLY;
+    int32_t x = first;
+#ifdef SR_PACKED
+    const __m128i alpha = _mm_set1_epi32((int)0xff000000u);
+    const __m128i opaque = keep_coverage ? _mm_setzero_si128() : alpha;
+    for (; end - x >= 4; x += 4) {
+        const uint8_t *above = (const uint8_t *)(rows[0] + x);
+        const uint8_t *mid = (const uint8_t *)(rows[1] + x);
+        const uint8_t *below = (const uint8_t *)(rows[2] + x);
+        const __m128i center = sr_vi_load4(mid);
+        const __m128i full = sr_vi_full_coverage(center);
+        __m128i result = center;
+        if (apply_aa && !sr_all_mask32(full))
+            result = sr_vi_aa4(center, above, mid, below, fetch_bug);
+        if (plan->dither_filter_enable && sr_any_mask32(full)) {
+            const __m128i reconstructed = sr_vi_reconstruct4(center, above, mid,
+                                                            fetch_bug ? mid : below);
+            result = sr_vi_select(full, reconstructed, result);
         }
-        vi_aa_resolve(taps, source.coverage, &result.color);
-    } else if (plan->dither_filter_enable && source.coverage == 7u) {
-        const uint8_t *d = dither + (x + 1) * (int32_t)sizeof(vi_aa_texel);
-        result.color = (sr_rgba8){ d[0], d[1], d[2], 0xffu };
+        result = sr_vi_select(alpha, _mm_or_si128(center, opaque), result);
+        sr_vi_store4(out + (x - first), result);
     }
-    return result;
+#endif
+    if (x == end) return;
+    static _Thread_local uint8_t dither[(VI_MAX_SOURCE_WIDTH * SOFTRDP_SCALE + 2u) *
+                                        sizeof(vi_aa_texel)];
+    if (plan->dither_filter_enable)
+        vi_dither_row(rows, x, end - 1, fetch_bug, dither);
+    const int32_t tail = x;
+    for (; x < end; x++) {
+        const vi_aa_texel source = rows[1][x];
+        sr_rgba8 color = { source.r, source.g, source.b, keep_coverage ? source.coverage : 0xffu };
+        if (apply_aa && source.coverage != 7u) {
+            vi_aa_texel taps[6];
+            for (uint32_t i = 0; i < 6u; i++) {
+                const uint32_t tap = fetch_bug && i >= 4u ? i - 2u : i;
+                taps[i] = rows[1 + vi_aa_tap_y[tap]][x + vi_aa_tap_x[tap]];
+            }
+            vi_aa_resolve(taps, source.coverage, &color);
+        } else if (plan->dither_filter_enable && source.coverage == 7u) {
+            const uint8_t *d = dither + (x - tail) * sizeof(vi_aa_texel);
+            color.r = d[0];
+            color.g = d[1];
+            color.b = d[2];
+        }
+        out[x - first] = color;
+    }
 }
 
 static inline uint8_t vi_median3(uint8_t a, uint8_t b, uint8_t c)
@@ -620,6 +668,65 @@ static inline uint8_t vi_median3(uint8_t a, uint8_t b, uint8_t c)
     if (a > b) b = a;
     return b;
 }
+
+static void vi_divot_row(const sr_rgba8 *stage, sr_rgba8 *restrict row, int32_t count)
+{
+    int32_t x = 0;
+#ifdef SR_PACKED
+    const __m128i alpha = _mm_set1_epi32((int)0xff000000u);
+    for (; count - x >= 4; x += 4) {
+        const __m128i filtered = sr_vi_divot4(sr_vi_load4(stage + x),
+            sr_vi_load4(stage + x + 1), sr_vi_load4(stage + x + 2));
+        sr_vi_store4(row + x, _mm_or_si128(filtered, alpha));
+    }
+#endif
+    for (; x < count; x++) {
+        const sr_rgba8 left = stage[x];
+        sr_rgba8 color = stage[x + 1];
+        const sr_rgba8 right = stage[x + 2];
+        if ((left.a & color.a & right.a) != 7u) {
+            color.r = vi_median3(left.r, color.r, right.r);
+            color.g = vi_median3(left.g, color.g, right.g);
+            color.b = vi_median3(left.b, color.b, right.b);
+        }
+        color.a = 0xffu;
+        row[x] = color;
+    }
+}
+
+#if defined(SR_PACKED) && SOFTRDP_SCALE == 1
+/* At native resolution, the texels share one plane. Decode the contiguous
+ * part of the row directly from word-swapped RDRAM, leaving the wrapped
+ * remainder and short tail to the regular accessors. */
+static inline uint32_t vi_decode_native_row(const sr_memory *memory, uint32_t address,
+    uint32_t count, uint8_t *out, uint32_t bytes_per_pixel, bool coverage)
+{
+    uint32_t x = 0;
+    if (bytes_per_pixel == 2u && (address & 2u) && count) {
+        const uint16_t raw = sr_memory_read_be16_fast(memory, address);
+        sr_rgba8 color = vi_rgba5551_table[raw];
+        if (coverage)
+            color.a = (uint8_t)(((raw & 1u) << 2) | sr_memory_read_hidden_fast(memory, address, raw));
+        memcpy(out, &color, sizeof(color));
+        address = mask_addr(memory, address + 2u);
+        x++;
+    }
+    const uint32_t available = (memory->rdram_size - address) / bytes_per_pixel;
+    const uint32_t stop = x + (count - x < available ? count - x : available);
+    const uint8_t *input = memory->rdram + address;
+    if (bytes_per_pixel == 2u) {
+        const uint8_t *hidden = coverage && memory->hidden ? memory->hidden + (address >> 1) : NULL;
+        for (uint32_t i = 0; stop - x >= 8; x += 8, i += 8)
+            sr_vi_decode16(input + 2 * i, hidden ? hidden + i : NULL, out + 4 * x, coverage);
+    } else {
+        for (uint32_t i = 0; stop - x >= 4; x += 4, i += 4) {
+            const __m128i pixels = sr_vi_decode32(sr_vi_load4(input + 4 * i), coverage);
+            sr_vi_store4(out + 4 * x, pixels);
+        }
+    }
+    return x;
+}
+#endif
 
 /*
  * Plan is VI_SCANOUT_READY, so every address touched here was proven in range
@@ -642,7 +749,12 @@ static inline void decode_row_16(const vi_scanout_plan *plan,
     const uint32_t row_base = plan->origin + source_y * plan->source_stride * 2u;
     const uint32_t width = plan->source_width;
     const sr_rgba8 *restrict table = vi_rgba5551_table;
-    for (uint32_t x = 0; x < width; x++) {
+    uint32_t x = 0;
+#if defined(SR_PACKED) && SOFTRDP_SCALE == 1
+    if (!apply_aa)
+        x = vi_decode_native_row(memory, mask_addr(memory, row_base), width, (uint8_t *)row, 2u, false);
+#endif
+    for (; x < width; x++) {
         const uint32_t address = mask_addr(memory, row_base + x * 2u);
         for (uint32_t sx = 0; sx < (uint32_t)SOFTRDP_SCALE; sx++) {
             const uint32_t sample = sub_row * (uint32_t)SOFTRDP_SCALE + sx;
@@ -670,7 +782,12 @@ static inline void decode_row_32(const vi_scanout_plan *plan,
 {
     const uint32_t row_base = plan->origin + source_y * plan->source_stride * 4u;
     const uint32_t width = plan->source_width;
-    for (uint32_t x = 0; x < width; x++) {
+    uint32_t x = 0;
+#if defined(SR_PACKED) && SOFTRDP_SCALE == 1
+    if (!apply_aa)
+        x = vi_decode_native_row(memory, mask_addr(memory, row_base), width, (uint8_t *)row, 4u, false);
+#endif
+    for (; x < width; x++) {
         const uint32_t address = mask_addr(memory, row_base + x * 4u);
         for (uint32_t sx = 0; sx < (uint32_t)SOFTRDP_SCALE; sx++) {
             const uint32_t sample = sub_row * (uint32_t)SOFTRDP_SCALE + sx;
@@ -708,7 +825,7 @@ static void decode_row_filtered(const vi_scanout_plan *plan,
 {
     enum { ROW_TEXELS = VI_MAX_SOURCE_WIDTH * SOFTRDP_SCALE + 2 * VI_ROW_MARGIN };
     static _Thread_local vi_aa_texel texels[3][ROW_TEXELS];
-    static _Thread_local vi_filtered_texel stage[VI_MAX_SOURCE_WIDTH * SOFTRDP_SCALE + 2u];
+    static _Thread_local sr_rgba8 stage[VI_MAX_SOURCE_WIDTH * SOFTRDP_SCALE + 2u];
     const int32_t raster_y = (int32_t)(source_y * (uint32_t)SOFTRDP_SCALE + sub_row);
     const int32_t count = (int32_t)(plan->source_width * (uint32_t)SOFTRDP_SCALE);
 
@@ -726,7 +843,14 @@ static void decode_row_filtered(const vi_scanout_plan *plan,
         while (taken[s]) s++;
         taken[s] = true;
         slot_of[r] = s;
-        for (int32_t x = -VI_ROW_MARGIN; x < count + VI_ROW_MARGIN; x++)
+        int32_t x = -VI_ROW_MARGIN;
+#if defined(SR_PACKED) && SOFTRDP_SCALE == 1
+        const uint32_t pixel = (uint32_t)((raster_y - 1 + r) * (int32_t)plan->source_stride + x);
+        const uint32_t address = mask_addr(memory, plan->origin + pixel * plan->bytes_per_pixel);
+        x += (int32_t)vi_decode_native_row(memory, address, (uint32_t)(count + 2 * VI_ROW_MARGIN),
+            (uint8_t *)texels[s], plan->bytes_per_pixel, true);
+#endif
+        for (; x < count + VI_ROW_MARGIN; x++)
             texels[s][x + VI_ROW_MARGIN] =
                 vi_fetch_texel(plan, memory, x, raster_y - 1 + r);
         cache->texel_row[s] = raster_y - 1 + r;
@@ -737,30 +861,13 @@ static void decode_row_filtered(const vi_scanout_plan *plan,
         texels[slot_of[1]] + VI_ROW_MARGIN,
         texels[slot_of[2]] + VI_ROW_MARGIN
     };
-    /* Pixels -1..count: the divot neighbours of the edge pixels included. */
-    static _Thread_local uint8_t dither[(VI_MAX_SOURCE_WIDTH * SOFTRDP_SCALE + 2u) *
-                                        sizeof(vi_aa_texel)];
-    if (plan->dither_filter_enable)
-        vi_dither_row(rows, -1, count, fetch_bug, dither);
     if (!plan->divot_enable) {
-        for (int32_t x = 0; x < count; x++)
-            row[x] = vi_filter_stage(plan, rows, dither, x, fetch_bug).color;
+        vi_filter_row(plan, rows, 0, count, fetch_bug, row, false);
         return;
     }
-    for (int32_t x = -1; x <= count; x++)
-        stage[x + 1] = vi_filter_stage(plan, rows, dither, x, fetch_bug);
-    for (int32_t x = 0; x < count; x++) {
-        const vi_filtered_texel left = stage[x];
-        const vi_filtered_texel center = stage[x + 1];
-        const vi_filtered_texel right = stage[x + 2];
-        sr_rgba8 color = center.color;
-        if ((left.coverage & center.coverage & right.coverage) != 7u) {
-            color.r = vi_median3(left.color.r, center.color.r, right.color.r);
-            color.g = vi_median3(left.color.g, center.color.g, right.color.g);
-            color.b = vi_median3(left.color.b, center.color.b, right.color.b);
-        }
-        row[x] = color;
-    }
+    /* Include the neighbours of both edge pixels. */
+    vi_filter_row(plan, rows, -1, count + 1, fetch_bug, stage, true);
+    vi_divot_row(stage, row, count);
 }
 
 static void decode_row(const vi_scanout_plan *plan,
@@ -983,6 +1090,67 @@ static inline sr_rgba8 vi_transform_dither(sr_rgba8 color, uint16_t noise)
     return color;
 }
 
+/* Write the contiguous part of a unit-step or aligned half-step row. The
+ * caller handles other sample walks and the clamped right edge. Noise
+ * indices are absolute, including when the guard band starts on an odd x. */
+static inline uint32_t vi_write_linear_row(const vi_x_window *window,
+    const sr_rgba8 *source, uint32_t width, uint32_t x, uint32_t end,
+    const uint16_t *noise, sr_rgba8 *destination, bool interpolate)
+{
+    const uint32_t step = window->sample_x_add;
+    const uint32_t coordinate = window->sample_x_start + x * step;
+    uint32_t at = coordinate >> 10;
+    if (x >= end || at >= width) return x;
+    if (step == 1024u && (interpolate || window->replicate_fetch_mask == 0u)) {
+        const uint32_t fraction = interpolate ? (coordinate >> 5) & 31u : 0u;
+        const uint32_t available = width - at - (fraction != 0);
+        const uint32_t count = end - x < available ? end - x : available;
+        if (!noise && !fraction) {
+            memcpy(destination + x, source + at, count * sizeof(*source));
+            return x + count;
+        }
+#ifdef SR_PACKED
+        const uint32_t stop = x + count;
+        const __m128i weight = _mm_set1_epi16((short)fraction);
+        for (; stop - x >= 4; x += 4, at += 4) {
+            __m128i color = sr_vi_load4(source + at);
+            if (fraction)
+                color = sr_blend4(color, sr_vi_load4(source + at + 1), weight);
+            if (noise)
+                color = sr_vi_dither_lo4(color, noise + x);
+            sr_vi_store4(destination + x, color);
+        }
+#endif
+        return x;
+    }
+#ifdef SR_PACKED
+    if (interpolate && step == 512u && (coordinate & 0x1e0u) == 0u) {
+        if (coordinate & 512u) {
+            const uint32_t next = at + 1u < width ? at + 1u : at;
+            sr_rgba8 color = lerp_color(source[at], source[next], 16u);
+            destination[x] = noise ? vi_transform_dither(color, noise[x]) : color;
+            ++at;
+            ++x;
+        }
+        for (; end - x >= 8 && at < width && width - at > 4; x += 8, at += 4) {
+            const __m128i a = sr_vi_load4(source + at);
+            const __m128i average = _mm_avg_epu8(a, sr_vi_load4(source + at + 1));
+            __m128i low = _mm_unpacklo_epi32(a, average);
+            __m128i high = _mm_unpackhi_epi32(a, average);
+            if (noise) {
+                const __m128i n = sr_vi_load4(noise + x);
+                const __m128i zero = _mm_setzero_si128();
+                low = sr_vi_dither4(low, _mm_unpacklo_epi16(n, zero));
+                high = sr_vi_dither4(high, _mm_unpackhi_epi16(n, zero));
+            }
+            sr_vi_store4(destination + x, low);
+            sr_vi_store4(destination + x + 4, high);
+        }
+    }
+#endif
+    return x;
+}
+
 typedef struct vi_scanout_job {
     const vi_scanout_plan *plan;
     const sr_memory *memory;
@@ -1039,8 +1207,9 @@ static void vi_execute_identity_rows(const vi_scanout_job *job,
         for (uint32_t x = active_end; x < width; x++) destination[x] = border;
 
         if (!interpolate) {
-            /* Point sampling: straight gather, no per-pixel branching. */
-            for (uint32_t x = active_begin; x < active_end; x++) {
+            uint32_t x = vi_write_linear_row(window, row0, scaled_source_width,
+                active_begin, active_end, NULL, destination, false);
+            for (; x < active_end; x++) {
                 uint32_t at;
                 if (vi_replicate_fetch(window, window->sample_x_start +
                                        x * window->sample_x_add,
@@ -1059,14 +1228,16 @@ static void vi_execute_identity_rows(const vi_scanout_job *job,
         const sr_rgba8 *restrict source = row1
             ? vi_blend_rows(row0, row1, y_fraction_scaled, scaled_source_width, blended)
             : row0;
+        uint32_t x = vi_write_linear_row(window, source, scaled_source_width,
+            active_begin, active_end, NULL, destination, true);
         if (vi_whole_x_steps(window)) {
-            for (uint32_t x = active_begin; x < active_end; x++) {
+            for (; x < active_end; x++) {
                 const uint32_t at = (window->sample_x_start + x * window->sample_x_add) >> 10;
                 destination[x] = source[at < scaled_source_width ? at : scaled_source_width - 1u];
             }
             continue;
         }
-        for (uint32_t x = active_begin; x < active_end; x++) {
+        for (; x < active_end; x++) {
             const uint32_t coordinate = window->sample_x_start +
                                         x * window->sample_x_add;
             const uint32_t fraction = (coordinate >> 5) & 31u;
@@ -1094,7 +1265,7 @@ typedef void (*vi_filtered_row_fn)(const vi_scanout_plan *plan,
 
 /* `noisy` is constant per instance: the dithering transforms get the row's
  * noise precomputed by vi_row_noise, the others never read it. */
-#define VI_DEFINE_POINT_ROW(name, apply, noisy)                               \
+#define VI_DEFINE_POINT_ROW(name, apply, noisy, linear_dither)                \
 static void name(const vi_scanout_plan *plan,                                 \
                  const sr_rgba8 *restrict row0,                               \
                  const sr_rgba8 *restrict row1, uint32_t y_fraction,          \
@@ -1105,7 +1276,9 @@ static void name(const vi_scanout_plan *plan,                                 \
     (void)row1; (void)y_fraction;                                             \
     const vi_x_window *window = vi_row_window(plan, y);                       \
     if (noisy) vi_row_noise(y, plan->dither_frame, begin, end, noise);        \
-    for (uint32_t x = begin; x < end; x++) {                                  \
+    uint32_t x = linear_dither ? vi_write_linear_row(window, row0,             \
+        source_width, begin, end, noise, destination, false) : begin;          \
+    for (; x < end; x++) {                                                     \
         uint32_t at;                                                           \
         const bool fetched = vi_replicate_fetch(window,                       \
             window->sample_x_start + x * window->sample_x_add,                \
@@ -1117,7 +1290,7 @@ static void name(const vi_scanout_plan *plan,                                 \
 
 /* Vertical blend once per row, then the horizontal lerp per pixel; see the
  * identity path for why neither fraction needs a zero case. */
-#define VI_DEFINE_INTERP_ROW(name, apply, noisy, half_dither)                 \
+#define VI_DEFINE_INTERP_ROW(name, apply, noisy, linear_dither)                \
 static void name(const vi_scanout_plan *plan,                                 \
                  const sr_rgba8 *restrict row0,                               \
                  const sr_rgba8 *restrict row1, uint32_t y_fraction,          \
@@ -1131,11 +1304,10 @@ static void name(const vi_scanout_plan *plan,                                 \
     const sr_rgba8 *restrict source = row1                                    \
         ? vi_blend_rows(row0, row1, y_fraction, source_width, blended)        \
         : row0;                                                               \
-    if (half_dither && sr_vi_half_dither((const uint8_t *)source,             \
-            source_width, window->sample_x_start, window->sample_x_add,      \
-            begin, end, noise, (uint8_t *)destination)) return;              \
+    uint32_t x = linear_dither ? vi_write_linear_row(window, source,           \
+        source_width, begin, end, noise, destination, true) : begin;          \
     if (vi_whole_x_steps(window)) {                                           \
-        for (uint32_t x = begin; x < end; x++) {                              \
+        for (; x < end; x++) {                                                 \
             const uint32_t at = (window->sample_x_start +                     \
                                  x * window->sample_x_add) >> 10;             \
             destination[x] = apply(source[at < source_width ? at              \
@@ -1143,7 +1315,7 @@ static void name(const vi_scanout_plan *plan,                                 \
         }                                                                     \
         return;                                                               \
     }                                                                         \
-    for (uint32_t x = begin; x < end; x++) {                                  \
+    for (; x < end; x++) {                                                     \
         const uint32_t coordinate = window->sample_x_start +                  \
                                     x * window->sample_x_add;                 \
         const uint32_t fraction = (coordinate >> 5) & 31u;                    \
@@ -1155,9 +1327,9 @@ static void name(const vi_scanout_plan *plan,                                 \
     }                                                                         \
 }
 
-VI_DEFINE_POINT_ROW(vi_point_gamma, VI_APPLY_GAMMA, 0)
-VI_DEFINE_POINT_ROW(vi_point_gamma_dither, VI_APPLY_GAMMA_DITHER, 1)
-VI_DEFINE_POINT_ROW(vi_point_dither, VI_APPLY_DITHER, 1)
+VI_DEFINE_POINT_ROW(vi_point_gamma, VI_APPLY_GAMMA, 0, 0)
+VI_DEFINE_POINT_ROW(vi_point_gamma_dither, VI_APPLY_GAMMA_DITHER, 1, 0)
+VI_DEFINE_POINT_ROW(vi_point_dither, VI_APPLY_DITHER, 1, 1)
 VI_DEFINE_INTERP_ROW(vi_interp_gamma, VI_APPLY_GAMMA, 0, 0)
 VI_DEFINE_INTERP_ROW(vi_interp_gamma_dither, VI_APPLY_GAMMA_DITHER, 1, 0)
 VI_DEFINE_INTERP_ROW(vi_interp_dither, VI_APPLY_DITHER, 1, 1)

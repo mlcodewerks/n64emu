@@ -6,10 +6,14 @@
 
 #if !defined(SOFTRDP_SCALAR) && (defined(__aarch64__) || defined(__ARM_NEON))
 #include <sse2neon.h>
+#define SR_NEON 1
 #define SR_PACKED 1
 #define SR_PACKED_MUL32 1
 #elif !defined(SOFTRDP_SCALAR) && defined(__SSE2__)
 #include <emmintrin.h>
+#if defined(__SSSE3__)
+#include <tmmintrin.h>
+#endif
 #if defined(__SSE4_1__)
 #include <smmintrin.h>
 #define SR_PACKED_MUL32 1
@@ -29,6 +33,35 @@ static inline int softrdp_has_sse42(void)
 }
 
 #ifdef SR_PACKED
+/* The input has a full-bit comparison mask in each 32-bit lane. */
+static inline int sr_any_mask32(__m128i mask)
+{
+#ifdef SR_NEON
+    const uint32x4_t lanes = vreinterpretq_u32_s64(mask);
+#if defined(__aarch64__)
+    return vmaxvq_u32(lanes) != 0;
+#else
+    const uint64x2_t halves = vreinterpretq_u64_u32(lanes);
+    return (vgetq_lane_u64(halves, 0) | vgetq_lane_u64(halves, 1)) != 0;
+#endif
+#else
+    return _mm_movemask_ps(_mm_castsi128_ps(mask)) != 0;
+#endif
+}
+
+static inline int sr_all_mask32(__m128i mask)
+{
+#ifdef SR_NEON
+#if defined(__aarch64__)
+    return vminvq_u32(vreinterpretq_u32_s64(mask)) != 0;
+#else
+    return !sr_any_mask32(_mm_xor_si128(mask, _mm_set1_epi32(-1)));
+#endif
+#else
+    return _mm_movemask_ps(_mm_castsi128_ps(mask)) == 15;
+#endif
+}
+
 static inline __m128i sr_mul32(__m128i a, __m128i b)
 {
 #ifdef SR_PACKED_MUL32
@@ -39,26 +72,45 @@ static inline __m128i sr_mul32(__m128i a, __m128i b)
     return _mm_unpacklo_epi32(_mm_shuffle_epi32(even, 0x88), _mm_shuffle_epi32(odd, 0x88));
 #endif
 }
+
+/* Signed 16-bit products cover every five-bit fraction, including negative
+ * differences and the +16 rounding. */
+static inline __m128i sr_blend4(__m128i a, __m128i b, __m128i fraction)
+{
+    const __m128i zero = _mm_setzero_si128();
+    const __m128i al = _mm_unpacklo_epi8(a, zero), ah = _mm_unpackhi_epi8(a, zero);
+    const __m128i dl = _mm_mullo_epi16(_mm_sub_epi16(_mm_unpacklo_epi8(b, zero), al), fraction);
+    const __m128i dh = _mm_mullo_epi16(_mm_sub_epi16(_mm_unpackhi_epi8(b, zero), ah), fraction);
+#ifdef SR_NEON
+    const __m128i low = vreinterpretq_s64_s16(vrshrq_n_s16(vreinterpretq_s16_s64(dl), 5));
+    const __m128i high = vreinterpretq_s64_s16(vrshrq_n_s16(vreinterpretq_s16_s64(dh), 5));
+#else
+    const __m128i round = _mm_set1_epi16(16);
+    const __m128i low = _mm_srai_epi16(_mm_add_epi16(dl, round), 5);
+    const __m128i high = _mm_srai_epi16(_mm_add_epi16(dh, round), 5);
+#endif
+    return _mm_packus_epi16(_mm_add_epi16(al, low), _mm_add_epi16(ah, high));
+}
 #endif
 
-/* Four RGBA pixels per iteration. Signed 16-bit products cover every legal
- * fraction (0..31), including negative differences and the +16 rounding. */
 static inline void sr_blend_bytes(const uint8_t *a, const uint8_t *b,
                                   uint8_t *out, size_t bytes, unsigned fraction)
 {
     size_t i = 0;
 #ifdef SR_PACKED
-    const __m128i zero = _mm_setzero_si128();
-    const __m128i f = _mm_set1_epi16((short)fraction), round = _mm_set1_epi16(16);
-    for (; i + 16 <= bytes; i += 16) {
-        __m128i x = _mm_loadu_si128((const __m128i *)(a + i));
-        __m128i y = _mm_loadu_si128((const __m128i *)(b + i));
-        __m128i al = _mm_unpacklo_epi8(x, zero), ah = _mm_unpackhi_epi8(x, zero);
-        __m128i dl = _mm_sub_epi16(_mm_unpacklo_epi8(y, zero), al);
-        __m128i dh = _mm_sub_epi16(_mm_unpackhi_epi8(y, zero), ah);
-        dl = _mm_add_epi16(al, _mm_srai_epi16(_mm_add_epi16(_mm_mullo_epi16(dl, f), round), 5));
-        dh = _mm_add_epi16(ah, _mm_srai_epi16(_mm_add_epi16(_mm_mullo_epi16(dh, f), round), 5));
-        _mm_storeu_si128((__m128i *)(out + i), _mm_packus_epi16(dl, dh));
+    if (fraction == 16) {
+        for (; i + 16 <= bytes; i += 16) {
+            const __m128i x = _mm_loadu_si128((const __m128i *)(a + i));
+            const __m128i y = _mm_loadu_si128((const __m128i *)(b + i));
+            _mm_storeu_si128((__m128i *)(out + i), _mm_avg_epu8(x, y));
+        }
+    } else {
+        const __m128i f = _mm_set1_epi16((short)fraction);
+        for (; i + 16 <= bytes; i += 16) {
+            const __m128i x = _mm_loadu_si128((const __m128i *)(a + i));
+            const __m128i y = _mm_loadu_si128((const __m128i *)(b + i));
+            _mm_storeu_si128((__m128i *)(out + i), sr_blend4(x, y, f));
+        }
     }
 #endif
     for (; i < bytes; ++i)
@@ -121,8 +173,10 @@ static inline void sr_noise_block(uint32_t begin, uint32_t end, uint32_t frame_s
 #ifdef SR_PACKED
     __m128i p = _mm_set1_epi32((int)prime), f = _mm_set1_epi32((int)frame_shift);
     __m128i b = _mm_set1_epi32((int)b1_shift), a = _mm_set1_epi32((int)a2_shift);
+    __m128i position = _mm_add_epi32(_mm_set1_epi32((int)x), _mm_setr_epi32(0, 1, 2, 3));
     for (; x + 4 <= end; x += 4) {
-        __m128i n = _mm_setr_epi32((int)x, (int)x+1, (int)x+2, (int)x+3);
+        __m128i n = position;
+        position = _mm_add_epi32(position, _mm_set1_epi32(4));
         n = sr_mul32(_mm_xor_si128(f, n), p);
         n = sr_mul32(_mm_xor_si128(b, n), p);
         n = _mm_srli_epi32(sr_mul32(_mm_xor_si128(a, n), p), 16);
