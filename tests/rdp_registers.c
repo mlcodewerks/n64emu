@@ -73,7 +73,7 @@ static void check_fullsync_scheduling(void)
     enum { NO_MODE_CHANGE = -1 };
     static const struct {
         unsigned from_rsp, cache_timing, decoded, backlog, retrace;
-        unsigned cycle_type, image_read;
+        unsigned cycle_type, render_mode;
         int later_image_read;
         unsigned delay;
     } cases[] = {
@@ -88,13 +88,18 @@ static void check_fullsync_scheduling(void)
         {1, 0, 1,    0,   0, 0, 0, NO_MODE_CHANGE,  82},
         {0, 0, 1, 1000, 920, 0, 0, NO_MODE_CHANGE, 919},
         {1, 0, 1, 1000, 920, 0, 0, NO_MODE_CHANGE, 902},
-        {1, 0, 1, 1000,   0, 0, 1, NO_MODE_CHANGE, 947},
+        {1, 0, 1, 1000,   0, 0, 0x40, NO_MODE_CHANGE, 947},
+        {1, 0, 1, 1000,   0, 0, 0x48, NO_MODE_CHANGE, 945},
+        {1, 0, 1, 1000, 920, 0, 0x48, NO_MODE_CHANGE, 918},
+        {1, 1, 1, 1000,   0, 0, 0x48, NO_MODE_CHANGE, 902},
+        {1, 0, 1, 1000,   0, 1, 0x48, NO_MODE_CHANGE, 947},
         {1, 0, 1, 1000,   0, 1, 0, NO_MODE_CHANGE, 947},
         {1, 0, 1, 1000,   0, 2, 0, NO_MODE_CHANGE, 947},
         {1, 0, 1, 1000,   0, 3, 0, NO_MODE_CHANGE, 947},
         /* A later mode command cannot change the first fence's policy. */
         {1, 0, 1, 1000,   0, 0, 0, 1, 902},
-        {1, 0, 1, 1000,   0, 0, 1, 0, 947},
+        {1, 0, 1, 1000,   0, 0, 0x40, 0, 947},
+        {1, 0, 1, 1000,   0, 0, 0x48, 0, 945},
     };
     static struct r4300_core cpu;
     struct vi_controller vi = {0};
@@ -103,6 +108,7 @@ static void check_fullsync_scheduling(void)
     struct rdp_core dp = {0};
     uint32_t commands[6] = {0};
     uint32_t vi_regs[VI_REGS_COUNT] = {
+        [VI_STATUS_REG] = 2,
         [VI_WIDTH_REG] = 10,
         [VI_V_START_REG] = 8,
         [VI_Y_SCALE_REG] = 1024,
@@ -122,7 +128,7 @@ static void check_fullsync_scheduling(void)
         cpu.cache_timing = cases[i].cache_timing;
         mi.regs[MI_INTR_REG] = 0;
         commands[0] = UINT32_C(0x2f000000) | (cases[i].cycle_type << 20);
-        commands[1] = cases[i].image_read ? 0x40u : 0;
+        commands[1] = cases[i].render_mode;
         commands[2] = cases[i].decoded ? UINT32_C(0x29000000) : 0;
         unsigned bytes = 4 * sizeof(commands[0]);
         if (cases[i].later_image_read != NO_MODE_CHANGE) {

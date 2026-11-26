@@ -1037,6 +1037,7 @@ struct rdp_timing_sync {
     int one_cycle_without_image_read;
     uint32_t fb_width;
     int64_t deadline;
+    int one_cycle_aa_image_read;
 };
 
 static inline void rdp_timing_finish(struct rdp_timing* t, int64_t submitted,
@@ -1081,6 +1082,7 @@ static inline void rdp_timing_finish(struct rdp_timing* t, int64_t submitted,
     if (sync && !sync->seen && ((t->words[0] >> 24) & 63) == 0x29) {
         sync->seen = 1;
         sync->one_cycle_without_image_read = t->cycle_type == 0 && !(t->modes & 0x40u);
+        sync->one_cycle_aa_image_read = t->cycle_type == 0 && (t->modes & 0x48u) == 0x48u;
         sync->fb_width = t->fb_width;
         sync->deadline = t->deadline;
     }

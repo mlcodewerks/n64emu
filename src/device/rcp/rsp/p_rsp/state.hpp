@@ -132,6 +132,8 @@ struct CPUState
 	CP0 cp0;
 	uint32_t cycles = 0; // Estimated RSP clocks in the current scheduler slice.
 	uint32_t cycle_limit = UINT32_MAX; // Host scheduling boundary; not architectural state.
+	uint32_t dma_write_end = 0; // Exclusive RDRAM end of the preceding DMEM write in this slice.
+	uint32_t dma_write_cycle = 0;
 };
 
 enum ReturnMode

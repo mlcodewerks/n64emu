@@ -205,7 +205,10 @@ extern "C"
 
 		// Force alignment.
 		length = (length + 0x7) & ~0x7;
-		rsp->cycles += (length / 8) * (count + 1); // Ares DMA: one RSP clock per 8 bytes.
+		// A DMA request pays setup once, then transfers one 64-bit word per clock.
+		constexpr unsigned read_setup_cycles = 8;
+		rsp->cycles += read_setup_cycles + (length / 8) * (count + 1);
+		rsp->dma_write_end = 0;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] &= ~0x7;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] &= ~0x7;
 
@@ -275,12 +278,26 @@ extern "C"
 
 		// Force alignment.
 		length = (length + 0x7) & ~0x7;
-		rsp->cycles += (length / 8) * (count + 1);
 		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] &= ~0x7;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] &= ~0x7;
 
 		uint32_t dest = *rsp->cp0.cr[CP0_REGISTER_DMA_DRAM];
 		uint32_t source = *rsp->cp0.cr[CP0_REGISTER_DMA_CACHE];
+
+		// Estimate one clock of write setup overlap for consecutive DMEM
+		// transfers to the same RDRAM row within the current scheduler slice.
+		constexpr unsigned row_size = 2048;
+		constexpr unsigned write_reuse_cycles = 128;
+		const unsigned row_offset = dest & (row_size - 1);
+		const bool contiguous_block = count == 0 && !(source & 0x1000) && dest < 0x800000;
+		const bool reuse = contiguous_block && row_offset && length <= row_size - row_offset &&
+			dest == rsp->dma_write_end && rsp->cycles - rsp->dma_write_cycle <= write_reuse_cycles;
+		const unsigned min_write_cycles = reuse ? 24 : 25;
+		const unsigned payload_cycles = length / 8;
+		const unsigned block_cycles = payload_cycles < min_write_cycles ? min_write_cycles : payload_cycles;
+		rsp->cycles += block_cycles * (count + 1);
+		rsp->dma_write_end = contiguous_block ? dest + length : 0;
+		rsp->dma_write_cycle = rsp->cycles;
 
 #ifdef INTENSE_DEBUG
 		fprintf(stderr, "DMA WRITE: (0x%x <- 0x%x) len %u, count %u, skip %u\n", dest & 0x7ffffc, source & 0x1ffc,

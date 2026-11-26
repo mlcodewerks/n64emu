@@ -56,6 +56,7 @@ extern "C"
         auto& s = RSP::cpu.get_state();
         s.pc = *words++; s.has_delay_slot = *words++;
         s.branch_target = *words++; s.cycles = *words++;
+        s.dma_write_end = 0;
         RSP::SP_STATUS_TIMEOUT = *words++;
         for (auto& value : s.sr) value = *words++;
         for (auto& reg : s.cp2.regs) for (auto& value : reg.e) value = uint16_t(*words++);
@@ -100,6 +101,13 @@ extern "C"
         state.branch_target = 0;
         RSP::cpu.invalidate_imem();
     }
+	void parallelRSPResetExecutedCycles(void)
+	{
+		auto &state = RSP::cpu.get_state();
+		state.cycles = 0;
+		state.dma_write_end = 0;
+	}
+
 	unsigned int native_rsp_execute(unsigned int cycles)
 	{
         if (*RSP::rsp.SP_STATUS_REG & SP_STATUS_HALT)
@@ -110,7 +118,7 @@ extern "C"
 
 		// Run CPU until we either break or we need to fire an IRQ.
 		RSP::cpu.get_state().pc = *RSP::rsp.SP_PC_REG & 0xfff;
-		RSP::cpu.get_state().cycles = 0;
+		parallelRSPResetExecutedCycles();
 
 #ifdef INTENSE_DEBUG
 		fprintf(stderr, "RUN TASK: %u\n", RSP::cpu.get_state().pc);
@@ -155,10 +163,6 @@ extern "C"
 	{
 		return RSP::cpu.get_state().cycles;
 	}
-    void parallelRSPResetExecutedCycles(void) { RSP::cpu.get_state().cycles = 0; }
-
-
-
 	void native_rsp_close(void)
 	{
 		*RSP::rsp.SP_PC_REG = 0x00000000;

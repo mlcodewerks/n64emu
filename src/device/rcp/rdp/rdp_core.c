@@ -280,6 +280,11 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
                             }
                         }
                     }
+                    /* Calibrate the additional allowance for progressive scanout
+                     * with one-cycle antialiased framebuffer feedback. */
+                    if (decoded_rsp_fence && sync.one_cycle_aa_image_read && dp->vi_regs &&
+                        (dp->vi_regs[VI_STATUS_REG] & 0x42u) == 2u)
+                        estimated_delay = delay + (estimated_delay - delay) * 97 / 100;
                     delay = estimated_delay > UINT32_MAX ? UINT32_MAX : (uint32_t)estimated_delay;
                 }
 #endif
