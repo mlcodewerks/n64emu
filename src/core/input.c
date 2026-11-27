@@ -30,13 +30,6 @@ extern core_rom_header ROM_HEADER;
 
 #define PAK_IO_RUMBLE       0xC000      // the address where rumble-commands are sent to
 
-/* global data definitions */
-struct
-{
-    core_controller *control;               // pointer to core_controller struct in Core library
-    core_buttons buttons;
-} controller[4];
-
 void core_input_keys( int Control, core_buttons *Keys );
 
 static void set_input_descriptors(void)
@@ -72,6 +65,15 @@ static void set_input_descriptors(void)
 
 /* Controller protocol and libretro input translation. */
 
+void core_input_rumble(unsigned port, uint16_t strength)
+{
+    if (port >= 4 || !rumble.set_rumble_state || (strength && !Controls[port].Present))
+        return;
+
+    rumble.set_rumble_state(port, RETRO_RUMBLE_WEAK, strength);
+    rumble.set_rumble_state(port, RETRO_RUMBLE_STRONG, strength);
+}
+
 static unsigned char DataCRC( unsigned char *Data, int iLenght )
 {
     unsigned char Remainder = Data[0];
@@ -98,11 +100,10 @@ static unsigned char DataCRC( unsigned char *Data, int iLenght )
 
 void core_input_command(int Control, unsigned char *Command)
 {
-    unsigned char *Data = &Command[5];
-
-    if (Control == -1)
+    if ((unsigned)Control >= 4)
         return;
 
+    unsigned char *Data = &Command[5];
     switch (Command[2])
     {
         case RD_GETSTATUS:
@@ -110,7 +111,7 @@ void core_input_command(int Control, unsigned char *Command)
         case RD_READKEYS:
             break;
         case RD_READPAK:
-            if (controller[Control].control->accessory == ACCESSORY_RAW)
+            if (Controls[Control].accessory == ACCESSORY_RAW)
             {
                 unsigned int dwAddress = (Command[3] << 8) + (Command[4] & 0xE0);
 
@@ -123,24 +124,13 @@ void core_input_command(int Control, unsigned char *Command)
             }
             break;
         case RD_WRITEPAK:
-            if (controller[Control].control->accessory == ACCESSORY_RAW)
+            if (Controls[Control].accessory == ACCESSORY_RAW)
             {
                 unsigned int dwAddress = (Command[3] << 8) + (Command[4] & 0xE0);
                 Data[32] = DataCRC( Data, 32 );
 
-                if ((dwAddress == PAK_IO_RUMBLE) && (rumble.set_rumble_state))
-                {
-                    if (*Data)
-                    {
-                        rumble.set_rumble_state(Control, RETRO_RUMBLE_WEAK, 0xFFFF);
-                        rumble.set_rumble_state(Control, RETRO_RUMBLE_STRONG, 0xFFFF);
-                    }
-                    else
-                    {
-                        rumble.set_rumble_state(Control, RETRO_RUMBLE_WEAK, 0);
-                        rumble.set_rumble_state(Control, RETRO_RUMBLE_STRONG, 0);
-                    }
-                }
+                if (dwAddress == PAK_IO_RUMBLE)
+                    core_input_rumble(Control, *Data ? UINT16_MAX : 0);
             }
 
             break;
@@ -259,18 +249,9 @@ void core_input_init(void)
     libretro_supports_bitmasks = environ_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL);
     for( i = 0; i < 4; i++ )
     {
-       controller[i].control = Controls + i;
-       controller[i].control->Present = pad_present[i];
-       controller[i].control->RawData = 0;
-
-       if (pad_pak_types[i] == ACCESSORY_MEMPAK)
-          controller[i].control->accessory = ACCESSORY_MEMPAK;
-       else if (pad_pak_types[i] == ACCESSORY_RAW)
-          controller[i].control->accessory = ACCESSORY_RAW;
-       else if (pad_pak_types[i] == ACCESSORY_TRANSFER_PAK)
-          controller[i].control->accessory = ACCESSORY_TRANSFER_PAK;
-       else
-          controller[i].control->accessory = ACCESSORY_NONE;
+       Controls[i].Present = pad_present[i];
+       Controls[i].RawData = 0;
+       Controls[i].accessory = pad_pak_types[i] ? pad_pak_types[i] : ACCESSORY_NONE;
     }
    set_input_descriptors();
 }

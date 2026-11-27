@@ -16,7 +16,6 @@ struct frontend_controller
     struct transferpak* tpk;
 
     uint32_t last_input;
-    int last_pak_type;
     void (*main_switch_pak)(int control_id);
     unsigned int pak_switch_delay;
     unsigned int gb_switch_delay;
@@ -24,6 +23,9 @@ struct frontend_controller
     unsigned int gb_cart_switch_enabled;
 
 };
+
+void controller_request_pak_switch(struct frontend_controller* controller,
+    void (*switch_pak)(int control_id));
 
 extern const struct controller_input_backend_interface
     g_libretro_controller_backend;

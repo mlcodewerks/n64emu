@@ -53,6 +53,7 @@ void init_game_controller(struct game_controller* cont,
 
 void change_pak(struct game_controller* cont,
                 void* pak, const struct pak_interface* ipak);
+void restore_game_controller_status(struct game_controller* cont, uint8_t status);
 
 /* Controller Joybus interface */
 extern const struct joybus_device_interface

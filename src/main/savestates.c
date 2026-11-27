@@ -378,16 +378,15 @@ int core_state_load(struct device* dev, const void *data)
 
         /* extra controllers state */
         for (i = 0; i < GAME_CONTROLLERS_COUNT; ++i) {
-            dev->controllers[i].status = GETDATA(curr, uint8_t);
+            restore_game_controller_status(&dev->controllers[i], GETDATA(curr, uint8_t));
         }
 
         /* extra rpak state */
         for (i = 0; i < GAME_CONTROLLERS_COUNT; ++i) {
             uint8_t rpk_state = GETDATA(curr, uint8_t);
 
-            /* init rumble pak state if enabled and not controlled by the input plugin */
-            if (ROM_SETTINGS.rumble && !Controls[i].RawData) {
-                set_rumble_reg(&dev->rumblepaks[i], rpk_state);
+            if (dev->controllers[i].ipak == &g_irumblepak) {
+                set_rumble_reg(&dev->rumblepaks[i], Controls[i].Present ? rpk_state : 0);
             }
         }
 
@@ -460,7 +459,8 @@ int core_state_load(struct device* dev, const void *data)
                             (rom[GB_CART_FINGERPRINT_OFFSET] == 0x00) ? "(none)" : (const char*)(rom + GB_CART_FINGERPRINT_OFFSET),
                             (gb_fingerprint[0] == 0x00) ? "(none)" : gb_fingerprint);
 
-                        poweron_gb_cart(dev->transferpaks[i].gb_cart);
+                        if (dev->controllers[i].ipak == &g_itransferpak)
+                            poweron_gb_cart(dev->transferpaks[i].gb_cart);
                     }
                 }
             }
@@ -523,16 +523,15 @@ int core_state_load(struct device* dev, const void *data)
 
         /* extra controllers state */
         for (i = 0; i < GAME_CONTROLLERS_COUNT; ++i) {
-            dev->controllers[i].status = GETDATA(curr, uint8_t);
+            restore_game_controller_status(&dev->controllers[i], GETDATA(curr, uint8_t));
         }
 
         /* extra rpak state */
         for (i = 0; i < GAME_CONTROLLERS_COUNT; ++i) {
             uint8_t rpk_state = GETDATA(curr, uint8_t);
 
-            /* init rumble pak state if enabled and not controlled by the input plugin */
-            if (ROM_SETTINGS.rumble && !Controls[i].RawData) {
-                set_rumble_reg(&dev->rumblepaks[i], rpk_state);
+            if (dev->controllers[i].ipak == &g_irumblepak) {
+                set_rumble_reg(&dev->rumblepaks[i], Controls[i].Present ? rpk_state : 0);
             }
         }
 
@@ -605,7 +604,8 @@ int core_state_load(struct device* dev, const void *data)
                             (rom[GB_CART_FINGERPRINT_OFFSET] == 0x00) ? "(none)" : (const char*)(rom + GB_CART_FINGERPRINT_OFFSET),
                             (gb_fingerprint[0] == 0x00) ? "(none)" : gb_fingerprint);
 
-                        poweron_gb_cart(dev->transferpaks[i].gb_cart);
+                        if (dev->controllers[i].ipak == &g_itransferpak)
+                            poweron_gb_cart(dev->transferpaks[i].gb_cart);
                     }
                 }
             }
@@ -805,7 +805,7 @@ int core_state_load(struct device* dev, const void *data)
 
             dev->controllers[i].flavor->reset(&dev->controllers[i]);
 
-            if (ROM_SETTINGS.rumble) {
+            if (dev->controllers[i].ipak == &g_irumblepak) {
                 poweron_rumblepak(&dev->rumblepaks[i]);
             }
             if (ROM_SETTINGS.transferpak) {

@@ -1,13 +1,11 @@
 
 #include "core/controller.h"
 
-#include "core/backend.h"
+#include "core/input.h"
 
 #include "main/main.h"
 
 #include <stdint.h>
-#include <string.h>
-#include <core/log.h>
 #include <core/frontend.h>
 
 /* XXX: this is an abuse of the Zilmar Spec normally this value is reserved */
@@ -29,12 +27,24 @@ static int is_button_released(uint32_t input, uint32_t last_input, uint32_t mask
         && ((last_input & mask) != 0);
 }
 
+void controller_request_pak_switch(struct frontend_controller* controller,
+    void (*switch_pak)(int control_id))
+{
+    /* Leave the slot empty for subsequent Joybus polls so games see removal. */
+    if (controller->cont->ipak == &g_itransferpak) {
+        core_input_rumble(controller->control_id, 0);
+    }
+    change_pak(controller->cont, NULL, NULL);
+    controller->main_switch_pak = switch_pak;
+    controller->pak_switch_delay = PAK_SWITCH_DELAY;
+    controller->gb_cart_switch_enabled = 0;
+    controller->gb_switch_delay = 0;
+}
+
 static core_result controller_get_input(void* opaque, uint32_t* input_)
 {
     struct frontend_controller* cin_compat = (struct frontend_controller*)opaque;
     core_buttons keys = { 0 };
-
-    int pak_change_requested = 0;
 
     /* first poll controller */
         if (core_input_keys)
@@ -46,23 +56,9 @@ static core_result controller_get_input(void* opaque, uint32_t* input_)
         return CORE_SYSTEM_ERROR;
     }
 
-    /* has Controls[i].accessory changed since last call */
-    if (cin_compat->last_pak_type != Controls[cin_compat->control_id].accessory) {
-        pak_change_requested = 1;
-        cin_compat->main_switch_pak = main_switch_accessory;
-    }
-
-    /* or has the PAK_SWITCH_BUTTON been released */
+    /* If the PAK_SWITCH_BUTTON was released, cycle to the next accessory. */
     if (is_button_released(keys.Value, cin_compat->last_input, PAK_SWITCH_BUTTON)) {
-        pak_change_requested = 1;
-        cin_compat->main_switch_pak = main_switch_next_pak;
-    }
-
-    /* if so, immediately disconnect current pak (if any)
-     * and start the pak switch delay */
-    if (pak_change_requested) {
-        change_pak(cin_compat->cont, NULL, NULL);
-        cin_compat->pak_switch_delay = PAK_SWITCH_DELAY;
+        controller_request_pak_switch(cin_compat, main_switch_next_pak);
     }
 
     /* switch to next/selected pak after switch delay has expired */
@@ -70,7 +66,7 @@ static core_result controller_get_input(void* opaque, uint32_t* input_)
         cin_compat->main_switch_pak(cin_compat->control_id);
         cin_compat->main_switch_pak = NULL;
         // If switching to Transfer Pak and if a rom path is set, Switch it
-        if(Controls[cin_compat->control_id].accessory == ACCESSORY_TRANSFER_PAK && retro_transferpak_rom_path)
+        if (cin_compat->cont->ipak == &g_itransferpak && retro_transferpak_rom_path)
         {
             cin_compat->gb_cart_switch_enabled = 1;
         }
@@ -91,7 +87,6 @@ static core_result controller_get_input(void* opaque, uint32_t* input_)
         }
     }
 
-    cin_compat->last_pak_type = Controls[cin_compat->control_id].accessory;
     cin_compat->last_input = keys.Value;
 
     *input_ = keys.Value;
@@ -107,36 +102,7 @@ const struct controller_input_backend_interface
 
 static void controller_rumble(void* opaque, enum rumble_action action)
 {
-    int control_id = *(int*)opaque;
-
-    if (core_input_command == NULL) {
-        return;
-    }
-
-    //This is for netplay, -1 means there is no local controller controlling this player
-    if (control_id == -1) {
-        return;
-    }
-
-    static const uint8_t rumble_cmd_header[] =
-    {
-        0x23, 0x01, /* T=0x23, R=0x01 */
-        JCMD_PAK_WRITE,
-        0xc0, 0x1b, /* address=0xc000 | crc=0x1b */
-    };
-
-    uint8_t cmd[0x26];
-
-    uint8_t rumble_data = (action == RUMBLE_START)
-        ? 0x01
-        : 0x00;
-
-    /* build rumble command */
-    memcpy(cmd, rumble_cmd_header, 5);
-    memset(cmd + 5, rumble_data, 0x20);
-    cmd[0x25] = 0; /* dummy data CRC */
-
-    core_input_command(control_id, cmd);
+    core_input_rumble(*(const int*)opaque, action == RUMBLE_START ? UINT16_MAX : 0);
 }
 
 const struct rumble_backend_interface

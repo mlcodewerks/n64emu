@@ -8,6 +8,7 @@
 #include "libretro_private.h"
 #include "core/lifecycle.h"
 #include "core/file.h"
+#include "core/input.h"
 
 #include "core/frontend.h"
 #include "device/rcp/rdp/softrdp/softrdp_video.h"
@@ -104,15 +105,6 @@ extern struct device g_dev;
 extern unsigned int r4300_emumode;
 
 
-// after the controller's core_controller* member has been assigned we can update
-// them straight from here...
-extern struct
-{
-    core_controller *control;
-    core_buttons buttons;
-} controller[4];
-// ...but it won't be at least the first time we're called, in that case set
-// these as the startup controller selection.
 int pad_pak_types[4];
 int pad_present[4] = {1, 1, 1, 1};
 
@@ -428,7 +420,9 @@ void core_runtime_init(void)
         perf_get_cpu_features_cb = NULL;
 
     environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &colorMode);
-    environ_cb(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, &rumble);
+    rumble.set_rumble_state = NULL;
+    if (!environ_cb(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, &rumble))
+        rumble.set_rumble_state = NULL;
 
 
 
@@ -440,6 +434,7 @@ void core_runtime_deinit(void)
     // Prevent yield to game_thread on unsuccessful context request
     if (load_game_successful)
         core_runtime_unload_game();
+    rumble.set_rumble_state = NULL;
 
     deinit_audio_libretro();
 
@@ -450,16 +445,17 @@ void core_runtime_deinit(void)
 
 }
 
-void update_controllers()
+static void update_controllers(void)
 {
     for (unsigned port = 0; port < 4; ++port) {
         enum controller_pak_option selected = controller_read_pak_option(environ_cb, port);
         int pak = selected == CONTROLLER_PAK_MEMORY ? ACCESSORY_MEMPAK :
-            selected == CONTROLLER_PAK_RUMBLE ? ACCESSORY_RAW :
+            selected == CONTROLLER_PAK_RUMBLE ? ACCESSORY_RUMBLE_PAK :
             selected == CONTROLLER_PAK_TRANSFER ? ACCESSORY_TRANSFER_PAK : ACCESSORY_NONE;
-        /* Keep startup selection current across content reloads. */
+        if (pad_pak_types[port] == pak) continue;
         pad_pak_types[port] = pak;
-        if (controller[port].control) controller[port].control->accessory = pak;
+        Controls[port].accessory = pak;
+        main_request_accessory(port);
     }
 }
 
@@ -703,41 +699,20 @@ bool core_runtime_unserialize(const void *data, size_t size)
     return true;
 }
 
-// Needed to be able to detach controllers for Lylat Wars multiplayer
-// Only sets if controller struct is initialised as addon paks do.
 void core_runtime_set_controller_port_device(unsigned in_port, unsigned device)
 {
-    if (in_port < 4)
-    {
-        pad_present[in_port] = device != RETRO_DEVICE_NONE;
-        switch (device)
-        {
-        case RETRO_DEVICE_NONE:
-            if (controller[in_port].control)
-            {
-                controller[in_port].control->Present = 0;
-                break;
-            }
-            else
-            {
-                pad_present[in_port] = 0;
-                break;
-            }
+    if (in_port >= GAME_CONTROLLERS_COUNT) return;
 
-        case RETRO_DEVICE_JOYPAD:
-        default:
-            if (controller[in_port].control)
-            {
-                controller[in_port].control->Present = 1;
-                break;
-            }
-            else
-            {
-                pad_present[in_port] = 1;
-                break;
-            }
-        }
+    bool present = device != RETRO_DEVICE_NONE;
+    if (!present && pad_present[in_port] && g_EmulatorRunning) {
+        const struct pak_interface *pak = g_dev.controllers[in_port].ipak;
+        if (pak == &g_irumblepak)
+            poweron_rumblepak(&g_dev.rumblepaks[in_port]);
+        else if (pak == &g_itransferpak || Controls[in_port].RawData)
+            core_input_rumble(in_port, 0);
     }
+    pad_present[in_port] = present;
+    Controls[in_port].Present = present;
 }
 
 unsigned core_runtime_api_version(void) { return RETRO_API_VERSION; }

@@ -1,9 +1,44 @@
 #include "core_options_window.h"
 #include "imgui.h"
+#include <algorithm>
 #include <cctype>
+#include <iterator>
 #include <optional>
 
 namespace {
+constexpr const char *controller_pak_keys[] = {
+    "mupen64plus-pak1", "mupen64plus-pak2", "mupen64plus-pak3", "mupen64plus-pak4"
+};
+
+bool visible_core_option(const Option &option) {
+    return option.visible && !option.values.empty() &&
+        std::find(std::begin(controller_pak_keys), std::end(controller_pak_keys), option.key) ==
+            std::end(controller_pak_keys);
+}
+
+std::optional<size_t> option_combo(const char *label, const Option &option) {
+    auto value_label = [&](size_t index) -> const std::string & {
+        return index < option.value_labels.size() && !option.value_labels[index].empty()
+                   ? option.value_labels[index]
+                   : option.values[index];
+    };
+    const auto current = std::find(option.values.begin(), option.values.end(), option.value);
+    const size_t selected = current == option.values.end() ? 0 : size_t(current - option.values.begin());
+    std::optional<size_t> change;
+    if (ImGui::BeginCombo(label, value_label(selected).c_str())) {
+        for (size_t i = 0; i < option.values.size(); ++i) {
+            ImGui::PushID(int(i));
+            if (ImGui::Selectable(value_label(i).c_str(), selected == i))
+                change = i;
+            if (selected == i)
+                ImGui::SetItemDefaultFocus();
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    return change;
+}
+
 int boolean_token(std::string value) {
     for (auto &c : value)
         c = char(std::tolower(static_cast<unsigned char>(c)));
@@ -28,6 +63,21 @@ void help(const std::string &text) {
 }
 } // namespace
 
+void draw_controller_pak_setting(Core &core, unsigned port) {
+    if (port >= std::size(controller_pak_keys))
+        return;
+    const auto option = std::find_if(core.options.begin(), core.options.end(), [&](const Option &entry) {
+        return entry.key == controller_pak_keys[port];
+    });
+    if (option == core.options.end() || !option->visible || option->values.empty())
+        return;
+
+    const auto selection = option_combo("Controller Pak", *option);
+    help(option->info);
+    if (selection)
+        core.set_option(*option, option->values[*selection]);
+}
+
 bool core_option_boolean(const Option &option, size_t &enabled, size_t &disabled) {
     if (option.values.size() != 2)
         return false;
@@ -43,7 +93,7 @@ void draw_core_settings(Core &core) {
     // A display-update callback may redefine options, so apply edits after drawing all rows.
     std::optional<std::pair<std::string, std::string>> change;
     auto row = [&](const Option &option, bool categorized) {
-        if (!option.visible || option.values.empty())
+        if (!visible_core_option(option))
             return;
         ImGui::PushID(option.key.c_str());
         ImGui::TableNextRow();
@@ -61,27 +111,8 @@ void draw_core_settings(Core &core) {
             bool value = option.value == option.values[yes];
             if (ImGui::Checkbox("##value", &value))
                 change = {{option.key, option.values[value ? yes : no]}};
-        } else {
-            auto value_label = [&](size_t index) -> const std::string & {
-                return index < option.value_labels.size() && !option.value_labels[index].empty()
-                           ? option.value_labels[index]
-                           : option.values[index];
-            };
-            auto current = std::find(option.values.begin(), option.values.end(), option.value);
-            const size_t selected =
-                current == option.values.end() ? 0 : size_t(current - option.values.begin());
-            if (ImGui::BeginCombo("##value", value_label(selected).c_str())) {
-                for (size_t i = 0; i < option.values.size(); ++i) {
-                    ImGui::PushID(int(i));
-                    if (ImGui::Selectable(value_label(i).c_str(), selected == i))
-                        change = {{option.key, option.values[i]}};
-                    if (selected == i)
-                        ImGui::SetItemDefaultFocus();
-                    ImGui::PopID();
-                }
-                ImGui::EndCombo();
-            }
-        }
+        } else if (const auto selection = option_combo("##value", option))
+            change = {{option.key, option.values[*selection]}};
         ImGui::PopID();
     };
     auto begin_rows = [] {
@@ -95,7 +126,7 @@ void draw_core_settings(Core &core) {
     bool any = false;
     for (const auto &category : core.option_categories) {
         const bool visible = std::any_of(core.options.begin(), core.options.end(), [&](const Option &o) {
-            return o.category == category.key && o.visible && !o.values.empty();
+            return o.category == category.key && visible_core_option(o);
         });
         if (!visible)
             continue;
@@ -119,7 +150,7 @@ void draw_core_settings(Core &core) {
             const bool known =
                 std::any_of(core.option_categories.begin(), core.option_categories.end(),
                             [&](const OptionCategory &c) { return c.key == option.category; });
-            if (!known && option.visible && !option.values.empty()) {
+            if (!known && visible_core_option(option)) {
                 any = true;
                 row(option, false);
             }

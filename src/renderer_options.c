@@ -64,7 +64,7 @@ void renderer_register_options(retro_environment_t environment)
                 !strcmp(d->key, "wtfn64_vi_blur"))
                 d->info = "Applies immediately to SoftRDP.";
             if (strstr(d->key, "-pak")) {
-                d->info = "Choose the accessory attached to this controller. A Memory Pak allows games to save progress.";
+                d->info = "Swap this controller's accessory while playing. Memory Pak saves are retained when removed. Rumble Pak vibrates supported controllers.";
             }
             p = values[i];
             do {

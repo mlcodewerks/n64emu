@@ -90,7 +90,7 @@ void draw_binding(Input &input, unsigned player, unsigned index, InputOutput out
 }
 } // namespace
 
-void draw_input_settings(Input &input) {
+void draw_input_settings(Input &input, const std::function<void(unsigned)> &draw_pak) {
     if (ImGui::Button("Save bindings")) {
         input.cancel_capture();
         std::string error;
@@ -115,6 +115,8 @@ void draw_input_settings(Input &input) {
                         GImGui->ActiveIdWindow == ImGui::GetCurrentWindow())
                         ImGui::ClearActiveID();
                     ImGui::PushItemWidth(ImMin(260.f, ImGui::GetContentRegionAvail().x * 0.4f));
+                    if (draw_pak)
+                        draw_pak(player);
                     int scope = input.uses_game_input(player) ? 1 : 0;
                     ImGui::BeginDisabled(!input.has_game());
                     if (ImGui::Combo("Bindings", &scope, "Core\0This game\0") &&

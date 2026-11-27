@@ -18,6 +18,7 @@
 #include "core/audio.h"
 #include "core/clock.h"
 #include "core/controller_input.h"
+#include "core/input.h"
 #include "core/joybus.h"
 #include "core/rumble.h"
 #include "core/storage.h"
@@ -92,7 +93,7 @@ enum { PAK_MAX_SIZE = 5 };
 static size_t l_paks_idx[GAME_CONTROLLERS_COUNT];
 static void* l_paks[GAME_CONTROLLERS_COUNT][PAK_MAX_SIZE];
 static const struct pak_interface* l_ipaks[PAK_MAX_SIZE];
-static size_t l_pak_type_idx[6];
+static size_t l_pak_type_idx[ACCESSORY_BIO_PAK + 1];
 
 /*********************************************************************************************************
 * static functions
@@ -255,15 +256,9 @@ void main_switch_next_pak(int control_id)
     main_switch_pak(control_id);
 }
 
-void main_switch_accessory(int control_id)
+static void main_switch_accessory(int control_id)
 {
-    //Don't switch to the selected pak if it's not available for the game
-    if (l_ipaks[l_pak_type_idx[Controls[control_id].accessory]] == NULL) {
-        Controls[control_id].accessory = ACCESSORY_NONE;
-    }
-
     l_paks_idx[control_id] = l_pak_type_idx[Controls[control_id].accessory];
-
     main_switch_pak(control_id);
 }
 
@@ -692,7 +687,13 @@ struct file_storage eep;
 
     /* XXX: select type of flashram from db */
     uint32_t flashram_type = MX29L1100_ID;
-    
+
+void main_request_accessory(unsigned port)
+{
+    if (g_EmulatorRunning && !Controls[port].RawData) {
+        controller_request_pak_switch(&cin_compats[port], main_switch_accessory);
+    }
+}
 
 void main_prerun(void)
 {
@@ -727,36 +728,27 @@ void main_prerun(void)
     }
 #endif
 
-    /* Fill-in l_pak_type_idx and l_ipaks according to game compatibility */
+    /* Standard Controller Paks and Rumble Paks can physically be inserted
+     * regardless of whether the ROM database lists game support. */
     k = 0;
     if (ROM_SETTINGS.biopak) {
+        l_pak_type_idx[ACCESSORY_BIO_PAK] = k;
         l_ipaks[k++] = &g_ibiopak;
     }
-    if (ROM_SETTINGS.mempak) {
-        l_pak_type_idx[ACCESSORY_MEMPAK] = k;
-        l_ipaks[k] = &g_imempak;
-        ++k;
-    }
-    if (ROM_SETTINGS.rumble) {
-        l_pak_type_idx[ACCESSORY_RUMBLE_PAK] = k;
-        l_pak_type_idx[ACCESSORY_RAW] = k;
-        l_ipaks[k] = &g_irumblepak;
-        ++k;
-    }
+    l_pak_type_idx[ACCESSORY_MEMPAK] = k;
+    l_ipaks[k++] = &g_imempak;
+    l_pak_type_idx[ACCESSORY_RUMBLE_PAK] = k;
+    l_pak_type_idx[ACCESSORY_RAW] = k;
+    l_ipaks[k++] = &g_irumblepak;
     if (ROM_SETTINGS.transferpak) {
         l_pak_type_idx[ACCESSORY_TRANSFER_PAK] = k;
-        l_ipaks[k] = &g_itransferpak;
-        ++k;
+        l_ipaks[k++] = &g_itransferpak;
     }
     l_pak_type_idx[ACCESSORY_NONE] = k;
     l_ipaks[k] = NULL;
 
-    if (!ROM_SETTINGS.mempak) {
-        l_pak_type_idx[ACCESSORY_MEMPAK] = k;
-    }
-    if (!ROM_SETTINGS.rumble) {
-        l_pak_type_idx[ACCESSORY_RUMBLE_PAK] = k;
-        l_pak_type_idx[ACCESSORY_RAW] = k;
+    if (!ROM_SETTINGS.biopak) {
+        l_pak_type_idx[ACCESSORY_BIO_PAK] = k;
     }
     if (!ROM_SETTINGS.transferpak) {
         l_pak_type_idx[ACCESSORY_TRANSFER_PAK] = k;
@@ -813,17 +805,10 @@ void main_prerun(void)
             cin_compats[i].control_id = (int)i;
             cin_compats[i].cont = &g_dev.controllers[i];
             cin_compats[i].tpk = &g_dev.transferpaks[i];
-            cin_compats[i].last_pak_type = Controls[i].accessory;
-            cin_compats[i].last_input = 0;
 
             l_gb_carts_data[i].control_id = (int)i;
 
-            l_paks_idx[i] = 0;
-
-            //Don't use the selected pak if it's not available for the game, instead use NONE
-            if (l_ipaks[l_pak_type_idx[Controls[i].accessory]] == NULL) {
-                Controls[i].accessory = ACCESSORY_NONE;
-            }
+            l_paks_idx[i] = l_pak_type_idx[Controls[i].accessory];
 
             /* init all compatibles paks */
             for(k = 0; k < PAK_MAX_SIZE; ++k) {
@@ -831,10 +816,6 @@ void main_prerun(void)
                 if (l_ipaks[k] == &g_ibiopak) {
                     init_biopak(&g_dev.biopaks[i], 64);
                     l_paks[i][k] = &g_dev.biopaks[i];
-
-                    if (Controls[i].accessory == ACCESSORY_BIO_PAK) {
-                        l_paks_idx[i] = k;
-                    }
                 }
                 /* Memory Pak */
                 else if (l_ipaks[k] == &g_imempak) {
@@ -844,20 +825,11 @@ void main_prerun(void)
 
                     init_mempak(&g_dev.mempaks[i], &mpk_storages[i], &g_ifile_storage_ro);
                     l_paks[i][k] = &g_dev.mempaks[i];
-
-                    if (Controls[i].accessory == ACCESSORY_MEMPAK) {
-                        l_paks_idx[i] = k;
-                    }
                 }
                 /* Rumble Pak */
                 else if (l_ipaks[k] == &g_irumblepak) {
                     init_rumblepak(&g_dev.rumblepaks[i], &control_ids[i], &g_libretro_rumble_backend);
                     l_paks[i][k] = &g_dev.rumblepaks[i];
-
-                    if (Controls[i].accessory == ACCESSORY_RUMBLE_PAK
-                     || Controls[i].accessory == ACCESSORY_RAW) {
-                        l_paks_idx[i] = k;
-                    }
                 }
                 /* Transfer Pak */
                 else if (l_ipaks[k] == &g_itransferpak) {
@@ -872,10 +844,6 @@ void main_prerun(void)
                     init_transferpak(&g_dev.transferpaks[i], (g_dev.gb_carts[i].read_gb_cart == NULL) ? NULL : &g_dev.gb_carts[i]);
                     l_paks[i][k] = &g_dev.transferpaks[i];
 
-                    if (Controls[i].accessory == ACCESSORY_TRANSFER_PAK) {
-                        l_paks_idx[i] = k;
-                    }
-
                     /* enable GB cart switch */
                     // cin_compats[i].gb_cart_switch_enabled = 1;
                 }
@@ -883,11 +851,6 @@ void main_prerun(void)
                 else {
                     l_ipaks[k] = NULL;
                     l_paks[i][k] = NULL;
-
-                    if (Controls[i].accessory == ACCESSORY_NONE) {
-                        l_paks_idx[i] = k;
-                    }
-
                     break;
                 }
             }
@@ -964,7 +927,8 @@ void main_stop(void)
     if (!g_EmulatorRunning)
         return;
 
-     for(int i = 0; i < GAME_CONTROLLERS_COUNT; ++i) {
+    for (int i = 0; i < GAME_CONTROLLERS_COUNT; ++i) {
+        core_input_rumble(i, 0);
         if (!Controls[i].RawData && g_dev.gb_carts[i].read_gb_cart != NULL) {
             release_gb_rom(&l_gb_carts_data[i]);
             release_gb_ram(&l_gb_carts_data[i]);

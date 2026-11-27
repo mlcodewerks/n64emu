@@ -54,6 +54,9 @@ const struct game_controller_flavor g_standard_controller_flavor =
 void change_pak(struct game_controller* cont,
                 void* pak, const struct pak_interface* ipak)
 {
+    if (cont->pak == pak && cont->ipak == ipak)
+        return;
+
     cont->status &= ~(CONT_STATUS_PAK_PRESENT | CONT_STATUS_PAK_CHANGED);
 
     /* unplug previous pak (if any) */
@@ -71,6 +74,12 @@ void change_pak(struct game_controller* cont,
     /* set new pak */
     cont->pak = pak;
     cont->ipak = ipak;
+}
+
+void restore_game_controller_status(struct game_controller* cont, uint8_t status)
+{
+    const uint8_t pak_status = CONT_STATUS_PAK_PRESENT | CONT_STATUS_PAK_CHANGED;
+    cont->status = (cont->status & pak_status) | (status & ~pak_status);
 }
 
 static uint8_t pak_data_crc(const uint8_t* data, size_t size)
@@ -379,6 +388,7 @@ void set_rumble_reg(struct rumblepak* rpk, uint8_t value)
 void init_rumblepak(struct rumblepak* rpk,
     void* rumble, const struct rumble_backend_interface* irumble)
 {
+    rpk->state = 0;
     rpk->rumble = rumble;
     rpk->irumble = irumble;
 }

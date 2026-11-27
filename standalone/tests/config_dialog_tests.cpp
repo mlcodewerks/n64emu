@@ -27,6 +27,7 @@ int main(int argc, char **argv) {
         fs::create_directories(directory);
         Json values(cJSON_CreateObject(), cJSON_Delete);
         cJSON_AddStringToObject(values.get(), "n64emu_cycle_timing", "off");
+        cJSON_AddStringToObject(values.get(), "mupen64plus-pak3", "rumble");
         config_write_section(directory, "core_options", values.get());
         ImGui::CreateContext();
         apply_imgui_theme();
@@ -44,11 +45,19 @@ int main(int argc, char **argv) {
         if (core.loaded() || timing == core.options.end() || timing->value != "off")
             throw std::runtime_error("Core options must restore before a ROM is opened");
         core.set_option(*timing, "on");
+        auto pak = std::find_if(core.options.begin(), core.options.end(),
+            [](const Option &option) { return option.key == "mupen64plus-pak3"; });
+        if (pak == core.options.end() || pak->value != "rumble")
+            throw std::runtime_error("Player Pak options must restore before a ROM is opened");
+        core.set_option(*pak, "memory");
         core.unload();
         values = config_section(directory, "core_options");
         const auto *saved = cJSON_GetObjectItemCaseSensitive(values.get(), "n64emu_cycle_timing");
         if (!cJSON_IsString(saved) || std::string(saved->valuestring) != "on")
             throw std::runtime_error("Core options must save before a ROM is opened");
+        saved = cJSON_GetObjectItemCaseSensitive(values.get(), "mupen64plus-pak3");
+        if (!cJSON_IsString(saved) || std::string(saved->valuestring) != "memory")
+            throw std::runtime_error("Player Pak options must save before a ROM is opened");
         dsp_chain chain;
         dsp_chain_window dsp;
         const char *tabs[] = {"Video", "Audio", "Input", "Core"};
@@ -56,6 +65,7 @@ int main(int argc, char **argv) {
             io.DisplaySize = size;
             for (size_t selected = 0; selected < std::size(tabs); ++selected) {
                 ImGuiID player_tabs = 0, core_table = 0;
+                bool pak_setting_drawn = false;
                 for (int frame = 0; frame < 3; ++frame) {
                     ImGui::NewFrame();
                     ui_prepare_window("Settings", ImVec2(0.8f, 0.85f));
@@ -65,7 +75,10 @@ int main(int argc, char **argv) {
                                 continue;
                             if (tab == 2) {
                                 player_tabs = ImGui::GetID("Players");
-                                draw_input_settings(input);
+                                draw_input_settings(input, [&](unsigned player) {
+                                    draw_controller_pak_setting(core, player);
+                                    pak_setting_drawn = true;
+                                });
                             } else {
                                 if (ImGui::BeginChild(tabs[tab], {}, 0, ImGuiWindowFlags_HorizontalScrollbar)) {
                                     if (tab == 0)
@@ -93,6 +106,8 @@ int main(int argc, char **argv) {
                     const auto *players = GImGui->TabBars.GetByKey(player_tabs);
                     if (input.player_count() != 4 || !players || players->Tabs.Size != 4)
                         throw std::runtime_error("Input settings must expose exactly four player tabs");
+                    if (!pak_setting_drawn)
+                        throw std::runtime_error("Input settings must draw the selected player's Pak setting");
                 }
                 if (selected == 3 && (!core_table || !GImGui->Tables.GetByKey(core_table)))
                     throw std::runtime_error("Core tab must expose options before a ROM is opened");

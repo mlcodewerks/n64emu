@@ -491,7 +491,9 @@ int main() {
                         }
                         if (ImGui::BeginTabItem("Input")) {
                             input_tab = true;
-                            draw_input_settings(controls);
+                            draw_input_settings(controls, [&](unsigned player) {
+                                draw_controller_pak_setting(core, player);
+                            });
                             ImGui::EndTabItem();
                         }
                         if (ImGui::BeginTabItem("Core")) {

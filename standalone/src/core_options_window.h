@@ -3,4 +3,5 @@
 
 // Only the exact two-value true/false pairs used by winweg become checkboxes.
 bool core_option_boolean(const Option &option, size_t &enabled, size_t &disabled);
+void draw_controller_pak_setting(Core &core, unsigned port);
 void draw_core_settings(Core &core);

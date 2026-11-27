@@ -14,6 +14,17 @@ static int16_t axes[4][2];
 static uint16_t buttons[4];
 static bool bitmasks;
 static unsigned expected_port;
+static uint16_t motor_strength[2];
+static unsigned rumble_calls;
+
+static bool set_rumble_state(unsigned port, enum retro_rumble_effect effect, uint16_t strength)
+{
+   assert(port == expected_port);
+   assert(effect == RETRO_RUMBLE_WEAK || effect == RETRO_RUMBLE_STRONG);
+   motor_strength[effect] = strength;
+   ++rumble_calls;
+   return true;
+}
 
 static bool environment(unsigned command, void *data)
 {
@@ -109,6 +120,15 @@ int main(void)
          assert(69 * ax + 16 * ay <= 85 * 69);
          assert(16 * ax + 69 * ay <= 85 * 69);
       }
+   expected_port = 2;
+   core_input_rumble(expected_port, UINT16_MAX);
+   rumble.set_rumble_state = set_rumble_state;
+   core_input_rumble(expected_port, UINT16_MAX);
+   assert(rumble_calls == 2 && motor_strength[0] == UINT16_MAX && motor_strength[1] == UINT16_MAX);
+   Controls[expected_port].Present = 0;
+   core_input_rumble(expected_port, 0);
+   core_input_rumble(expected_port, UINT16_MAX);
+   assert(rumble_calls == 4 && motor_strength[0] == 0 && motor_strength[1] == 0);
    puts("Input: ares vectors, four ports, buttons, int16 sweep and octagonal gate passed.");
    return 0;
 }
