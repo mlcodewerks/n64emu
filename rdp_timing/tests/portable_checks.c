@@ -26,6 +26,77 @@ static void init(struct rdp_timing_adapter *a, struct port_test_trace *trace)
     rdp_timing_adapter_init(a, 0, 0x800000, &cb);
 }
 
+static void texture_load_checks(void)
+{
+    struct rdp_timing t;
+    memset(&t, 0, sizeof(t));
+    t.length = 2;
+    t.tex_size = 2;
+    t.tex_width = 32;
+    t.words[0] = 0x33000000u;
+    t.words[1] = (4u << 12) | 2048u; /* Five texels, two TMEM words. */
+    assert(rdp_timing_clocks(&t) == 8);
+    t.tex_address = 2040;
+    assert(rdp_timing_clocks(&t) == 11); /* Second word opens a new RDRAM row. */
+    t.tex_address = 0xffff8;
+    assert(rdp_timing_clocks(&t) == 13); /* The next word starts in another bank. */
+    t.tex_address = 2;
+    assert(rdp_timing_clocks(&t) == 9); /* Full final step at an unaligned address. */
+    t.words[0] |= 1024u;
+    assert(rdp_timing_clocks(&t) == 9); /* LoadBlock source row is ten bits. */
+    t.tex_address = 0;
+    t.tex_width = 1024;
+    t.words[0] = 0x34000000u;
+    t.words[1] = (12u << 12) | 4u;
+    assert(rdp_timing_clocks(&t) == 11); /* Two separate source rows. */
+    t.words[0] = 0x30000000u;
+    t.words[1] = 63u << 14;
+    assert(rdp_timing_clocks(&t) == 65); /* 64 TMEM writes overlap aligned reads. */
+    t.words[1] = 0;
+    t.tex_address = 2047;
+    assert(rdp_timing_clocks(&t) == 7); /* Odd palette reads rotate in one dword. */
+
+    t.tex_size = 0;
+    t.tex_address = 0;
+    t.words[0] = 0x33000000u;
+    t.words[1] = 63u << 12;
+    assert(rdp_timing_clocks(&t) == 17); /* Four texels per CI4 step. */
+}
+
+static void raster_work_checks(void)
+{
+    struct rdp_timing t;
+    memset(&t, 0, sizeof(t));
+    t.cycle_type = 2;
+    t.fb_width = 8;
+    t.fb_size = 2;
+    assert(rdp_timing_rectangle(&t, 0, 0, 8, 4) == 8);
+    t.fb_size = 3;
+    assert(rdp_timing_rectangle(&t, 0, 0, 8, 4) == 16);
+    t.fb_address = 4;
+    t.scissor_field = 3;
+    assert(rdp_timing_rectangle(&t, 0, 0, 8, 4) == 10);
+
+    memset(&t, 0, sizeof(t));
+    t.length = 8;
+    t.fb_width = 8;
+    t.fb_size = 2;
+    t.right = 32;
+    t.bottom = 4;
+    t.z_address = 0x100000;
+    t.rdram_bytes = 0x800000;
+    t.words[0] = 0x08800004u;
+    t.words[1] = 4u << 16;
+    t.words[6] = 7u << 16;
+    t.primitive_depth = 0x40000000;
+    t.modes = 0x34; /* Z compare, Z update, primitive Z. */
+    rdp_timing_record_uniform(&t, t.z_address, t.fb_width, 1, 0);
+    uint64_t rejected = rdp_timing_clocks(&t);
+    assert(t.reject && rdp_timing_uniform(&t, t.z_address));
+    rdp_timing_invalidate_range(&t, t.z_address, 2);
+    assert(rdp_timing_clocks(&t) > rejected && !t.reject);
+}
+
 static void fixed_checks(void)
 {
     struct rdp_timing_adapter a, restored;
@@ -254,6 +325,8 @@ static void differential(void)
 
 int main(void)
 {
+    texture_load_checks();
+    raster_work_checks();
     fixed_checks();
     buffered_checks();
     puts("Portable API: clock carry, fences, packet sizes, endian input, restore, VI snapshots, invalidation and overflow passed.");

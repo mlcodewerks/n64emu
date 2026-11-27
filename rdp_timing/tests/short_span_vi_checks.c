@@ -328,6 +328,42 @@ static unsigned single_cycle_feedback_checks(void)
     return 2 * i + 3;
 }
 
+static unsigned interlaced_store_and_compare_checks(void)
+{
+    uint32_t vi[14] = {0x42, 0x300000, 640};
+    struct rdp_timing t;
+    memset(&t, 0, sizeof(t));
+    t.words[0] = 0x0eu << 24;
+    t.length = rdp_timing_packet_words(t.words[0]);
+    t.vi_elapsed = t.length / 2 + 1;
+    t.fb_size = 2;
+    t.fb_width = 320;
+    t.vi_regs = vi;
+    for (unsigned off = 0; off < 2; ++off) {
+        t.overlap_span_startup = off;
+        assert(rdp_timing_span_startup(&t, 0, 0, 0) == (off ? 12u : 15u));
+        assert(rdp_timing_span_startup(&t, 1, 0, 0) == 11);
+    }
+    vi[2] = 320;
+    assert(rdp_timing_span_startup(&t, 0, 0, 0) == 9);
+
+    vi[0] = 2; vi[6] = 525;
+    vi[9] = (108u << 16) | 748; vi[10] = (37u << 16) | 511;
+    vi[12] = 512; vi[13] = 1024;
+    t.words[0] = 0x0fu << 24;
+    t.cycle_type = 1;
+    t.modes = 0x850;
+    t.vi_field_ticks = 783000;
+    t.deadline = 100000;
+    uint64_t translucent = rdp_timing_buffered_span(&t, 0, 8,
+        UINT64_C(0x1000000), UINT64_C(0x1800000), 1, 1, 1, 0);
+    assert(translucent == 129 && t.span_fraction == 0);
+    t.modes |= 8; /* AA reintroduces a coverage dependency. */
+    assert(rdp_timing_buffered_span(&t, 0, 8,
+        UINT64_C(0x1000000), UINT64_C(0x1800000), 1, 1, 1, 0) > translucent);
+    return 7;
+}
+
 int main(void)
 {
     uint32_t vi[14];
@@ -388,6 +424,7 @@ int main(void)
     checks += parallel_pipeline_checks();
     checks += readback_span_startup_checks();
     checks += single_cycle_feedback_checks();
+    checks += interlaced_store_and_compare_checks();
     printf("Short-span VI overlap and topology boundaries: %u checks passed\n", checks);
     return 0;
 }

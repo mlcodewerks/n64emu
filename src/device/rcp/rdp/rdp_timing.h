@@ -546,6 +546,14 @@ static inline unsigned rdp_timing_span_startup(const struct rdp_timing *t, int m
     /* Later triangle spans can stage setup while the previous span drains.
      * The detailed estimate credits this only for short spans with separate
      * color/Z banks and memory service beyond the raster floor. */
+    if (!t->cycle_type && !(t->modes & 0x40u) &&
+        rdp_timing_vi_alternate_rows(t->vi_regs, t->fb_width)) {
+        /* A double-pitch interlaced layout limits the Off profile's
+         * speculative setup overlap. Preserve the independently modeled
+         * bank overlap and retain three clocks of credit otherwise. */
+        if (memory_overlap) return 11u;
+        return t->overlap_span_startup ? 12u : 15u;
+    }
     return t->overlap_span_startup ? 9u : memory_overlap ? 11u : 15u;
 }
 
@@ -617,13 +625,15 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
      * response path. The unmeasured two-bank/single-device topology permits
      * read-fill latency to overlap VI-adjusted service. Apply its floor after
      * service, so pipeline latency is not stretched as additional bus work.
-     * Only one-cycle spans use this overlap. Two-cycle consumption retains
-     * its serialized VI response. The short-span floors (49/60 clocks per
-     * read stream) are aggregate video calibrations for this unmeasured
-     * topology, not independently measured per-request latencies. */
+     * Two-cycle translucent primitives with compare-only depth and no AA or
+     * coverage selection can also cover the response with memory service.
+     * The short-span floors (49/60 clocks per read stream) are aggregate
+     * video calibrations, not independent request-latency measurements. */
     unsigned paired=color_read && depth_read &&
         (color>>24)==(depth>>24) && (color>>23)!=(depth>>23);
-    unsigned interleaved=paired && !t->cycle_type;
+    unsigned compare_only_feedback=t->cycle_type && profile==7 &&
+        (t->modes&0x2cc8u)==0x840u;
+    unsigned interleaved=(paired && !t->cycle_type) || compare_only_feedback;
     unsigned response=paired && t->cycle_type?60u:49u;
     /* A pixel-alpha forced blend consumes framebuffer feedback after the
      * combiner, without the earlier AA memory-coverage dependency. Independent
@@ -702,8 +712,14 @@ static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, in
         ((uint64_t)y * t->fb_width + (unsigned)left) * bits_per_pixel;
     uint64_t color = rdp_timing_bus_words(first, pixels * bits_per_pixel);
     if (t->cycle_type >= 2) {
-        uint64_t work = t->cycle_type == 2 ? (pixels + 3) / 4 : color;
-        work = rdp_timing_vi_bus(t, work, first, 0, 1, 0, 0);
+        uint64_t work = rdp_timing_vi_bus(t, color, first, 0, 1, 0, 0);
+        if (t->cycle_type == 2) {
+            /* Copy can emit four 16-bit or two 32-bit texels per clock.
+             * Unaligned writes may take more beats than the TMEM pipeline. */
+            unsigned pixels_per_clock = t->fb_size == 3 ? 2 : 4;
+            uint64_t copy_clocks = (pixels + pixels_per_clock - 1) / pixels_per_clock;
+            if (work < copy_clocks) work = copy_clocks;
+        }
         t->vi_elapsed += work;
         return work;
     }
@@ -824,22 +840,13 @@ static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, in
     return work;
 }
 
-/* Fill spans repeat their bus alignment within 16 rows even for 4-bit
+/* Fill and copy spans repeat their bus alignment within 16 rows even for 4-bit
  * images. Other render modes also depend on color/depth bank addresses. */
 static inline uint64_t rdp_timing_rectangle(struct rdp_timing* t,
     unsigned x0, unsigned y0, unsigned x1, unsigned y1)
 {
     if (x1 <= x0 || y1 <= y0) return 0;
-    unsigned scanout = t->vi_regs && (t->vi_regs[0] & 3) >= 2 && t->vi_field_ticks;
-    if (t->cycle_type == 2 && !scanout) {
-        unsigned rows = y1 - y0;
-        if (t->scissor_field & 2) {
-            if (!rdp_timing_keeps_row(t, y0)) ++y0;
-            rows = y0 < y1 ? (y1 - y0 + 1) / 2 : 0;
-        }
-        return (uint64_t)((x1 - x0 + 3) / 4) * rows;
-    }
-    if (t->cycle_type < 2 || scanout) {
+    if (t->cycle_type < 2 || rdp_timing_vi_enabled(t)) {
         uint64_t work = 0;
         for (unsigned y = y0; y < y1; ++y)
             work += rdp_timing_span(t, y, x0, x1);
@@ -847,13 +854,17 @@ static inline uint64_t rdp_timing_rectangle(struct rdp_timing* t,
     }
     unsigned period = 16u >> (t->fb_size & 3);
     unsigned rows = y1 - y0, tail = rows % period;
+    unsigned sample_rows = rows < period ? rows : period;
+    uint64_t start = t->vi_elapsed;
     uint64_t repeated = 0, remainder = 0;
-    for (unsigned i = 0; i < period; ++i) {
+    for (unsigned i = 0; i < sample_rows; ++i) {
         uint64_t span = rdp_timing_span(t, y0 + i, x0, x1);
         repeated += span;
         if (i < tail) remainder += span;
     }
-    return repeated * (rows / period) + remainder;
+    uint64_t work = repeated * (rows / period) + remainder;
+    t->vi_elapsed = start + work;
+    return work;
 }
 
 /* A linear pair of edges has its extrema at the endpoints. If its order
@@ -878,6 +889,54 @@ static inline void rdp_timing_edge_bounds(int64_t a, int64_t b, int64_t da, int6
             if (rp > *right) *right = rp;
         }
     }
+}
+
+/* A load issues whole TMEM words. The source range can cross a RDRAM row
+ * before the last word is complete, and each tile row restarts at its own
+ * source stride. Model the memory side separately from TMEM throughput. */
+static inline uint64_t rdp_timing_load(struct rdp_timing *t, unsigned op)
+{
+    unsigned sl = (t->words[0] >> 12) & 4095, tl = t->words[0] & 4095;
+    unsigned sh = (t->words[1] >> 12) & 4095, th = t->words[1] & 4095;
+    if (op == 0x33) {
+        tl &= 1023;
+        th = tl; /* The low field in LoadBlock is DXT, not a final row. */
+    } else {
+        sl >>= 2; tl >>= 2; sh >>= 2; th >>= 2;
+    }
+    if (sh < sl || th < tl) return 0;
+    unsigned texels = (sh - sl + 1) & 4095;
+    if (!texels) return 0;
+    unsigned palette = op == 0x30 && t->tex_size == 2;
+    unsigned texels_per_step = t->tex_size ? 16u >> t->tex_size : 4;
+    if (palette) texels_per_step = 1;
+    unsigned steps = (texels + texels_per_step - 1) / texels_per_step;
+    unsigned bytes = steps * (palette ? 2 : t->tex_size ? 8 : 1);
+    uint64_t start = t->vi_elapsed;
+    uint64_t previous = UINT64_MAX;
+    for (unsigned row = tl; row <= th; ++row) {
+        uint64_t source = (uint64_t)t->tex_address +
+            (((uint64_t)row * t->tex_width + sl) << t->tex_size) / 2;
+        /* CI4 and odd-address TLUT reads rotate within the aligned word. */
+        uint64_t address = source & ~UINT64_C(7);
+        uint64_t end = (source + bytes - (palette && (source & 1)) + 7) & ~UINT64_C(7);
+        uint64_t row_start = t->vi_elapsed;
+        while (address < end) {
+            uint64_t physical = address & 0xffffffu;
+            uint64_t next = (address | 2047u) + 1;
+            if (next > end) next = end;
+            unsigned setup = previous == UINT64_MAX ? 5 :
+                (previous >> 11) == (physical >> 11) ? 0 :
+                (previous >> 20) == (physical >> 20) ? 3 : 5;
+            t->vi_elapsed += rdp_timing_vi_bus(t, (next - address) / 8 + setup,
+                physical * 8, 0, 1, 0, 0);
+            previous = physical + next - address - 8;
+            address = next;
+        }
+        if (t->vi_elapsed - row_start < steps)
+            t->vi_elapsed = row_start + steps;
+    }
+    return t->vi_elapsed - start;
 }
 
 /* Native raster work, independent of host rendering speed/upscaling. Costs
@@ -926,6 +985,11 @@ static inline uint64_t rdp_timing_clocks(struct rdp_timing* t)
         int clip_first = t->top >> 2, clip_last = (t->bottom + 3) >> 2;
         if (first < clip_first) first = clip_first;
         if (last > clip_last) last = clip_last;
+        /* Primitive-Z draws can reject every covered pixel when the
+         * entire clipped region has a proven closer depth. Keep Z reads. */
+        if (!t->reject && first < last && t->cycle_type < 2 &&
+            rdp_timing_depth_result(t, (t->right + 3) >> 2, last) == 1)
+            t->reject = 1;
         int64_t xh = rdp_timing_signed(w[4], 28), xm = rdp_timing_signed(w[6], 28);
         int64_t xl = rdp_timing_signed(w[2], 28);
         /* Match the rasterizer's signed 30-bit edge increments. The upper
@@ -1007,43 +1071,8 @@ static inline uint64_t rdp_timing_clocks(struct rdp_timing* t)
         if (t->modes & 0x20) rdp_timing_invalidate_range(t, t->z_address,
             (uint64_t)t->fb_width * ((t->bottom + 3) >> 2) * 2);
     }
-    /* Loads use texture-image size, not framebuffer size or cycle type.
-     * LoadBlock coordinates are integers; Tile/TLUT coordinates are 10.2.
-     * TLUT expands each 16-bit palette entry to one 64-bit TMEM word.
-     * Native 4-bit image loads crash the RDP; supported 4-bit textures are
-     * loaded through an 8-/16-bit texture-image view instead. */
-    if ((op == 0x30 || op == 0x33 || op == 0x34) && t->tex_size) {
-        unsigned sl = (w[0] >> 12) & 4095, tl = w[0] & 4095;
-        unsigned sh = (w[1] >> 12) & 4095, th = w[1] & 4095;
-        unsigned bpp = 4u << t->tex_size;
-        if (op == 0x33) {
-            if (sh >= sl) {
-                uint64_t first = (uint64_t)t->tex_address * 8 +
-                    ((uint64_t)tl * t->tex_width + sl) * bpp;
-                work = rdp_timing_bus_words(first, (uint64_t)(sh - sl + 1) * bpp);
-            }
-        } else {
-            sl >>= 2; tl >>= 2; sh >>= 2; th >>= 2;
-            if (sh >= sl && th >= tl && (op != 0x30 || th == tl)) {
-                if (op == 0x30 && t->tex_size == 2) work = sh - sl + 1;
-                else {
-                    unsigned period = 16u >> t->tex_size;
-                    unsigned rows = th - tl + 1, tail = rows % period;
-                    uint64_t repeated = 0, remainder = 0;
-                    for (unsigned i = 0; i < period; ++i) {
-                        uint64_t first = (uint64_t)t->tex_address * 8 +
-                            ((uint64_t)(tl + i) * t->tex_width + sl) * bpp;
-                        uint64_t span = rdp_timing_bus_words(first, (uint64_t)(sh - sl + 1) * bpp);
-                        repeated += span;
-                        if (i < tail) remainder += span;
-                    }
-                    work = repeated * (rows / period) + remainder;
-                }
-            }
-        }
-    }
-    if (work && (op == 0x30 || op == 0x33 || op == 0x34))
-        work = rdp_timing_vi_bus(t, work, (uint64_t)t->tex_address * 8, 0, 1, 0, 0);
+    if (op == 0x30 || op == 0x33 || op == 0x34)
+        work = rdp_timing_load(t, op);
     /* No-memory alpha failure: 4/6 clocks per span plus eleven drain clocks.
      * Including the rectangle delivery clock gives the measured twelve-clock
      * primitive overhead, independently of width, height or ROM identity. */

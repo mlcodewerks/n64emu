@@ -257,7 +257,7 @@ int main() {
                 core.log(dsp_error + "\n");
             FilePicker picker;
             dsp_chain_window dsp_window;
-            bool running = true, settings = false, options = false, logs = false, fast_forward = false;
+            bool running = true, settings = false, logs = false, fast_forward = false;
             unsigned slot = 0;
             int ui_scale_choice = 0;
             float applied_ui_scale = 0;
@@ -421,10 +421,8 @@ int main() {
                     const struct {
                         const char *label;
                         bool *visible;
-                        bool enabled = true;
                     } tools[] = {
                         {ICON_FK_COG " Settings", &settings},
-                        {"Core options", &options, core.loaded()},
                         {"Log", &logs},
                     };
                     const float spacing = ImGui::GetStyle().ItemSpacing.x;
@@ -434,7 +432,7 @@ int main() {
                     const bool compact = tools_width > ImGui::GetContentRegionAvail().x;
                     if (!compact || ImGui::BeginMenu("Tools")) {
                         for (const auto &tool : tools)
-                            ImGui::MenuItem(tool.label, nullptr, tool.visible, tool.enabled);
+                            ImGui::MenuItem(tool.label, nullptr, tool.visible);
                         if (compact) ImGui::EndMenu();
                     }
                     const char *title = core.loaded() ? core.name().c_str() : "n64emu - no ROM loaded";
@@ -496,6 +494,12 @@ int main() {
                             draw_input_settings(controls);
                             ImGui::EndTabItem();
                         }
+                        if (ImGui::BeginTabItem("Core")) {
+                            if (ImGui::BeginChild("Core settings", {}, 0, ImGuiWindowFlags_HorizontalScrollbar))
+                                draw_core_settings(core);
+                            ImGui::EndChild();
+                            ImGui::EndTabItem();
+                        }
                         ImGui::EndTabBar();
                     }
                     ImGui::End();
@@ -504,7 +508,6 @@ int main() {
                     controls.cancel_capture();
                 dsp_window.draw_picker(settings && audio_tab);
                 draw_shader_chain_dialogs(settings && video_tab);
-                draw_core_options(core, options);
                 draw_log_window(logs);
                 ImGui::Render();
                 if (ImGui::GetIO().WantSaveIniSettings)

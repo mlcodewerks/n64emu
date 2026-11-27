@@ -45,8 +45,9 @@ app = executable('n64emu', ['src/main.cpp', 'src/core.cpp'], include_directories
   link_depends: core_archive, win_subsystem: 'windows', install: true)
 font_tests = executable('font-tests', 'tests/font_tests.cpp', include_directories: inc, link_with: platform, dependencies: deps)
 test('embedded-fonts', font_tests, timeout: 15)
-dialog_tests = executable('config-dialog-tests', 'tests/config_dialog_tests.cpp', include_directories: inc, link_with: platform, dependencies: deps)
-test('configuration-dialogs', dialog_tests, timeout: 15)
+dialog_tests = executable('config-dialog-tests', ['tests/config_dialog_tests.cpp', 'src/core.cpp'], include_directories: inc,
+  link_with: platform, dependencies: deps, link_args: [core_archive.full_path()], link_depends: core_archive)
+test('configuration-dialogs', dialog_tests, args: [meson.current_build_dir() / 'config-dialog-test'], timeout: 15)
 config_tests = executable('config-store-tests', 'tests/config_store_tests.cpp', include_directories: inc, link_with: platform, dependencies: deps)
 test('unified-json-configuration', config_tests, args: [meson.current_build_dir() / 'config-test'], timeout: 30)
 input_tests = executable('input-tests', 'tests/input_tests.cpp', include_directories: inc, link_with: platform, dependencies: deps)

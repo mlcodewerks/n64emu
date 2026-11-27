@@ -5,7 +5,6 @@
 #include "log.h"
 #include "video.h"
 #include "core/api.h"
-#include <map>
 struct Option {
     std::string key, label, info, value;
     std::vector<std::string> values, value_labels;
@@ -41,7 +40,6 @@ class Core {
     fs::path directory, content_path, save_path;
     std::string title, callback_error;
     bool initialized = false, game_loaded = false;
-    std::map<std::string, std::string> saved_options;
     double sample_rate = 44100;
     void apply_av(const n64emu_av &);
     void save_ram();

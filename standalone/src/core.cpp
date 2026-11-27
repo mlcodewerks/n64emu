@@ -3,13 +3,21 @@
 #include "shader_chain.h"
 #include <fstream>
 #include <iomanip>
+#include <map>
 #include <sstream>
 
 Core::Core(Video &v, Input &i, const fs::path &dir) : video(v), input(i), directory(dir) {
     for (auto name : {L"system", L"saves"}) fs::create_directories(dir / name);
     config_initialize(dir);
     input.load_configuration(dir);
-    restore_options();
+    // Query the built-in core's option definitions before any ROM is opened.
+    const auto system = (directory / L"system").u8string();
+    n64emu_host host{};
+    host.system_directory = system.c_str();
+    if (!n64emu_init(&host)) throw std::runtime_error("Cannot initialize n64emu core");
+    try { restore_options(); }
+    catch (...) { n64emu_deinit(); throw; }
+    n64emu_deinit();
 }
 Core::~Core() { try { unload(); } catch (...) {} }
 void Core::log(const std::string &text, LogSource source, retro_log_level level) { append_log(text, source, level); }
@@ -19,7 +27,6 @@ void Core::load(const fs::path &content) {
     save_path = directory / L"saves" / L"n64emu";
     fs::create_directories(save_path);
     save_path /= content_path.stem();
-    restore_options();
     input.begin_core(directory / L"n64emu", content_path);
     static const retro_controller_description pad[] = {{"Nintendo 64 controller", RETRO_DEVICE_JOYPAD}};
     static const retro_controller_info ports[] = {{pad, 1}, {pad, 1}, {pad, 1}, {pad, 1}, {nullptr, 0}};
@@ -62,24 +69,7 @@ void Core::load(const fs::path &content) {
     try {
         if (!n64emu_init(&host)) throw std::runtime_error("Cannot initialize n64emu core");
         initialized = true;
-        option_categories.clear();
-        for (unsigned i = 0; i < n64emu_option_count(); ++i) {
-            n64emu_option definition{};
-            n64emu_get_option(i, &definition);
-            Option option;
-            option.key = definition.key; option.label = definition.label;
-            option.info = definition.info ? definition.info : "";
-            option.category = definition.category ? definition.category : "";
-            option.value = definition.value;
-            for (unsigned j = 0; j < definition.count; ++j) {
-                option.values.emplace_back(definition.values[j]);
-                option.value_labels.emplace_back(definition.labels[j]);
-            }
-            auto saved = saved_options.find(option.key);
-            if (saved != saved_options.end() && n64emu_set_option(option.key.c_str(), saved->second.c_str()))
-                option.value = saved->second;
-            options.push_back(std::move(option));
-        }
+        restore_options();
         auto bytes = read_file(content_path);
         auto path = content_path.u8string();
         if (!n64emu_load(path.c_str(), bytes.data(), bytes.size())) throw std::runtime_error("n64emu rejected the ROM");
@@ -121,7 +111,7 @@ void Core::unload() {
     if (initialized) n64emu_deinit();
     initialized = game_loaded = false;
     input.end_core();
-    options.clear(); option_categories.clear(); callback_error.clear(); title.clear();
+    callback_error.clear(); title.clear();
     if (!failure.empty()) log("Save error: " + failure + "\n", LogSource::Frontend, RETRO_LOG_ERROR);
 }
 void Core::apply_av(const n64emu_av &av) {
@@ -161,7 +151,7 @@ void Core::load_state(const fs::path &path) {
     audio.clear(); audio.dsp.reset(float(sample_rate));
 }
 void Core::restore_options() {
-    saved_options.clear();
+    std::map<std::string, std::string> saved_options;
     auto values = config_section(directory, "core_options");
     if (values) {
         if (!cJSON_IsObject(values.get())) throw std::runtime_error("Invalid core_options in n64emu.json");
@@ -178,6 +168,29 @@ void Core::restore_options() {
             cJSON_AddStringToObject(migrated.get(), entry.first.c_str(), entry.second.c_str());
         config_write_section(directory, "core_options", migrated.get());
     }
+    std::vector<Option> current;
+    const auto count = n64emu_option_count();
+    current.reserve(count);
+    for (unsigned i = 0; i < count; ++i) {
+        n64emu_option definition{};
+        if (!n64emu_get_option(i, &definition))
+            continue;
+        Option option;
+        option.key = definition.key; option.label = definition.label;
+        option.info = definition.info ? definition.info : "";
+        option.category = definition.category ? definition.category : "";
+        option.value = definition.value;
+        for (unsigned j = 0; j < definition.count; ++j) {
+            option.values.emplace_back(definition.values[j]);
+            option.value_labels.emplace_back(definition.labels[j]);
+        }
+        auto saved = saved_options.find(option.key);
+        if (saved != saved_options.end() && n64emu_set_option(option.key.c_str(), saved->second.c_str()))
+            option.value = saved->second;
+        current.push_back(std::move(option));
+    }
+    options = std::move(current);
+    option_categories.clear();
 }
 void Core::save_options() {
     Json values(cJSON_CreateObject(), cJSON_Delete);
@@ -186,7 +199,9 @@ void Core::save_options() {
     config_write_section(directory, "core_options", values.get());
 }
 void Core::set_option(Option &option, const std::string &value) {
-    if (!n64emu_set_option(option.key.c_str(), value.c_str())) return;
+    if (std::find(option.values.begin(), option.values.end(), value) == option.values.end() ||
+        (initialized && !n64emu_set_option(option.key.c_str(), value.c_str())))
+        return;
     option.value = value;
     save_options();
 }
