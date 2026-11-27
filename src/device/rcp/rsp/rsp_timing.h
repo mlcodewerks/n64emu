@@ -13,4 +13,13 @@ static inline uint32_t rsp_count_overhang(uint32_t cycles, uint32_t overhang)
 {
     return (overhang - cycles * 3u) & 3u;
 }
+
+/* The SP DMA engine pays request setup once for a rectangular transfer.
+ * The SGI RSP guide gives a six-to-twelve-clock setup range and a peak
+ * 64-bit beat per clock. Use the same nominal setup for CPU-issued DMA
+ * and native RSP reads. */
+static inline uint32_t rsp_dma_transfer_cycles(uint32_t bytes_per_block, uint32_t blocks)
+{
+    return 8 + (bytes_per_block / 8) * blocks;
+}
 #endif

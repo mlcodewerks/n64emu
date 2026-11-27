@@ -10,7 +10,6 @@
 #include <cmath>
 #include <cstring>
 
-bool shader_window_visible = false;
 namespace
 {
     struct preset_draft
@@ -193,41 +192,40 @@ void main() {
             return false;
         return true;
     }
+    struct shader_chain_ui
+    {
+        void draw_settings();
+        void draw_dialogs(bool video_tab);
+
+        RomBrowser browser;
+        int picker = 0, picker_chain = -1, picker_pass = -1;
+        std::string status;
+        std::map<std::filesystem::path, std::vector<std::string>> parameter_ids;
+        shader_source_editor source_editor;
+        preset_draft draft;
+
+        void reload_sources(shader_controller &control)
+        {
+            parameter_ids.clear();
+            // Keep the first failure and its compiler diagnostics.
+            for (auto &chain : control.settings.chains)
+                if (!chain.passes.empty() && !control.inspect(chain))
+                    break;
+        }
+    };
+
+    shader_chain_ui &shader_ui()
+    {
+        static shader_chain_ui ui;
+        return ui;
+    }
 }
-void draw_shader_chain_window()
+
+void shader_chain_ui::draw_settings()
 {
     auto &control = video_shaders();
     control.init();
     auto &api = librashader();
-    static int picker = 0, picker_chain = -1, picker_pass = -1;
-    static std::string status;
-    static std::map<std::filesystem::path, std::vector<std::string>> parameter_ids;
-    static shader_source_editor source_editor;
-    static preset_draft draft;
-    draft.draw(control, source_editor, status);
-    auto reload_sources = [&]
-    {
-        parameter_ids.clear();
-        // Keep the first failure and its diagnostics; a later successful
-        // inspection would otherwise overwrite the compiler error message.
-        for (auto &chain : control.settings.chains)
-            if (!chain.passes.empty() && !control.inspect(chain))
-                break;
-    };
-    if (!shader_window_visible)
-    {
-        if (picker)
-        {
-            RomBrowser::Instance()->Close();
-            picker = 0;
-        }
-        if (source_editor.draw(control.error, control.diagnostics))
-        {
-            control.changed();
-            reload_sources();
-        }
-        return;
-    }
     auto open = [&](int mode, const char *title, const char *filters, int chain = -1, int pass = -1)
     {
         picker = mode;
@@ -236,206 +234,220 @@ void draw_shader_chain_window()
         BrowserConfig config;
         config.path = control.directory.u8string();
         config.flags = mode == 2 || mode == 4 ? BrowserFlags_ConfirmOverwrite : BrowserFlags_None;
-        RomBrowser::Instance()->OpenDialog("ShaderPicker", title, filters, config);
+        browser.OpenDialog("ShaderPicker", title, filters, config);
     };
     bool dirty = false, source_saved = false;
-    ui_prepare_window("Shader Chains", ImVec2(0.8f, 0.85f));
-    bool expanded = ImGui::Begin("Shader Chains", &shader_window_visible);
-    if (expanded)
+    ImGui::TextWrapped("%s", api.status.c_str());
+    if (!api.d3d9_available)
+        ImGui::TextWrapped("Shader processing is unavailable for the current renderer.");
+    ImGui::TextWrapped("Chains and passes run from top to bottom. Parameters update immediately; pass edits compile a replacement. Failed compilation keeps the previous working stack. Save default to restore on startup.");
+    ImGui::BeginDisabled(picker != 0 || (!api.d3d9_available));
+    ImGui::Checkbox("Enable shaders", &control.settings.enabled);
+    if (ImGui::Button("Import preset / shader..."))
+        open(1, "Import shader preset", ".slangp,.slang");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(control.settings.chains.size() >= 16);
+    if (ImGui::Button("New preset"))
+        draft.open();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("New chain") && control.settings.chains.size() < 16)
     {
-        ImGui::TextWrapped("%s", api.status.c_str());
-        if (!api.d3d9_available)
-            ImGui::TextWrapped("Shader processing is unavailable for the current renderer.");
-        ImGui::TextWrapped("Chains and passes run from top to bottom. Parameters update immediately; pass edits compile a replacement. Failed compilation keeps the previous working stack. Save default to restore on startup.");
-        ImGui::BeginDisabled(picker != 0 || (!api.d3d9_available));
-        ImGui::Checkbox("Enable shaders", &control.settings.enabled);
-        if (ImGui::Button("Import preset / shader..."))
-            open(1, "Import shader preset", ".slangp,.slang");
+        shader_chain_config chain;
+        chain.name = "New chain";
+        control.settings.chains.push_back(chain);
+        dirty = true;
+    }
+    if (ImGui::Button("Load stack..."))
+        open(3, "Load shader stack", ".shaders");
+    ImGui::SameLine();
+    if (ImGui::Button("Save stack as..."))
+        open(4, "Save shader stack", ".shaders");
+    ImGui::SameLine();
+    if (ImGui::Button("Save default"))
+    {
+        if (config_shader_save(control.directory, control.settings, status))
+            status = "Default shader stack saved.";
+    }
+    if (ImGui::Button("Reload shaders"))
+    {
+        dirty = true;
+        source_saved = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear stack"))
+    {
+        control.settings.chains.clear();
+        dirty = true;
+    }
+    if (!status.empty())
+        ImGui::TextWrapped("%s", status.c_str());
+    if (!control.error.empty())
+        ImGui::TextWrapped("%s", control.error.c_str());
+    int remove = -1, duplicate = -1, from = -1, to = -1;
+    for (int c = 0; c < static_cast<int>(control.settings.chains.size()); ++c)
+    {
+        auto &chain = control.settings.chains[c];
+        ImGui::PushID(c);
+        ImGui::Separator();
+        dirty |= ImGui::Checkbox("Enabled", &chain.enabled);
         ImGui::SameLine();
-        ImGui::BeginDisabled(control.settings.chains.size() >= 16);
-        if (ImGui::Button("New preset"))
-            draft.open();
+        ImGui::Text("%d. %s", c + 1, chain.name.c_str());
+        order(control.settings.chains, c, remove, duplicate, from, to, 16);
+        input("Chain name (Enter)", chain.name);
+        if (ImGui::Button("Add pass..."))
+            open(5, "Add shader pass", ".slang", c);
+        ImGui::SameLine();
+        if (ImGui::Button("Export preset..."))
+            open(2, "Export enabled passes", ".slangp", c);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(chain.passes.empty());
+        if (ImGui::Button("Edit preset shaders..."))
+            source_editor.open_preset(chain, status);
         ImGui::EndDisabled();
-        ImGui::SameLine();
-        if (ImGui::Button("New chain") && control.settings.chains.size() < 16)
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Open every shader source in this chain in an editor tab, including disabled passes.");
+        int pr = -1, pd = -1, pf = -1, pt = -1;
+        for (int p = 0; p < static_cast<int>(chain.passes.size()); ++p)
         {
-            shader_chain_config chain;
-            chain.name = "New chain";
-            control.settings.chains.push_back(chain);
-            dirty = true;
-        }
-        if (ImGui::Button("Load stack..."))
-            open(3, "Load shader stack", ".shaders");
-        ImGui::SameLine();
-        if (ImGui::Button("Save stack as..."))
-            open(4, "Save shader stack", ".shaders");
-        ImGui::SameLine();
-        if (ImGui::Button("Save default"))
-        {
-            if (config_shader_save(control.directory, control.settings, status))
-                status = "Default shader stack saved.";
-        }
-        if (ImGui::Button("Reload shaders"))
-        {
-            dirty = true;
-            source_saved = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Clear stack"))
-        {
-            control.settings.chains.clear();
-            dirty = true;
-        }
-        if (!status.empty())
-            ImGui::TextWrapped("%s", status.c_str());
-        if (!control.error.empty())
-            ImGui::TextWrapped("%s", control.error.c_str());
-        int remove = -1, duplicate = -1, from = -1, to = -1;
-        for (int c = 0; c < static_cast<int>(control.settings.chains.size()); ++c)
-        {
-            auto &chain = control.settings.chains[c];
-            ImGui::PushID(c);
-            ImGui::Separator();
-            dirty |= ImGui::Checkbox("Enabled", &chain.enabled);
-            ImGui::SameLine();
-            ImGui::Text("%d. %s", c + 1, chain.name.c_str());
-            order(control.settings.chains, c, remove, duplicate, from, to, 16);
-            input("Chain name (Enter)", chain.name);
-            if (ImGui::Button("Add pass..."))
-                open(5, "Add shader pass", ".slang", c);
-            ImGui::SameLine();
-            if (ImGui::Button("Export preset..."))
-                open(2, "Export enabled passes", ".slangp", c);
-            ImGui::SameLine();
-            ImGui::BeginDisabled(chain.passes.empty());
-            if (ImGui::Button("Edit preset shaders..."))
-                source_editor.open_preset(chain, status);
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Open every shader source in this chain in an editor tab, including disabled passes.");
-            int pr = -1, pd = -1, pf = -1, pt = -1;
-            for (int p = 0; p < static_cast<int>(chain.passes.size()); ++p)
+            auto &pass = chain.passes[p];
+            ImGui::PushID(p);
+            const std::string title = std::to_string(p + 1) + ". " + pass.source.filename().u8string();
+            if (ImGui::TreeNodeEx("pass", ImGuiTreeNodeFlags_DefaultOpen, "%s", title.c_str()))
             {
-                auto &pass = chain.passes[p];
-                ImGui::PushID(p);
-                const std::string title = std::to_string(p + 1) + ". " + pass.source.filename().u8string();
-                if (ImGui::TreeNodeEx("pass", ImGuiTreeNodeFlags_DefaultOpen, "%s", title.c_str()))
+                dirty |= ImGui::Checkbox("Pass enabled", &pass.enabled);
+                order(chain.passes, p, pr, pd, pf, pt, 64);
+                ImGui::TextWrapped("%s", pass.source.u8string().c_str());
+                if (ImGui::SmallButton("Replace shader..."))
+                    open(6, "Replace shader pass", ".slang", c, p);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Edit source..."))
                 {
-                    dirty |= ImGui::Checkbox("Pass enabled", &pass.enabled);
-                    order(chain.passes, p, pr, pd, pf, pt, 64);
-                    ImGui::TextWrapped("%s", pass.source.u8string().c_str());
-                    if (ImGui::SmallButton("Replace shader..."))
-                        open(6, "Replace shader pass", ".slang", c, p);
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("Edit source..."))
-                    {
-                        source_editor.open(pass.source, status);
-                    }
-                    if (ImGui::TreeNode("Pass options"))
-                    {
-                        dirty |= choice("Sampling", pass.options["filter_linear"], {"true", "false"});
-                        dirty |= choice("Wrap", pass.options["wrap_mode"], {"clamp_to_border", "clamp_to_edge", "repeat", "mirrored_repeat"});
-                        dirty |= choice("Mipmaps", pass.options["mipmap_input"], {"true", "false"});
-                        dirty |= choice("Float framebuffer", pass.options["float_framebuffer"], {"true", "false"});
-                        dirty |= choice("sRGB framebuffer", pass.options["srgb_framebuffer"], {"true", "false"});
-                        for (auto key : {"scale_type", "scale_type_x", "scale_type_y"})
-                            dirty |= choice(key, pass.options[key], {"source", "viewport", "absolute"});
-                        for (auto key : {"scale", "scale_x", "scale_y", "alias", "frame_count_mod"})
-                            dirty |= input(key, pass.options[key]);
-                        ImGui::TextWrapped("Press Enter to commit text. Empty options use the preset default.");
-                        ImGui::TreePop();
-                    }
-                    auto found = parameter_ids.find(pass.source);
-                    if (found == parameter_ids.end())
-                        found = parameter_ids.emplace(pass.source, shader_pass_parameters(pass.source)).first;
-                    for (const auto &param : chain.parameters)
-                    {
-                        if (std::find(found->second.begin(), found->second.end(), param.id) == found->second.end())
-                            continue;
-                        ImGui::PushID(param.id.c_str());
-                        float &value = chain.values[param.id];
-                        ImGui::SetNextItemWidth(330);
-                        if (ImGui::SliderFloat(param.label.c_str(), &value, param.minimum, param.maximum, "%.4f", ImGuiSliderFlags_AlwaysClamp))
-                        {
-                            if (param.step > 0)
-                                value = std::clamp(param.minimum + std::round((value - param.minimum) / param.step) * param.step, param.minimum, param.maximum);
-                        }
-                        if (ImGui::IsItemHovered())
-                            ImGui::SetTooltip("%s; step %g. Matching parameter IDs are shared within this chain.", param.id.c_str(), param.step);
-                        ImGui::SameLine();
-                        if (ImGui::SmallButton("Reset"))
-                            value = param.initial;
-                        ImGui::PopID();
-                    }
+                    source_editor.open(pass.source, status);
+                }
+                if (ImGui::TreeNode("Pass options"))
+                {
+                    dirty |= choice("Sampling", pass.options["filter_linear"], {"true", "false"});
+                    dirty |= choice("Wrap", pass.options["wrap_mode"], {"clamp_to_border", "clamp_to_edge", "repeat", "mirrored_repeat"});
+                    dirty |= choice("Mipmaps", pass.options["mipmap_input"], {"true", "false"});
+                    dirty |= choice("Float framebuffer", pass.options["float_framebuffer"], {"true", "false"});
+                    dirty |= choice("sRGB framebuffer", pass.options["srgb_framebuffer"], {"true", "false"});
+                    for (auto key : {"scale_type", "scale_type_x", "scale_type_y"})
+                        dirty |= choice(key, pass.options[key], {"source", "viewport", "absolute"});
+                    for (auto key : {"scale", "scale_x", "scale_y", "alias", "frame_count_mod"})
+                        dirty |= input(key, pass.options[key]);
+                    ImGui::TextWrapped("Press Enter to commit text. Empty options use the preset default.");
                     ImGui::TreePop();
                 }
-                ImGui::PopID();
-            }
-            dirty |= reorder(chain.passes, pr, pd, pf, pt);
-            // The runtime inventory includes parameters from preprocessed includes as well.
-            if (ImGui::TreeNode("All chain parameters"))
-            {
+                auto found = parameter_ids.find(pass.source);
+                if (found == parameter_ids.end())
+                    found = parameter_ids.emplace(pass.source, shader_pass_parameters(pass.source)).first;
                 for (const auto &param : chain.parameters)
                 {
+                    if (std::find(found->second.begin(), found->second.end(), param.id) == found->second.end())
+                        continue;
                     ImGui::PushID(param.id.c_str());
-                    ImGui::SliderFloat(param.label.c_str(), &chain.values[param.id], param.minimum, param.maximum, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+                    float &value = chain.values[param.id];
+                    ImGui::SetNextItemWidth(330);
+                    if (ImGui::SliderFloat(param.label.c_str(), &value, param.minimum, param.maximum, "%.4f", ImGuiSliderFlags_AlwaysClamp))
+                    {
+                        if (param.step > 0)
+                            value = std::clamp(param.minimum + std::round((value - param.minimum) / param.step) * param.step, param.minimum, param.maximum);
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s; step %g. Matching parameter IDs are shared within this chain.", param.id.c_str(), param.step);
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Reset"))
-                        chain.values[param.id] = param.initial;
+                        value = param.initial;
                     ImGui::PopID();
-                }
-                ImGui::TreePop();
-            }
-            if (ImGui::TreeNode("Preset textures and other options"))
-            {
-                ImGui::TextWrapped("Texture paths and other preset keys are preserved here. Press Enter to apply an edit; paths should be absolute.");
-                std::string erase;
-                for (auto &entry : chain.globals)
-                {
-                    ImGui::PushID(entry.first.c_str());
-                    dirty |= input(entry.first.c_str(), entry.second);
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("Delete"))
-                        erase = entry.first;
-                    ImGui::PopID();
-                }
-                if (!erase.empty())
-                {
-                    chain.globals.erase(erase);
-                    dirty = true;
-                }
-                static std::string new_key, new_value;
-                input("New key (Enter)", new_key);
-                input("New value (Enter)", new_value);
-                if (ImGui::Button("Add preset option") && !new_key.empty())
-                {
-                    chain.globals[new_key] = new_value;
-                    new_key.clear();
-                    new_value.clear();
-                    dirty = true;
                 }
                 ImGui::TreePop();
             }
             ImGui::PopID();
         }
-        dirty |= reorder(control.settings.chains, remove, duplicate, from, to);
-        ImGui::EndDisabled();
+        dirty |= reorder(chain.passes, pr, pd, pf, pt);
+        // The runtime inventory includes parameters from preprocessed includes as well.
+        if (ImGui::TreeNode("All chain parameters"))
+        {
+            for (const auto &param : chain.parameters)
+            {
+                ImGui::PushID(param.id.c_str());
+                ImGui::SliderFloat(param.label.c_str(), &chain.values[param.id], param.minimum, param.maximum, "%.4f", ImGuiSliderFlags_AlwaysClamp);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reset"))
+                    chain.values[param.id] = param.initial;
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNode("Preset textures and other options"))
+        {
+            ImGui::TextWrapped("Texture paths and other preset keys are preserved here. Press Enter to apply an edit; paths should be absolute.");
+            std::string erase;
+            for (auto &entry : chain.globals)
+            {
+                ImGui::PushID(entry.first.c_str());
+                dirty |= input(entry.first.c_str(), entry.second);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Delete"))
+                    erase = entry.first;
+                ImGui::PopID();
+            }
+            if (!erase.empty())
+            {
+                chain.globals.erase(erase);
+                dirty = true;
+            }
+            static std::string new_key, new_value;
+            input("New key (Enter)", new_key);
+            input("New value (Enter)", new_value);
+            if (ImGui::Button("Add preset option") && !new_key.empty())
+            {
+                chain.globals[new_key] = new_value;
+                new_key.clear();
+                new_value.clear();
+                dirty = true;
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
     }
-    ImGui::End();
+    dirty |= reorder(control.settings.chains, remove, duplicate, from, to);
+    ImGui::EndDisabled();
+    if (dirty)
+        control.changed();
+    if (source_saved)
+        reload_sources(control);
+}
+
+void shader_chain_ui::draw_dialogs(bool video_tab)
+{
+    auto &control = video_shaders();
+    control.init();
+    draft.draw(control, source_editor, status);
     if (source_editor.draw(control.error, control.diagnostics))
     {
-        dirty = true;
-        source_saved = true;
+        control.changed();
+        reload_sources(control);
     }
+    if (!video_tab && picker)
+    {
+        browser.Close();
+        picker = 0;
+    }
+    if (!picker)
+        return;
+
+    bool dirty = false;
     const auto available = ImGui::GetMainViewport()->WorkSize;
     const ImVec2 picker_max(std::max(1.f, available.x * 0.9f), std::max(1.f, available.y * 0.9f));
     const ImVec2 picker_min(std::min(720.f, picker_max.x), std::min(480.f, picker_max.y));
-    if (picker && RomBrowser::Instance()->Display("ShaderPicker", ImGuiWindowFlags_NoCollapse,
+    if (browser.Display("ShaderPicker", ImGuiWindowFlags_NoCollapse,
                                                        picker_min, picker_max))
     {
-        if (RomBrowser::Instance()->IsOk())
+        if (browser.IsOk())
         {
-            auto path = std::filesystem::u8path(RomBrowser::Instance()->GetFilePathName());
+            auto path = std::filesystem::u8path(browser.GetFilePathName());
             if (picker == 1 && control.settings.chains.size() < 16)
             {
                 shader_chain_config chain;
@@ -493,16 +505,19 @@ void draw_shader_chain_window()
                 }
             }
         }
-        RomBrowser::Instance()->Close();
-        picker = 0;
-    }
-    if (!shader_window_visible && picker)
-    {
-        RomBrowser::Instance()->Close();
+        browser.Close();
         picker = 0;
     }
     if (dirty)
         control.changed();
-    if (source_saved)
-        reload_sources();
+}
+
+void draw_shader_chain_settings()
+{
+    shader_ui().draw_settings();
+}
+
+void draw_shader_chain_dialogs(bool video_tab)
+{
+    shader_ui().draw_dialogs(video_tab);
 }

@@ -84,7 +84,7 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma, int64_t sta
     /* schedule end of dma event */
     cp0_update_count(sp->mi->r4300);
     struct cp0* cp0 = &sp->mi->r4300->cp0;
-    sp->dma_end_clock = start + (count * length * 3 + 31) / 32;
+    sp->dma_end_clock = start + rsp_count_ticks(rsp_dma_transfer_cycles(length, count), 0);
     add_interrupt_event_count(cp0, RSP_DMA_EVT, cp0->regs[CP0_COUNT_REG] +
         (uint32_t)(sp->dma_end_clock - cp0->count_clock));
 }

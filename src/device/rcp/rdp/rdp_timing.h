@@ -169,6 +169,12 @@ static inline int rdp_timing_vi_enabled(const struct rdp_timing *t)
         (uint64_t)t->vi_field_ticks * 8 / ((uint64_t)total * 3) >= 2;
 }
 
+/* A doubled VI pitch scans alternating rows of the interlaced color image. */
+static inline int rdp_timing_vi_alternate_rows(const uint32_t *vi, unsigned fb_width)
+{
+    return vi && (vi[0] & 0x40u) && fb_width && (vi[2] & 4095u) == fb_width * 2u;
+}
+
 /* Coarse priority reservation by VI, expressed in RCP clocks per scanline.
  * Registers use the VI MMIO word order (STATUS, ORIGIN, WIDTH, ..., X/Y_SCALE).
  * This shares the span model's aggregate 16-byte request, five-clock setup
@@ -507,7 +513,8 @@ static inline unsigned rdp_timing_shared_bank_read_response(
     return (address >> 20) == (color >> 23) ? RDP_SHARED_BANK_READ_RESPONSE : 0;
 }
 
-static inline unsigned rdp_timing_span_startup(const struct rdp_timing *t, int memory_overlap)
+static inline unsigned rdp_timing_span_startup(const struct rdp_timing *t, int memory_overlap,
+    unsigned depth_read, unsigned depth_write)
 {
     if (t->reject)
         return 4u + 2u * t->cycle_type;
@@ -522,6 +529,19 @@ static inline unsigned rdp_timing_span_startup(const struct rdp_timing *t, int m
     if (t->cycle_type == 0 && t->fb_size == 2 && !(op & 1u) &&
         (t->modes & 0x70u) == 0x50u)
         return 11u;
+
+    /* Later RGBA16 two-cycle spans use the same startup estimate in both
+     * CPU profiles. The paired framebuffer and depth-read path pipelines
+     * setup with prior buffered work unless color depends on the coverage
+     * overflow decision. With depth active and no framebuffer read, expose
+     * the depth drain before starting the next span. These aggregate
+     * estimates were checked against moving replay sequences. */
+    if (t->cycle_type == 1 && t->fb_size == 2) {
+        if (depth_read && (t->modes & 0xc0u) == 0x40u)
+            return 9u;
+        if ((depth_read || depth_write) && !(t->modes & 0x40u))
+            return 19u;
+    }
 
     /* Later triangle spans can stage setup while the previous span drains.
      * The detailed estimate credits this only for short spans with separate
@@ -618,6 +638,23 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
         (t->modes&0x4000u) && !(t->modes&8u);
     if(parallel_depth || parallel_feedback)
         response=(rdp_buffer_rate[t->cycle_type][2]+255)/256;
+
+    /* In the alternating-row layout, short RGBA16 triangles that blend
+     * pixel alpha against framebuffer color expose different read floors
+     * with and without texture work. These are replay-calibrated response
+     * estimates. The sustained buffered service above remains applicable. */
+    int narrow_textured_feedback = 0;
+    if (pixels <= 16 && !t->cycle_type && profile == 5 && pixel_alpha_blend &&
+        (t->modes & 0x48c8u) == 0x4040u && !t->atomic_primitive &&
+        rdp_timing_vi_alternate_rows(t->vi_regs, t->fb_width)) {
+        unsigned op = (t->words[0] >> 24) & 63;
+        if (op == 0x0e && pixels <= 8) {
+            response = 65;
+            narrow_textured_feedback = 1;
+        } else if (op == 0x0c) {
+            response = 39;
+        }
+    }
     unsigned shared=rdp_timing_shared_bank_read_response(t,q,color,depth,color_read,depth_read);
     if(shared>response)response=shared;
     uint64_t transient=(color_read+depth_read)*response*256;
@@ -627,7 +664,9 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
     }
     int memory_overlap = pixels <= 64 && q > raster + 8 * 256 &&
         color_live && depth_live && (color >> 23) != (depth >> 23);
-    unsigned startup = rdp_timing_span_startup(t, memory_overlap);
+    /* Use the same setup for exposed textured feedback in both CPU profiles. */
+    unsigned startup = narrow_textured_feedback ? 15u :
+        rdp_timing_span_startup(t, memory_overlap, depth_read, depth_write);
     if(parallel_depth) {
         uint64_t pipeline=raster+startup*256u;
         if(q<pipeline)q=pipeline;
@@ -779,7 +818,7 @@ static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, in
     int memory_overlap = pixels <= 64 && occupied > raster + 8 &&
         (color_read || color_write) && (depth_read || depth_write) &&
         (first >> 23) != (depth >> 23);
-    unsigned startup = rdp_timing_span_startup(t, memory_overlap);
+    unsigned startup = rdp_timing_span_startup(t, memory_overlap, depth_read, depth_write);
     uint64_t work = startup + occupied + uncovered;
     t->vi_elapsed += work;
     return work;
@@ -1040,19 +1079,20 @@ struct rdp_timing_sync {
     int one_cycle_aa_image_read;
 };
 
-static inline void rdp_timing_finish(struct rdp_timing* t, int64_t submitted,
-    struct rdp_timing_sync* sync)
+static inline void rdp_timing_finish_at(struct rdp_timing* t, int64_t submitted,
+    unsigned submitted_overhang, struct rdp_timing_sync* sync)
 {
-    /* Once submission reaches the rounded deadline, the preceding work
-     * has drained. Otherwise retain the 3:4 clock conversion remainder
-     * across commands and fragmented DPC windows, rather than rounding
-     * every command up independently. FullSync observes the rounded time. */
-    if (t->deadline <= submitted) {
+    /* Compare actual quarter-COUNT times when a native RSP submission and
+     * the previous completion round up to the same tick. */
+    submitted_overhang &= 3u;
+    if (t->deadline < submitted ||
+        (t->deadline == submitted && t->clock_overhang > submitted_overhang)) {
         t->deadline = submitted;
-        t->clock_overhang = 0;
+        t->clock_overhang = submitted_overhang;
     }
     int64_t begin = t->deadline >= INT64_MIN / 4 && t->deadline <= INT64_MAX / 4 ?
-        t->deadline * 4 - t->clock_overhang : INT64_MAX;
+        (t->deadline == INT64_MIN / 4 && t->clock_overhang ? INT64_MIN :
+            t->deadline * 4 - t->clock_overhang) : INT64_MAX;
     uint64_t quarters = rdp_timing_clocks(t) * 3 - t->clock_overhang;
     uint64_t ticks = (quarters + 3) / 4;
     if (ticks > (uint64_t)INT64_MAX || t->deadline > INT64_MAX - (int64_t)ticks) {
@@ -1090,6 +1130,12 @@ static inline void rdp_timing_finish(struct rdp_timing* t, int64_t submitted,
     t->pos = 0;
 }
 
+static inline void rdp_timing_finish(struct rdp_timing* t, int64_t submitted,
+    struct rdp_timing_sync* sync)
+{
+    rdp_timing_finish_at(t, submitted, 0, sync);
+}
+
 static inline uint32_t rdp_timing_packet_words(uint32_t first_word)
 {
     static const unsigned triangle_words[8] = {8,12,24,28,24,28,40,44};
@@ -1112,8 +1158,8 @@ static inline void rdp_timing_word(struct rdp_timing* t, uint32_t word, int64_t 
 /* The estimator needs the first eight triangle words, not the shade/texture/Z
  * payload. Consume contiguous command windows by packet, retaining the same
  * framing and partial-packet state as the scalar feeder. */
-static inline void rdp_timing_words_sync(struct rdp_timing* t, const uint32_t* words,
-    uint32_t count, int64_t submitted, struct rdp_timing_sync* sync)
+static inline void rdp_timing_words_sync_at(struct rdp_timing* t, const uint32_t* words,
+    uint32_t count, int64_t submitted, unsigned submitted_overhang, struct rdp_timing_sync* sync)
 {
     while (count) {
         if (!t->pos) {
@@ -1130,8 +1176,14 @@ static inline void rdp_timing_words_sync(struct rdp_timing* t, const uint32_t* w
         t->pos += n;
         words += n;
         count -= n;
-        if (t->pos == t->length) rdp_timing_finish(t, submitted, sync);
+        if (t->pos == t->length) rdp_timing_finish_at(t, submitted, submitted_overhang, sync);
     }
+}
+
+static inline void rdp_timing_words_sync(struct rdp_timing* t, const uint32_t* words,
+    uint32_t count, int64_t submitted, struct rdp_timing_sync* sync)
+{
+    rdp_timing_words_sync_at(t, words, count, submitted, 0, sync);
 }
 
 static inline void rdp_timing_words(struct rdp_timing* t, const uint32_t* words,

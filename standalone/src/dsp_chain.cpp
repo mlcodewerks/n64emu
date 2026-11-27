@@ -361,17 +361,14 @@ void dsp_chain::reset(float sample_rate)
         last_error = std::string("DSP bypassed: ") + e.what();
     }
 }
-void dsp_chain::process(const int16_t *samples, size_t frames, std::vector<int16_t> &output)
+dsp_chain::pcm_view dsp_chain::process(const int16_t *samples, size_t frames, std::vector<int16_t> &output)
 {
     std::lock_guard<std::mutex> lock(mutex);
     output.clear();
     if (!samples || !frames)
-        return;
+        return {nullptr, 0};
     if (!active || active->stages.empty())
-    {
-        output.assign(samples, samples + frames * 2);
-        return;
-    }
+        return {samples, frames};
     // Small calls also bound the upstream EQ's fixed output + overlap scratch buffer.
     for (size_t start = 0; start < frames; start += 256)
     {
@@ -401,6 +398,7 @@ void dsp_chain::process(const int16_t *samples, size_t frames, std::vector<int16
             output.push_back(static_cast<int16_t>(std::lround(std::clamp(f * 32768.0f, -32768.0f, 32767.0f))));
         }
     }
+    return {output.data(), output.size() / 2};
 }
 
 bool dsp_load(const std::filesystem::path &path, dsp_settings &settings, std::string &error)

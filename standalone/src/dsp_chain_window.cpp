@@ -1,8 +1,6 @@
 #include "config_store.h"
 #include "dsp_chain_window.h"
 #include "imgui.h"
-#include "ui_window_layout.h"
-#include "rom_browser.h"
 #include <algorithm>
 #include <cstring>
 #include <sstream>
@@ -133,8 +131,7 @@ namespace
     }
 }
 
-void dsp_chain_window::draw_editor(editor &edit, dsp_chain &chain,
-                                   const std::filesystem::path &path, int source)
+void dsp_chain_window::draw_settings(dsp_chain &chain, const std::filesystem::path &directory)
 {
     if (!edit.initialized)
     {
@@ -150,7 +147,7 @@ void dsp_chain_window::draw_editor(editor &edit, dsp_chain &chain,
         if (chain.configure(edit.draft, edit.status, true))
         {
             edit.dirty = false;
-            if (config_dsp_save(path.parent_path(), edit.draft, edit.status))
+            if (config_dsp_save(directory, edit.draft, edit.status))
                 edit.status = "Chain applied and saved.";
             else
                 edit.status = "Chain applied, but saving failed: " + edit.status;
@@ -174,25 +171,23 @@ void dsp_chain_window::draw_editor(editor &edit, dsp_chain &chain,
         ImGui::SameLine();
         ImGui::TextUnformatted("Unapplied changes");
     }
-    ImGui::BeginDisabled(picker_source != -1);
+    ImGui::BeginDisabled(picker.IsOpened());
     if (ImGui::Button("Load preset..."))
     {
-        picker_source = source;
         picker_save = false;
         BrowserConfig config;
-        config.path = path.parent_path().u8string();
-        RomBrowser::Instance()->OpenDialog("DSPPreset", "Load DSP preset", ".dsp", config);
+        config.path = directory.u8string();
+        picker.OpenDialog("DSPPreset", "Load DSP preset", ".dsp", config);
     }
     ImGui::SameLine();
     if (ImGui::Button("Save preset as..."))
     {
-        picker_source = source;
         picker_save = true;
         BrowserConfig config;
-        config.path = path.parent_path().u8string();
+        config.path = directory.u8string();
         config.filePathName = "chain.dsp";
         config.flags = BrowserFlags_ConfirmOverwrite;
-        RomBrowser::Instance()->OpenDialog("DSPPreset", "Save DSP preset", ".dsp", config);
+        picker.OpenDialog("DSPPreset", "Save DSP preset", ".dsp", config);
     }
     ImGui::EndDisabled();
     if (!edit.status.empty())
@@ -219,7 +214,6 @@ void dsp_chain_window::draw_editor(editor &edit, dsp_chain &chain,
     ImGui::EndDisabled();
     if (edit.draft.stages.empty())
         ImGui::TextUnformatted("No filters. Audio passes through unchanged.");
-    ImGui::BeginChild("Stages", ImVec2(0, 0), false);
     int remove = -1, duplicate = -1, move_from = -1, move_to = -1;
     for (size_t i = 0; i < edit.draft.stages.size(); ++i)
     {
@@ -337,54 +331,34 @@ void dsp_chain_window::draw_editor(editor &edit, dsp_chain &chain,
         std::swap(edit.draft.stages[move_from], edit.draft.stages[move_to]);
         edit.dirty = true;
     }
-    ImGui::EndChild();
 }
 
-void dsp_chain_window::draw(dsp_chain &core, const std::filesystem::path &directory)
+void dsp_chain_window::draw_picker(bool audio_tab)
 {
-    if (!visible)
+    if (!picker.IsOpened())
         return;
-    ui_prepare_window("Audio DSP", ImVec2(0.8f, 0.85f));
-    if (ImGui::Begin("Audio DSP", &visible))
+    if (!audio_tab)
     {
-        if (ImGui::BeginTabBar("Audio source"))
+        picker.Close();
+        return;
+    }
+    if (!picker.Display("DSPPreset"))
+        return;
+    if (picker.IsOk())
+    {
+        auto path = std::filesystem::u8path(picker.GetFilePathName());
+        if (picker_save)
         {
-            if (ImGui::BeginTabItem("Core audio"))
-            {
-                ImGui::PushID(0);
-                draw_editor(editors[0], core, directory / "winweg.dsp", 0);
-                ImGui::PopID();
-                ImGui::EndTabItem();
-            }
-            ImGui::EndTabBar();
+            if (!path.has_extension())
+                path += ".dsp";
+            if (dsp_save(path, edit.draft, edit.status))
+                edit.status = "Preset saved.";
+        }
+        else if (dsp_load(path, edit.draft, edit.status))
+        {
+            edit.dirty = true;
+            edit.status = "Preset loaded. Apply to hear and save it as the default.";
         }
     }
-    ImGui::End();
-    if (picker_source != -1 && RomBrowser::Instance()->Display("DSPPreset"))
-    {
-        if (RomBrowser::Instance()->IsOk())
-        {
-            auto &edit = editors[picker_source];
-            auto path = std::filesystem::u8path(RomBrowser::Instance()->GetFilePathName());
-            if (picker_save)
-            {
-                if (!path.has_extension())
-                    path += ".dsp";
-                if (dsp_save(path, edit.draft, edit.status))
-                    edit.status = "Preset saved.";
-            }
-            else if (dsp_load(path, edit.draft, edit.status))
-            {
-                edit.dirty = true;
-                edit.status = "Preset loaded. Apply to hear and save it as the default.";
-            }
-        }
-        RomBrowser::Instance()->Close();
-        picker_source = -1;
-    }
-    if (!visible && picker_source != -1)
-    {
-        RomBrowser::Instance()->Close();
-        picker_source = -1;
-    }
+    picker.Close();
 }

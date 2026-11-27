@@ -400,8 +400,9 @@ int main(int argc, char **argv) {
                 } else if (i == 2)
                     input.set_descriptors(nullptr);
                 ImGui::NewFrame();
-                bool open = true;
-                draw_input_settings(input, open);
+                ImGui::Begin("Settings");
+                draw_input_settings(input);
+                ImGui::End();
                 ImGui::Render();
             }
             ImGui::DestroyContext();

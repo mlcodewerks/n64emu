@@ -2,6 +2,7 @@
 #include "../dpc_bridge.h"
 
 #ifdef PARALLEL_INTEGRATION
+#include "device/rcp/rsp/rsp_timing.h"
 #include "core/backend.h"
 #include "core/backend.h"
 namespace RSP
@@ -205,9 +206,7 @@ extern "C"
 
 		// Force alignment.
 		length = (length + 0x7) & ~0x7;
-		// A DMA request pays setup once, then transfers one 64-bit word per clock.
-		constexpr unsigned read_setup_cycles = 8;
-		rsp->cycles += read_setup_cycles + (length / 8) * (count + 1);
+		rsp->cycles += rsp_dma_transfer_cycles(length, count + 1);
 		rsp->dma_write_end = 0;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_CACHE] &= ~0x7;
 		*rsp->cp0.cr[CP0_REGISTER_DMA_DRAM] &= ~0x7;

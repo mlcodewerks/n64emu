@@ -22,7 +22,7 @@ platform = static_library('platform', ['src/common.cpp', 'src/config_store.cpp',
   'src/shader_library.cpp', 'src/shader_runtime.cpp', 'src/shader_diagnostics.cpp', 'src/shader_source_io.cpp', 'src/dsp_chain.cpp', 'src/dsp_chain_window.cpp',
   'third_party/imgui/imgui.cpp', 'third_party/imgui/imgui_draw.cpp', 'third_party/imgui/imgui_tables.cpp', 'third_party/imgui/imgui_widgets.cpp',
   'third_party/imgui/imgui_impl_win32.cpp', 'third_party/imgui/imgui_impl_dx9.cpp'],
-  include_directories: inc, dependencies: deps)
+  include_directories: [inc, include_directories('../deps/libretro-common/include')], dependencies: deps)
 
 # The core is built with its own native build rules, including scale variants and
 # runtime SIMD dispatch. build_core.py creates an archive without libretro.c.
@@ -51,6 +51,9 @@ config_tests = executable('config-store-tests', 'tests/config_store_tests.cpp', 
 test('unified-json-configuration', config_tests, args: [meson.current_build_dir() / 'config-test'], timeout: 30)
 input_tests = executable('input-tests', 'tests/input_tests.cpp', include_directories: inc, link_with: platform, dependencies: deps)
 test('native-input-bindings', input_tests, args: [meson.current_build_dir() / 'input-test'], timeout: 30)
+audio_pacing_tests = executable('audio-pacing-tests', 'tests/audio_pacing_tests.cpp', include_directories: inc,
+  link_with: platform, dependencies: deps)
+test('audio-pacing', audio_pacing_tests, timeout: 15)
 browser_tests = executable('browser-tests', 'tests/rom_browser_smoke.cpp', include_directories: inc, link_with: platform, dependencies: deps)
 test('rom-browser-open-save', browser_tests, args: [meson.current_build_dir() / 'browser-test'], timeout: 30)
 api_tests = executable('core-api-tests', 'tests/core_api_tests.c', include_directories: inc,

@@ -236,6 +236,20 @@ static unsigned readback_span_startup_checks(void)
         {0x0e, 0x40, 2, 0, 1, 0, 0, 15,  9},
         {0x0e, 0x10, 2, 0, 1, 0, 0, 15,  9},
         {0x0e, 0x50, 2, 1, 1, 0, 0, 15,  9},
+        {0x0e, 0x54, 2, 1, 1, 0, 0,  9,  9},
+        {0x0f, 0x70, 2, 1, 1, 0, 0,  9,  9},
+        {0x0f, 0xd0, 2, 1, 1, 0, 0, 15,  9},
+        {0x0f, 0x30, 2, 1, 1, 0, 0, 19, 19},
+        {0x0e, 0x10, 2, 1, 1, 0, 0, 15,  9},
+        {0x0e, 0x14, 2, 1, 1, 0, 0, 19, 19},
+        {0x0e, 0x20, 2, 1, 1, 0, 0, 15,  9},
+        {0x0e, 0x24, 2, 1, 1, 0, 0, 19, 19},
+        {0x0e, 0x40, 2, 1, 1, 0, 0, 15,  9},
+        {0x0e, 0x70, 2, 1, 0, 0, 0, 15, 15},
+        {0x0e, 0x30, 2, 1, 1, 1, 0, 15, 15},
+        {0x0e, 0x50, 2, 1, 1, 0, 1,  6,  6},
+        {0x0e, 0x50, 3, 1, 1, 0, 0, 15,  9},
+        {0x24, 0x30, 2, 1, 1, 0, 0, 15, 15},
         {0x0e, 0x50, 3, 0, 1, 0, 0, 15,  9},
         {0x24, 0x50, 2, 0, 1, 0, 0, 15, 15},
     };
@@ -251,11 +265,67 @@ static unsigned readback_span_startup_checks(void)
         t.vi_elapsed = t.length / 2 + cases[i].later_span;
         t.atomic_primitive = cases[i].atomic;
         t.reject = cases[i].reject;
-        assert(rdp_timing_span_startup(&t, 0) == cases[i].on);
+        const unsigned z_source = (cases[i].op & 1) || (t.modes & 4);
+        const unsigned z_read = z_source && (t.modes & 0x10);
+        const unsigned z_write = z_source && (t.modes & 0x20) && !t.reject;
+        assert(rdp_timing_span_startup(&t, 0, z_read, z_write) == cases[i].on);
         t.overlap_span_startup = 1;
-        assert(rdp_timing_span_startup(&t, 0) == cases[i].off);
+        assert(rdp_timing_span_startup(&t, 0, z_read, z_write) == cases[i].off);
     }
     return 2 * i;
+}
+
+static unsigned single_cycle_feedback_checks(void)
+{
+    const uint32_t interlaced[14] = {0x42, 0, 640};
+    const uint32_t progressive[14] = {2, 0, 640};
+    const uint32_t same_pitch[14] = {0x42, 0, 320};
+    static const struct {
+        unsigned op, modes, pixels, atomic, on, off;
+    } cases[] = {
+        {0x0e, 0x504240,  8, 0, 80, 80},
+        {0x0e, 0x504240,  9, 0, 64, 58},
+        {0x0c, 0x504240, 16, 0, 54, 48},
+        {0x0c, 0x504240, 17, 0, 64, 58},
+        {0x0e, 0x504240,  8, 1, 64, 64},
+        {0x0e, 0x504248,  8, 0, 64, 58},
+        {0x0e, 0x5042c0,  8, 0, 64, 58},
+        {0x0e, 0x504a40,  8, 0, 64, 58},
+        {0x0e, 0x500240,  8, 0, 64, 58},
+        {0x0e, 0x544240,  8, 0, 64, 58},
+        {0x24, 0x504240,  8, 0, 64, 64},
+    };
+    unsigned i;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        struct rdp_timing t;
+        memset(&t, 0, sizeof(t));
+        t.words[0] = cases[i].op << 24;
+        t.length = rdp_timing_packet_words(t.words[0]);
+        t.vi_elapsed = t.length / 2 + 1;
+        t.fb_size = 2;
+        t.fb_width = 320;
+        t.vi_regs = interlaced;
+        t.modes = cases[i].modes;
+        t.atomic_primitive = cases[i].atomic;
+        assert(rdp_timing_span(&t, 0, 0, cases[i].pixels) == cases[i].on);
+        t.vi_elapsed = t.length / 2 + 1;
+        t.span_fraction = 0;
+        t.overlap_span_startup = 1;
+        assert(rdp_timing_span(&t, 0, 0, cases[i].pixels) == cases[i].off);
+    }
+
+    struct rdp_timing t;
+    memset(&t, 0, sizeof(t));
+    t.words[0] = 0x0eu << 24;
+    t.modes = 0x504240u;
+    t.fb_size = 2;
+    t.fb_width = 320;
+    assert(rdp_timing_span(&t, 0, 0, 8) == 64);
+    t.vi_regs = progressive;
+    assert(rdp_timing_span(&t, 0, 0, 8) == 64);
+    t.vi_regs = same_pitch;
+    assert(rdp_timing_span(&t, 0, 0, 8) == 64);
+    return 2 * i + 3;
 }
 
 int main(void)
@@ -317,6 +387,7 @@ int main(void)
     checks += shared_bank_checks();
     checks += parallel_pipeline_checks();
     checks += readback_span_startup_checks();
+    checks += single_cycle_feedback_checks();
     printf("Short-span VI overlap and topology boundaries: %u checks passed\n", checks);
     return 0;
 }

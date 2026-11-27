@@ -50,8 +50,13 @@ public:
     bool configure(const dsp_settings &settings, std::string &error, bool export_impulse = false);
     // Rebuild delay/FFT state at a new core rate or after restarting playback.
     void reset(float sample_rate);
-    // Caller-owned PCM is never modified. Output may have a different frame count (EQ).
-    void process(const int16_t *samples, size_t frames, std::vector<int16_t> &output);
+    struct pcm_view {
+        const int16_t *samples;
+        size_t frames;
+    };
+    // Borrows either the input PCM or the caller's scratch buffer. Filters
+    // may produce a different number of frames than they consume.
+    pcm_view process(const int16_t *samples, size_t frames, std::vector<int16_t> &output);
 private:
     struct runtime;
     mutable std::mutex mutex;

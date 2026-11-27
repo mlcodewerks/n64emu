@@ -2,6 +2,7 @@
 #include <cstdio>
 
 #include "rsp_op.hpp"
+#include "device/rcp/rsp/rsp_timing.h"
 
 namespace RSP
 {
@@ -13,6 +14,8 @@ extern "C" void renderer_process_commands(void) {}
 
 int main()
 {
+    assert(rsp_count_ticks(rsp_dma_transfer_cycles(8, 1), 0) == 7);
+    assert(rsp_count_ticks(rsp_dma_transfer_cycles(4096, 256), 0) == 98310);
     using namespace RSP;
     CPUState sp;
     uint32_t registers[16] = {}, irq = 0;

@@ -16,6 +16,6 @@ $(OUT)/regressions$(EXE): benchmarks/conformance/rsp_regressions.cpp $(RSP)/jit_
 	mkdir -p $(OUT)
 	$(CXX) $(FLAGS) $< $(SOURCES) -Wl,--gc-sections $(LDFLAGS) -o $@
 
-$(OUT)/dma-checks$(EXE): benchmarks/conformance/rsp_dma_checks.cpp $(RSP)/rsp/cp0.cpp $(RSP)/state.hpp
+$(OUT)/dma-checks$(EXE): benchmarks/conformance/rsp_dma_checks.cpp $(RSP)/rsp/cp0.cpp $(RSP)/state.hpp src/device/rcp/rsp/rsp_timing.h
 	mkdir -p $(OUT)
 	$(CXX) $(FLAGS) -DPARALLEL_INTEGRATION -UNDEBUG $(filter %.cpp,$^) -Wl,--gc-sections $(LDFLAGS) -o $@

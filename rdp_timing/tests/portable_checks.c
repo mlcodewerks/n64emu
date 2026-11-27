@@ -41,6 +41,20 @@ static void fixed_checks(void)
     init(&a, &trace);
     assert(rdp_timing_adapter_feed_words(&a, setup, 8, 0));
     assert(a.timing.deadline == 3 && !a.timing.clock_overhang);
+    /* The first command arrives at COUNT 99.5 and retires at 100.25.
+     * A fragmented fence arrives at 100.25 and finishes exactly at 101. */
+    init(&a, &trace);
+    struct rdp_timing_sync fractional = {0, 0, 0, 0, 0};
+    rdp_timing_words_sync_at(&a.timing, setup, 2, 100, 2, &fractional);
+    assert(a.timing.deadline == 101 && a.timing.clock_overhang == 3);
+    rdp_timing_words_sync_at(&a.timing, fences, 1, 101, 3, &fractional);
+    assert(!fractional.seen);
+    rdp_timing_words_sync_at(&a.timing, fences + 1, 1, 101, 3, &fractional);
+    assert(fractional.seen && fractional.deadline == 101 && !a.timing.clock_overhang);
+    /* A submission at 101.5 starts a new interval instead of inheriting
+     * the preceding packet's completion time. */
+    rdp_timing_words_sync_at(&a.timing, setup, 2, 102, 2, NULL);
+    assert(a.timing.deadline == 103 && a.timing.clock_overhang == 3);
     init(&a, &trace);
     assert(rdp_timing_adapter_feed_words(&a, fences, 1, 0));
     assert(!trace.fence_count && a.timing.pos == 1 && !a.timing.deadline);

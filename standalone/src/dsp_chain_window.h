@@ -1,10 +1,11 @@
 #pragma once
 #include "dsp_chain.h"
+#include "rom_browser.h"
 
 class dsp_chain_window {
 public:
-    bool visible = false;
-    void draw(dsp_chain &core, const std::filesystem::path &directory);
+    void draw_settings(dsp_chain &chain, const std::filesystem::path &directory);
+    void draw_picker(bool audio_tab);
 private:
     struct editor {
         bool initialized = false;
@@ -12,8 +13,7 @@ private:
         dsp_settings draft;
         std::string status;
         int add_filter = 0;
-    } editors[2];
-    int picker_source = -1;
+    } edit;
+    RomBrowser picker;
     bool picker_save = false;
-    void draw_editor(editor &edit, dsp_chain &chain, const std::filesystem::path &path, int source);
 };

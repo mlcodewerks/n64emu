@@ -125,12 +125,6 @@ static void read_busy(struct rdp_core *dp, unsigned reg, int from_rsp)
     retire_counters(dp, now);
 }
 
-static int vi_uses_alternate_rows(const uint32_t* vi, uint32_t fb_width)
-{
-    return vi && (vi[VI_STATUS_REG] & 0x40u) && fb_width &&
-        (vi[VI_WIDTH_REG] & 4095u) == fb_width * 2u;
-}
-
 uint32_t rdp_sync_full_delay(const struct rdp_core* dp)
 {
     /* The fallback estimates a whole frame from programmed VI geometry. */
@@ -152,7 +146,7 @@ uint32_t rdp_sync_full_delay(const struct rdp_core* dp)
      * The geometry above counts one field, but SyncFull completes the whole
      * rendered frame. Y_SCALE-based interlace already counts both fields;
      * distinguish the two layouts using the native color-image pitch. */
-    if (dp->instruction_timing && vi_uses_alternate_rows(vi, dp->timing.fb_width))
+    if (dp->instruction_timing && rdp_timing_vi_alternate_rows(vi, dp->timing.fb_width))
         h *= 2;
     uint32_t ticks = w * h * 2;
     return ticks > min_delay ? ticks : min_delay;
@@ -171,9 +165,13 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
     dp_pending = dp->mi->regs[MI_INTR_REG] & MI_INTR_DP;
     if (dp->instruction_timing && (from_rsp || dp->vi_regs)) {
         int64_t submitted = dp->mi->r4300->cp0.count_clock;
+        unsigned submitted_overhang = 0;
 #if defined(HAVE_PARALLEL_RSP)
-        if (from_rsp) submitted = dp->sp->slice_start_clock +
-            rsp_count_ticks(parallelRSPExecutedCycles(), dp->sp->slice_overhang);
+        if (from_rsp) {
+            unsigned cycles = parallelRSPExecutedCycles();
+            submitted = dp->sp->slice_start_clock + rsp_count_ticks(cycles, dp->sp->slice_overhang);
+            submitted_overhang = rsp_count_overhang(cycles, dp->sp->slice_overhang);
+        }
 #endif
         uint32_t begin = dp->dpc_regs[DPC_CURRENT_REG] & 0xfffff8;
         uint32_t end = dp->dpc_regs[DPC_END_REG] & 0xfffff8;
@@ -190,11 +188,11 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
                 source = dp->fb.rdram->dram + (at >> 2);
             } else {
                 const uint32_t zero = 0;
-                rdp_timing_words_sync(&dp->timing, &zero, 1, submitted, &sync);
+                rdp_timing_words_sync_at(&dp->timing, &zero, 1, submitted, submitted_overhang, &sync);
                 at += 4;
                 continue;
             }
-            rdp_timing_words_sync(&dp->timing, source, count, submitted, &sync);
+            rdp_timing_words_sync_at(&dp->timing, source, count, submitted, submitted_overhang, &sync);
             at += count * 4;
         }
     }
@@ -246,7 +244,7 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
                  * framebuffer reads disabled. Keep the scanout allowance
                  * for interlace that fetches alternating framebuffer rows. */
                 int unadjusted_rsp_fence = decoded_rsp_fence && sync.one_cycle_without_image_read &&
-                    !vi_uses_alternate_rows(dp->vi_regs, sync.fb_width);
+                    !rdp_timing_vi_alternate_rows(dp->vi_regs, sync.fb_width);
                 if (dp->instruction_timing && !dp->mi->r4300->cache_timing &&
                     !unadjusted_rsp_fence) {
                     /* Keep short fences close to the raster estimate.

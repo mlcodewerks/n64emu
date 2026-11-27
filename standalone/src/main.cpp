@@ -3,6 +3,7 @@
 #include "core.h"
 #include "core_options_window.h"
 #include "dsp_chain_window.h"
+#include "frame_pacing.h"
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "input_window.h"
@@ -131,9 +132,9 @@ struct Timer {
     }
     void until(uint64_t deadline) {
         auto now = native_nanoseconds();
-        if (deadline > now + 1000000 && handle) {
+        if (deadline > now + 200000 && handle) {
             LARGE_INTEGER due;
-            due.QuadPart = -LONGLONG((deadline - now - 500000) / 100);
+            due.QuadPart = -LONGLONG((deadline - now - 100000) / 100);
             if (SetWaitableTimer(handle, &due, 0, nullptr, nullptr, FALSE))
                 WaitForSingleObject(handle, 100);
         }
@@ -256,7 +257,7 @@ int main() {
                 core.log(dsp_error + "\n");
             FilePicker picker;
             dsp_chain_window dsp_window;
-            bool running = true, settings = false, input_settings = false, options = false, logs = false, fast_forward = false;
+            bool running = true, settings = false, options = false, logs = false, fast_forward = false;
             unsigned slot = 0;
             int ui_scale_choice = 0;
             float applied_ui_scale = 0;
@@ -290,8 +291,10 @@ int main() {
                 cJSON_AddNumberToObject(value.get(), "state_slot", slot);
                 config_write_section(directory, "frontend", value.get());
             };
-            uint64_t iteration = 0, deadline = native_nanoseconds();
+            uint64_t iteration = 0;
             Timer timer;
+            FramePacing pacing;
+            pacing.reset(native_nanoseconds());
             std::function<void()> pending;
             auto select_content = [&](const fs::path &path) {
                 content = path;
@@ -330,7 +333,7 @@ int main() {
                     try {
                         action();
                         failure.clear();
-                        deadline = native_nanoseconds();
+                        pacing.reset(native_nanoseconds());
                     } catch (const std::exception &e) {
                         failure = e.what();
                         if (hidden)
@@ -382,8 +385,12 @@ int main() {
                     if (ImGui::BeginMenu(ICON_FK_GAMEPAD " Emulation", core.loaded())) {
                         if (ImGui::MenuItem("Pause", nullptr, &core.paused)) {
                             core.audio.clear();
+                            pacing.reset(native_nanoseconds());
                         }
-                        ImGui::MenuItem("Fast forward", nullptr, &fast_forward);
+                        if (ImGui::MenuItem("Fast forward", nullptr, &fast_forward)) {
+                            core.audio.set_frame_limit(!fast_forward);
+                            pacing.reset(native_nanoseconds());
+                        }
                         if (ImGui::MenuItem("Reset"))
                             pending = [&] { core.reset(); };
                         if (ImGui::BeginMenu("State slot")) {
@@ -417,9 +424,6 @@ int main() {
                         bool enabled = true;
                     } tools[] = {
                         {ICON_FK_COG " Settings", &settings},
-                        {"Input Settings...", &input_settings},
-                        {"Audio DSP Chains...", &dsp_window.visible},
-                        {"Shader chains", &shader_window_visible},
                         {"Core options", &options, core.loaded()},
                         {"Log", &logs},
                     };
@@ -448,22 +452,26 @@ int main() {
                     if (hidden)
                         throw;
                 }
+                bool video_tab = false, audio_tab = false, input_tab = false;
                 if (settings) {
-                    ui_prepare_window("Settings", ImVec2(0.7f, 0.7f));
-                    ImGui::Begin("Settings", &settings);
-                    if (ImGui::BeginTabBar("settings")) {
+                    ui_prepare_window("Settings", ImVec2(0.8f, 0.85f));
+                    if (ImGui::Begin("Settings", &settings) && ImGui::BeginTabBar("settings")) {
                         if (ImGui::BeginTabItem("Video")) {
-                            int aspect = video.square_pixels;
-                            if (ImGui::Combo("Aspect ratio", &aspect, "Core aspect\0Square pixels\0")) {
-                                video.square_pixels = aspect != 0;
-                                save_frontend();
+                            video_tab = true;
+                            if (ImGui::BeginChild("Video settings", {}, 0, ImGuiWindowFlags_HorizontalScrollbar)) {
+                                int aspect = video.square_pixels;
+                                if (ImGui::Combo("Aspect ratio", &aspect, "Core aspect\0Square pixels\0")) {
+                                    video.square_pixels = aspect != 0;
+                                    save_frontend();
+                                }
+                                if (ImGui::Checkbox("Integer scaling", &video.integer_scale))
+                                    save_frontend();
+                                ImGui::SetItemTooltip("Scale by whole source scanlines. Square pixels uses whole multiples on both axes.");
+                                ImGui::TextUnformatted("Renderer: Direct3D 9");
+                                ImGui::SeparatorText("Shader Chains");
+                                draw_shader_chain_settings();
                             }
-                            if (ImGui::Checkbox("Integer scaling", &video.integer_scale))
-                                save_frontend();
-                            ImGui::SetItemTooltip("Scale by whole source scanlines. Square pixels uses whole multiples on both axes.");
-                            ImGui::TextUnformatted("Renderer: Direct3D 9");
-                            if (ImGui::Button("Shader chains..."))
-                                shader_window_visible = true;
+                            ImGui::EndChild();
                             ImGui::EndTabItem();
                         }
                         if (ImGui::BeginTabItem("Interface")) {
@@ -472,25 +480,30 @@ int main() {
                             ImGui::EndTabItem();
                         }
                         if (ImGui::BeginTabItem("Audio")) {
-                            if (ImGui::Button("Audio DSP..."))
-                                dsp_window.visible = true;
-                            ImGui::Text("WASAPI queue: %.1f ms", core.audio.queued_seconds() * 1000);
-                            if (!core.audio.error().empty())
-                                ImGui::TextWrapped("%s", core.audio.error().c_str());
+                            audio_tab = true;
+                            if (ImGui::BeginChild("Audio settings", {}, 0, ImGuiWindowFlags_HorizontalScrollbar)) {
+                                ImGui::Text("WASAPI queue: %.1f ms", core.audio.queued_seconds() * 1000);
+                                if (!core.audio.error().empty())
+                                    ImGui::TextWrapped("%s", core.audio.error().c_str());
+                                ImGui::SeparatorText("Audio DSP Chains");
+                                dsp_window.draw_settings(core.audio.dsp, directory);
+                            }
+                            ImGui::EndChild();
                             ImGui::EndTabItem();
                         }
                         if (ImGui::BeginTabItem("Input")) {
-                            if (ImGui::Button("Input Settings..."))
-                                input_settings = true;
+                            input_tab = true;
+                            draw_input_settings(controls);
                             ImGui::EndTabItem();
                         }
                         ImGui::EndTabBar();
                     }
                     ImGui::End();
                 }
-                draw_input_settings(controls, input_settings);
-                dsp_window.draw(core.audio.dsp, directory);
-                draw_shader_chain_window();
+                if (!settings || !input_tab)
+                    controls.cancel_capture();
+                dsp_window.draw_picker(settings && audio_tab);
+                draw_shader_chain_dialogs(settings && video_tab);
                 draw_core_options(core, options);
                 draw_log_window(logs);
                 ImGui::Render();
@@ -508,22 +521,12 @@ int main() {
                 video.present();
                 if (limit && iteration >= limit)
                     break;
-                double fps = core.loaded() && !core.paused ? core.fps : 60;
+                const auto now = native_nanoseconds();
                 if (!fast_forward) {
-                    double correction = 1;
-                    if (core.audio.running() && !core.paused)
-                        correction = std::clamp(
-                            1 + (core.audio.queued_seconds() -
-                                 0.08) *
-                                    0.1,
-                            0.995, 1.005);
-                    deadline += uint64_t(1e9 / fps * correction);
-                    auto now = native_nanoseconds();
-                    if (deadline + 250000000 < now)
-                        deadline = now;
-                    timer.until(deadline);
+                    const double fps = core.loaded() && !core.paused ? core.fps : 60;
+                    timer.until(pacing.advance(now, fps));
                 } else
-                    deadline = native_nanoseconds();
+                    pacing.reset(now);
             }
             if (verify && !video.verified_frames)
                 throw std::runtime_error("No software video frames were verified");

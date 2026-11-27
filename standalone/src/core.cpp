@@ -132,6 +132,7 @@ void Core::apply_av(const n64emu_av &av) {
 }
 void Core::run() {
     if (!game_loaded || paused) return;
+    if (audio.running()) audio.begin_frame();
     for (unsigned port = 0; port < 4; ++port)
         n64emu_set_controller(port, input.profile.players[port].controller != RETRO_DEVICE_NONE);
     n64emu_run();

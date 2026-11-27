@@ -90,31 +90,31 @@ void draw_binding(Input &input, unsigned player, unsigned index, InputOutput out
 }
 } // namespace
 
-void draw_input_settings(Input &input, bool &open) {
-    if (!open) {
+void draw_input_settings(Input &input) {
+    if (ImGui::Button("Save bindings")) {
         input.cancel_capture();
-        return;
+        std::string error;
+        if (input.save_player_configuration(error))
+            input.status = "Input bindings saved.";
+        else
+            input.status = "Could not save input settings. " + error;
     }
-    ImGui::OpenPopup("Input Settings");
-    const auto &io = ImGui::GetIO();
-    ImGui::SetNextWindowSizeConstraints(ImVec2(io.DisplaySize.x * 0.7f, io.DisplaySize.y * 0.3f),
-                                        ImVec2(io.DisplaySize.x * 0.7f, io.DisplaySize.y * 0.5f));
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal("Input Settings", &open, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::PushItemWidth(ImMin(260.f, ImGui::GetContentRegionAvail().x * 0.4f));
-        auto *state = ImGui::GetStateStorage();
-        const auto capture_key = ImGui::GetID("Capture active");
-        if (state->GetBool(capture_key) && !input.capturing()) {
-            ImGui::ClearActiveID();
-            ImGui::SetWindowFocus(nullptr);
-        }
-        if (ImGui::BeginTabBar("MyTabBar", ImGuiTabBarFlags_None)) {
-            for (unsigned player = 0; player < input.player_count(); ++player) {
-                const auto tab = "Player " + std::to_string(player + 1);
-                if (ImGui::BeginTabItem(tab.c_str())) {
-                    if (ImGui::IsItemActivated())
-                        input.cancel_capture();
-                    ImGui::PushID(int(player));
+    if (input.status == "Input bindings saved." || input.status.find("Could not save input settings.") == 0)
+        ImGui::TextWrapped("%s", input.status.c_str());
+
+    if (ImGui::BeginTabBar("Players", ImGuiTabBarFlags_FittingPolicyScroll)) {
+        for (unsigned player = 0; player < input.player_count(); ++player) {
+            const auto tab = "Player " + std::to_string(player + 1);
+            if (ImGui::BeginTabItem(tab.c_str())) {
+                if (ImGui::IsItemActivated())
+                    input.cancel_capture();
+                if (ImGui::BeginChild("Bindings", {}, 0, ImGuiWindowFlags_HorizontalScrollbar)) {
+                    auto *state = ImGui::GetStateStorage();
+                    const auto capture_key = ImGui::GetID("Capture active");
+                    if (state->GetBool(capture_key) && !input.capturing() &&
+                        GImGui->ActiveIdWindow == ImGui::GetCurrentWindow())
+                        ImGui::ClearActiveID();
+                    ImGui::PushItemWidth(ImMin(260.f, ImGui::GetContentRegionAvail().x * 0.4f));
                     int scope = input.uses_game_input(player) ? 1 : 0;
                     ImGui::BeginDisabled(!input.has_game());
                     if (ImGui::Combo("Bindings", &scope, "Core\0This game\0") &&
@@ -127,7 +127,6 @@ void draw_input_settings(Input &input, bool &open) {
                         ImGui::TextWrapped("These core bindings are shared by games using this controller layout. Selecting \"This game\" starts with a copy of them.");
                     if (!input.has_game())
                         ImGui::TextDisabled("Load a game to use game bindings.");
-                    ImGui::PopID();
                     const auto selected = input.profile.players[player].controller;
                     for (const auto &choice : input.controller_choices(player))
                         if (choice.id == selected) {
@@ -137,28 +136,13 @@ void draw_input_settings(Input &input, bool &open) {
                     const auto outputs = input.visible_bindings(player);
                     for (unsigned index = 0; index < outputs.size(); ++index)
                         draw_binding(input, player, index, outputs[index]);
-                    ImGui::EndTabItem();
+                    ImGui::PopItemWidth();
+                    state->SetBool(capture_key, input.capturing());
                 }
-            }
-            ImGui::EndTabBar();
-        }
-        if (ImGui::Button("OK")) {
-            input.cancel_capture();
-            std::string error;
-            if (input.save_player_configuration(error)) {
-                input.status.clear();
-                open = false;
-                ImGui::CloseCurrentPopup();
-            } else {
-                input.status = "Could not save input settings. Check that the input configuration is writable, then press OK to retry. " + error;
+                ImGui::EndChild();
+                ImGui::EndTabItem();
             }
         }
-        if (!input.status.empty() && input.status.find("Could not save input settings.") == 0)
-            ImGui::TextWrapped("%s", input.status.c_str());
-        state->SetBool(capture_key, input.capturing());
-        ImGui::PopItemWidth();
-        ImGui::EndPopup();
+        ImGui::EndTabBar();
     }
-    if (!open)
-        input.cancel_capture();
 }
