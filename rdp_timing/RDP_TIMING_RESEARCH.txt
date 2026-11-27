@@ -124,9 +124,13 @@ is a selected midpoint, not a direct measurement of every primitive.
 Texture loads use texture-image size and stride, not framebuffer format or
 render cycle type. LoadBlock coordinates are integer texels; LoadTile and
 LoadTLUT coordinates are 10.2. Palette loads expand 16-bit entries into 64-bit
-TMEM words. Native 4-bit image loads are excluded by this path; supported
-4-bit textures are loaded through wider image views. These transfer estimates
-count aligned words rather than modeling each TMEM/RDRAM pipeline stage.
+TMEM words. The load unit's 4-bit source path rotates the aligned RDRAM word
+at each source-byte step, as modeled by the renderer. Tile rows use their own
+source stride and ordinary loads fetch a whole final TMEM word. The estimate
+allows one TMEM step per RCP clock while accounting for aligned RDRAM words,
+row activation and VI contention at the actual source address and time. The
+row setup estimates reuse the aggregate span model's five-clock setup and
+three-clock same-bank row turnaround. They are not measured TMEM latencies.
 
 
 4. RASTER WORK AND GEOMETRY
@@ -135,7 +139,9 @@ count aligned words rather than modeling each TMEM/RDRAM pipeline stage.
 The cycle-type encoding is 0=one-cycle, 1=two-cycle, 2=copy, 3=fill.
 
   One-/two-cycle: pixel floor = pixels * (cycle_type + 1).
-  Copy:          ceil(pixels / 4) before VI service.
+  Copy:          maximum of the aligned store time with VI service and
+                 the TMEM pipeline time, four 16-bit or two 32-bit texels
+                 per clock.
   Fill:          number of touched 64-bit framebuffer words before VI service.
 
 For fill, framebuffer size and alignment matter. A partial 64-bit word at the
@@ -154,8 +160,8 @@ thin or steep triangles. Linear endpoint bounds replace the short discrete
 walk only when edge ordering remains valid; crossed edges retain discrete
 sampling. Field scissoring skips rows of the wrong parity.
 
-Rectangle fast paths exploit repeating bus alignment for fill and a simple
-copy cost when scanout is absent. Other modes and active scanout retain the
+Rectangle fast paths exploit repeating bus alignment for fill and copy
+when scanout is absent. Other modes and active scanout retain the
 per-row calculation. These optimizations preserve the model's arithmetic;
 they do not make it a full coverage rasterizer.
 
@@ -704,7 +710,7 @@ The host decides how those events interact with an already-pending DP interrupt.
       framebuffer_bpp = 4 << framebuffer_size
 
       if triangle(op):
-          last_reject = (alpha_result() == REJECT)
+          last_reject = (alpha_result() == REJECT) or proven_primitive_Z_reject
           work = triangle_spans()
           if not last_reject:
               invalidate(framebuffer_address,
@@ -730,10 +736,8 @@ The host decides how those events interact with an already-pending DP interrupt.
                   work += span_clocks(y,x0,x1)
               update/invalidate uniform proofs as in 17.6
 
-      if op is a texture load and texture_size != 0:
-          work = texture_load_words(op)
-          if work != 0:
-              work = vi_service(work,0,texture_address*8,0,true,false,false)
+      if op is a texture load:
+          work = texture_load_clocks(op)
 
       if work != 0 and last_reject and (modes&0x50)==0:
           work += 11
@@ -847,8 +851,9 @@ buffer model, not a claim about every intervening physical memory request.
       C=framebuffer_address*8+(y*framebuffer_width+left)*bpp
       Cwords=bus_words(C,P*bpp)
       if cycle_type>=2:
-          W=ceil_div(P,4) if cycle_type==2 else Cwords
-          W=vi_service(W,0,C,0,true,false,false)
+          W=vi_service(Cwords,0,C,0,true,false,false)
+          if cycle_type==2:
+              W=max(W,ceil_div(P,2 if framebuffer_size==3 else 4))
           vi_elapsed_RCP+=W
           return W
 
@@ -1016,21 +1021,28 @@ integral right/bottom, no field scissor, (modes&0x24)==0x24,
 Unknown proofs must not create a new proof. Use an existing matching slot,
 otherwise an invalid slot, otherwise slot (address>>10)&7.
 
-  texture_load_words(op):
-      size_bits=4<<texture_size
+  texture_load_clocks(op):
       extract SL,TL from word0 and SH,TH from word1 (12-bit fields)
       if op==0x33:                       # LoadBlock integer coordinates
-          if SH<SL: return 0
-          first=texture_address*8+(TL*texture_width+SL)*size_bits
-          return bus_words(first,(SH-SL+1)*size_bits)
-      SL/=4; TL/=4; SH/=4; TH/=4         # LoadTile / LoadTLUT 10.2
+          TL &= 1023
+          TH=TL                          # DXT affects TMEM placement
+      else:
+          SL/=4; TL/=4; SH/=4; TH/=4     # LoadTile / LoadTLUT 10.2
       if SH<SL or TH<TL: return 0
-      if op==0x30 and TH!=TL: return 0
-      if op==0x30 and texture_size==2: return SH-SL+1
+      texels=(SH-SL+1)&4095
+      palette=(op==0x30 and texture_size==2)
+      steps=ceil(texels / (1 if palette else 4 if texture_size==0 else 16>>texture_size))
+      if steps==0: return 0
+      bytes=steps*(2 if palette else 1 if texture_size==0 else 8)
       total=0
       for y in [TL,TH+1):
-          first=texture_address*8+(y*texture_width+SL)*size_bits
-          total+=bus_words(first,(SH-SL+1)*size_bits)
+          first=texture_address+(((y*texture_width+SL)<<texture_size)/2)
+          end=first+bytes-(1 if palette and first is odd else 0)
+          memory=0
+          for each 2 KiB RDRAM row in the aligned [first,end) range:
+              clocks=number of 64-bit words + row setup if needed
+              memory+=vi_service(clocks,0,aligned_row_address*8,0,true,false,false)
+          total+=max(steps,memory)
       return total
 
 This finishes the work-cost pseudocode. The production header optimizes repeat
@@ -1323,3 +1335,24 @@ constant cinematic rate was correct for that interval; higher-resolution pose
 matching, rather than a guest-clock change, explains revised baseline anchors.
 See benchmarks/fast-timing-study/JOINT_VIDEO_REFINEMENT.md and its compact report
 for all fits, tradeoffs, candidate rejection, capture hashes and game checks.
+
+
+20. TMEM TRANSFERS AND SPAN TIMING (2026-11-27)
+---------------------------------------------
+
+Two-cycle translucent spans with framebuffer reads and compare-only depth can
+cover the read response with VI-adjusted service. This applies when AA and
+coverage selection are disabled. The read-response floor and span startup
+still bound the completion time. For one-cycle triangles without framebuffer
+reads, double-pitch interlaced scanout uses 15 setup clocks in Cycle Timing On
+and 12 in Off. Both use 11 when the modeled independent color and depth banks
+can overlap. The 12-clock estimate balances early and late MGC visual landmarks
+against the recording. It reduces mean absolute drift from 2.650 to 0.771 s
+across 24 shared Off landmarks. The measured 70-second late sequence changes
+from 67.551 to 70.854 s. A 13-clock estimate yields lower average drift and a
+larger late-window error of 1.955 s.
+
+Tile and palette loads use the source geometry and transfer phases in section
+17.6. Copy mode uses the framebuffer alignment and throughput in section 4.
+Constant primitive Z can prove a triangle rejects all writes. The span then
+retains its scheduled reads and leaves existing depth proofs in place.
