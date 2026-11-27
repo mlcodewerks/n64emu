@@ -614,9 +614,8 @@ void CPU::jit_handle_impossible_delay_slot(Emitter *_jit, const InstructionInfo 
 }
 
 // Taken branches consume a redirect clock after their delay slot (ares RSP
-// instructionBranchEpilogue). NEXT_PC has not been selected at these call
-// sites. Register state must already be flushed and no cached host register
-// may remain live across this helper.
+// instructionBranchEpilogue). Register state must already be flushed so the
+// conditional test can use NEXT_PC before the next PC is selected.
 void CPU::jit_branch_stall(Emitter *_jit, bool conditional, bool latent, bool illegal)
 {
     if (!cycle_timing) return;
@@ -628,9 +627,7 @@ void CPU::jit_branch_stall(Emitter *_jit, bool conditional, bool latent, bool il
             offsetof(CPUState, sr) + RegisterCache::COND_BRANCH_TAKEN * 4);
         skip = _jit->beqi(JIT_REGISTER_NEXT_PC, 0);
     }
-    _jit->ldxi_ui(JIT_REGISTER_NEXT_PC, JIT_REGISTER_STATE, offsetof(CPUState, cycles));
-    _jit->addi(JIT_REGISTER_NEXT_PC, JIT_REGISTER_NEXT_PC, 1);
-    _jit->stxi_i(offsetof(CPUState, cycles), JIT_REGISTER_STATE, JIT_REGISTER_NEXT_PC);
+    _jit->add_state_word(offsetof(CPUState, cycles), 1);
     if (skip) _jit->patch(skip);
 }
 
@@ -2165,6 +2162,14 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 	memset(block_entry, 0, instruction_count * sizeof(bool));
 	jit_mark_block_entries(pc_word, pc_word + instruction_count, block_entry);
 
+    RSPTimingOp decoded[CODE_BLOCK_WORDS * 2];
+    for (unsigned i = 0; i < instruction_count; ++i)
+        decoded[i] = RSPTimingDecoder::decoderEXECUTE(state.imem[pc_word + i]);
+
+    const auto vector_only = [](uint32_t instruction) {
+        unsigned op = instruction & 63;
+        return (instruction >> 25) == 0x25 && !quantize_opcode(op) && (op < 0x30 || op > 0x36);
+    };
     bool dead_scalar[CODE_BLOCK_WORDS * 2] = {};
 #ifndef TRACE
     uint32_t live_scalar = UINT32_MAX;
@@ -2173,9 +2178,11 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
         // Entry instruction may be a pending delay slot, and joins may have
         // predecessors outside the linear stream. Expose all registers there.
         if ((i + 1 < instruction_count && block_entry[i + 1]) ||
-            (i && RSPTimingDecoder::decoderEXECUTE(state.imem[pc_word + i - 1]).branch()))
+            (i && decoded[i - 1].branch()))
             live_scalar = UINT32_MAX;
-        if (!scalar_access(state.imem[pc_word + i], dest, reads)) { live_scalar = UINT32_MAX; continue; }
+        uint32_t instr = state.imem[pc_word + i];
+        if (vector_only(instr)) continue;
+        if (!scalar_access(instr, dest, reads)) { live_scalar = UINT32_MAX; continue; }
         if (i && (!dest || !(live_scalar & (1u << dest)))) dead_scalar[i] = true;
         else live_scalar = (live_scalar & ~(1u << dest)) | reads;
     }
@@ -2188,15 +2195,11 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 	for (unsigned i = 0; i < instruction_count; ++i) {
         if (!cycle_timing) { timing_cost[i] = 1; continue; }
 		if (block_entry[i]) timing = {};
-		auto op0 = RSPTimingDecoder::decoderEXECUTE(state.imem[pc_word + i]);
-		bool pair = false;
-		RSPTimingOp op1 = {};
-		if (i + 1 < instruction_count && !block_entry[i + 1] && !timing.single &&
-		    !op0.branch() && !op0.mayHalt() && !op0.endBlock()) {
-			op1 = RSPTimingDecoder::decoderEXECUTE(state.imem[pc_word + i + 1]);
-			pair = RSPTimingDecoder::canDualIssue(op0, op1);
-		}
-		timing_cost[i] = timing.issue(op0, pair ? &op1 : nullptr);
+		const auto &op0 = decoded[i];
+		const bool pair = i + 1 < instruction_count && !block_entry[i + 1] && !timing.single &&
+		    !op0.branch() && !op0.mayHalt() && !op0.endBlock() &&
+		    RSPTimingDecoder::canDualIssue(op0, decoded[i + 1]);
+		timing_cost[i] = timing.issue(op0, pair ? &decoded[i + 1] : nullptr);
 		if (pair) timing_cost[++i] = 0;
 	}
 	// Arithmetic, COP2 and DMEM helpers cannot observe the clock or exit the JIT.
@@ -2211,7 +2214,7 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 	for (unsigned i = 0; i < instruction_count; ++i) {
 		uint32_t instr = state.imem[pc_word + i];
 
-		auto op = RSPTimingDecoder::decoderEXECUTE(instr);
+		const auto &op = decoded[i];
 		pending_cycles += timing_cost[i];
 		bool flush = i == 0 || i + 1 == instruction_count || block_entry[i + 1] ||
 		             previous_branch || op.branch() || op.mayHalt() || op.endBlock() ||
@@ -2250,10 +2253,6 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
         uint32_t vector_words[8] = {instr};
         // First instructions can resolve a latent delay slot; branch targets
         // and ordinary delay slots also require individually visible state.
-        auto vector_only = [](uint32_t instruction) {
-            unsigned op = instruction & 63;
-            return (instruction >> 25) == 0x25 && !quantize_opcode(op) && (op < 0x30 || op > 0x36);
-        };
 #ifndef TRACE
         if (i && !last_info.branch && vector_only(instr)) {
             unsigned scanned = 1;
@@ -2275,13 +2274,7 @@ Func CPU::jit_region(uint64_t hash, unsigned pc_word, unsigned instruction_count
 		// Emit before instructions that can return to the task scheduler.
 		// Omit zero-cost pair members and coalesced arithmetic updates, avoiding
 		// both memory traffic and a needless scratch-register eviction.
-		if (cycle_cost) {
-			unsigned cycle_reg = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
-			_jit->ldxi_ui(cycle_reg, JIT_REGISTER_STATE, offsetof(CPUState, cycles));
-			_jit->addi(cycle_reg, cycle_reg, cycle_cost);
-			_jit->stxi_i(offsetof(CPUState, cycles), JIT_REGISTER_STATE, cycle_reg);
-			regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
-		}
+		if (cycle_cost) _jit->add_state_word(offsetof(CPUState, cycles), cycle_cost);
 
 #ifdef TRACE_DISASM
 		mips_disasm += disassemble((pc_word + i) << 2, instr);

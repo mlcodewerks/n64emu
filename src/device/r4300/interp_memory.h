@@ -106,7 +106,10 @@ static osal_force_inline int interp_resolve_address(struct r4300_core *r,
         if (!*physical) return 0;
     } else *physical = address;
     *physical &= UINT32_C(0x1fffffff);
-    *cached = r4300_access_cached(r, address);
+    /* With cache timing disabled, only RCP register reads distinguish a
+     * cached mapping. RAM and cartridge reads use the same access either way. */
+    *cached = !w && !r->cache_timing && (*physical - UINT32_C(0x04000000)) >= UINT32_C(0x01000000) ?
+        0 : r4300_access_cached(r, address);
     return 1;
 }
 

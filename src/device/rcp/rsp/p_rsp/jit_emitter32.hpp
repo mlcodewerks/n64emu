@@ -162,6 +162,16 @@ public:
 #undef RSP32_LOAD
     void stxi(HostWord off,unsigned b,unsigned s){memory_store(b,s,off,4);}
     void stxi_i(HostWord off,unsigned b,unsigned s){memory_store(b,s,off,4);}
+    void add_state_word(unsigned offset, unsigned increment)
+    {
+#ifdef N64EMU_JIT32_X86
+        host.code.add(n64emu32::Assembler::mem(32, STATE, int32_t(offset)), increment);
+#else
+        host.load(0, STATE, int32_t(offset));
+        host.immediate(n64emu32::ADD, 0, increment);
+        host.store(0, STATE, int32_t(offset));
+#endif
+    }
 #define RSP32_STORE(name,bytes) void name(unsigned i,unsigned b,unsigned s){memory_index_store(b,s,i,bytes);}
     RSP32_STORE(stxr_c,1) RSP32_STORE(stxr_s,2) RSP32_STORE(stxr_i,4)
 #undef RSP32_STORE

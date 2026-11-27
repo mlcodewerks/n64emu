@@ -334,14 +334,47 @@ bool Compiler::instruction(uint32_t op) {
         unsigned offset=fn==17?offsetof(r4300_core,hi):offsetof(r4300_core,lo);
         load(rs);host.store(0,STATE,int32_t(offset));host.store(2,STATE,int32_t(offset+4));return true;
     }
+    // Arithmetic into the zero register has no data result to emit.
+    if (major ? !rt : !rd) return true;
     if(major==15) {constant(uint64_t(int64_t(int32_t(op<<16))));store(rt);return true;}
-    if(major==9 || (!major && (fn==33 || fn==35))) {
+    if (major == 9) {
+        const uint32_t imm = uint32_t(int32_t(int16_t(op)));
+        if (!rs) host.imm(0, imm);
+        else {
+            load_low(rs, 0);
+            if (imm) host.immediate(ADD, 0, imm);
+        }
+        store_word(rt);
+        return true;
+    }
+    if (!major && (fn == 33 || fn == 35)) {
         load_low(rs,0);
-        if(major)host.imm(1,uint32_t(int32_t(int16_t(op))));else load_low(rt,1);
-        host.alu(!major&&fn==35?SUB:ADD,0,1);store_word(major?rt:rd);return true;
+        if (rt) {
+            load_low(rt,1);
+            host.alu(fn == 35 ? SUB : ADD, 0, 1);
+        }
+        store_word(rd);
+        return true;
     }
     if(major==12) {
         load_low(rs,0);host.immediate(AND,0,uint16_t(op));host.imm(2,0);store(rt);return true;
+    }
+    if (major == 13 || major == 14) {
+        const uint32_t imm = uint16_t(op);
+        if (rt == rs) {
+            // These instructions touch only bits 0..15. Any deferred sign
+            // extension of this register still has the same sign bit.
+            if (imm) {
+                load_low(rs, 0);
+                host.immediate(major == 13 ? OR : XOR, 0, imm);
+                host.store(0, STATE, gpr(rt));
+            }
+        } else {
+            load(rs);
+            if (imm) host.immediate(major == 13 ? OR : XOR, 0, imm);
+            store(rt);
+        }
+        return true;
     }
     bool word=false;
     if(!major&&(fn<=7||fn==20||fn==22||fn==23||fn>=56)) {
@@ -361,14 +394,10 @@ bool Compiler::instruction(uint32_t op) {
     } else {
         load(rs);if(!major)load(rt,1,3);
         if(major) {
-            rd=rt;uint64_t value=major>=12&&major<=14?uint16_t(op):uint64_t(int64_t(int16_t(op)));
+            rd=rt;uint64_t value=uint64_t(int64_t(int16_t(op)));
             host.imm(1,uint32_t(value));host.imm(3,uint32_t(value>>32));
             switch(major) {
-            case 9:case 25:host.alu(ADD,0,1);host.alu(ADC,2,3);word=major==9;break;
-            case 12:host.alu(AND,0,1);host.alu(AND,2,3);break;
-            case 13:host.alu(OR,0,1);host.alu(OR,2,3);break;
-            case 14:host.alu(XOR,0,1);host.alu(XOR,2,3);break;
-            case 15:constant(uint64_t(int64_t(int32_t(op<<16))));break;
+            case 25:host.alu(ADD,0,1);host.alu(ADC,2,3);break;
             case 10:case 11:compare(major==10);break;
             }
         } else switch(fn) {

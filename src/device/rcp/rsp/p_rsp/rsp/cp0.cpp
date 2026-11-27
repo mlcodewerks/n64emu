@@ -1,5 +1,6 @@
 #include "../state.hpp"
 #include "../dpc_bridge.h"
+#include <cstring>
 
 #ifdef PARALLEL_INTEGRATION
 #include "device/rcp/rsp/rsp_timing.h"
@@ -226,26 +227,44 @@ extern "C"
 		do
 		{
 			notify_dma(dma_read, source, length);
-			unsigned j = 0;
-			do
+			const uint32_t ram = source & 0xffffff;
+			const uint32_t offset = dest & 0xfff;
+			if (length <= 0x1000 - offset && ram < 0x800000 && length <= 0x800000 - ram)
 			{
-                uint32_t source_addr = (source + j) & 0xFFFFFC;
-				uint32_t dest_addr = (dest & 0x1000) | ((dest + j) & 0xFFC);
-                uint32_t word = source_addr < 0x800000 ? rsp->rdram[source_addr >> 2] : 0;
-
-				if (dest_addr & 0x1000)
+				const bool imem = (dest & 0x1000) != 0;
+				std::memcpy((imem ? rsp->imem : rsp->dmem) + (offset >> 2),
+				            rsp->rdram + (ram >> 2), length);
+				if (imem)
 				{
-					// Invalidate IMEM.
-					unsigned block = (dest_addr & 0xfff) / CODE_BLOCK_SIZE;
-					rsp->dirty_blocks |= (0x3 << block) >> 1;
-					//rsp->dirty_blocks = ~0u;
-					rsp->imem[(dest_addr & 0xfff) >> 2] = word;
+					const unsigned first = offset / CODE_BLOCK_SIZE;
+					const unsigned last = (offset + length - 1) / CODE_BLOCK_SIZE;
+					const uint32_t blocks = (UINT32_MAX << first) & (UINT32_MAX >> (31 - last));
+					// A compiled region can also start in the preceding block.
+					rsp->dirty_blocks |= blocks | (blocks >> 1);
 				}
-				else
-					rsp->dmem[dest_addr >> 2] = word;
+			}
+			else
+			{
+				unsigned j = 0;
+				do
+				{
+					const uint32_t source_addr = (source + j) & 0xFFFFFC;
+					uint32_t dest_addr = (dest & 0x1000) | ((dest + j) & 0xFFC);
+					const uint32_t word = source_addr < 0x800000 ? rsp->rdram[source_addr >> 2] : 0;
 
-				j += 4;
-			} while (j < length);
+					if (dest_addr & 0x1000)
+					{
+						// Invalidate IMEM.
+						unsigned block = (dest_addr & 0xfff) / CODE_BLOCK_SIZE;
+						rsp->dirty_blocks |= (0x3 << block) >> 1;
+						rsp->imem[(dest_addr & 0xfff) >> 2] = word;
+					}
+					else
+						rsp->dmem[dest_addr >> 2] = word;
+
+					j += 4;
+				} while (j < length);
+			}
 
 			source += length + (i < count ? skip : 0);
 			dest = (dest & 0x1000) | ((dest + length) & 0xFFF);
@@ -307,18 +326,28 @@ extern "C"
 		do
 		{
             notify_dma(dma_write, dest, length);
-			unsigned j = 0;
-
-			do
+			const uint32_t ram = dest & 0xffffff;
+			const uint32_t offset = source & 0xfff;
+			if (length <= 0x1000 - offset && ram < 0x800000 && length <= 0x800000 - ram)
 			{
-				uint32_t source_addr = (source & 0x1000) | ((source + j) & 0xFFC);
-                uint32_t dest_addr = (dest + j) & 0xFFFFFC;
+				const uint32_t *bank = (source & 0x1000) ? rsp->imem : rsp->dmem;
+				std::memcpy(rsp->rdram + (ram >> 2), bank + (offset >> 2), length);
+			}
+			else
+			{
+				unsigned j = 0;
 
-                if(dest_addr < 0x800000)rsp->rdram[dest_addr >> 2] =
-				    (source_addr & 0x1000) ? rsp->imem[(source_addr & 0xfff) >> 2] : rsp->dmem[source_addr >> 2];
+				do
+				{
+					uint32_t source_addr = (source & 0x1000) | ((source + j) & 0xFFC);
+					const uint32_t dest_addr = (dest + j) & 0xFFFFFC;
 
-				j += 4;
-			} while (j < length);
+					if (dest_addr < 0x800000)
+						rsp->rdram[dest_addr >> 2] = (source_addr & 0x1000) ? rsp->imem[(source_addr & 0xfff) >> 2] : rsp->dmem[source_addr >> 2];
+
+					j += 4;
+				} while (j < length);
+			}
 
 			source = (source & 0x1000) | ((source + length) & 0xFFF);
 			dest += length + (i < count ? skip : 0);

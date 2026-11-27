@@ -32,20 +32,19 @@ static bool commutative_alu(enum r4300_opcode op)
            op==R4300_OP_OR || op==R4300_OP_NOR || op==R4300_OP_XOR;
 }
 #include "optimizer_muldiv.inc"
-static int regcache_optimize(uint32_t instruction)
+static int regcache_optimize(uint32_t instruction, enum r4300_opcode op)
 {
-    auto op=r4300_get_idec(instruction)->opcode;
     if(regcache_muldiv(instruction,op))return 1;
-    if(!pure_alu(op))return regcache_fold(instruction) || regcache_direct(instruction);
+    if(!pure_alu(op))return regcache_fold(instruction, op) || regcache_direct(instruction, op);
     unsigned a,b,d;guest_operands(instruction,&a,&b,&d);
     if(!d)return 1;
     // Preserve every pre-access state in regions with memory exits and every
     // pre-delay state in likely branches. Their snapshots observe dead values.
     if(regcache.allow_dead_store && (analysis.next[d][regcache.index+1]&0x80000000u))return 1;
     // A constant result needs no expression-history lookup or insertion.
-    if(regcache_fold(instruction))return 1;
-    if(regcache_absorb(instruction))return 1;
-    int identity=identity_source(instruction);
+    if(regcache_fold(instruction, op))return 1;
+    if(regcache_absorb(instruction, op))return 1;
+    int identity=identity_source(instruction, op);
     if(identity>=0)return copy_value(d,unsigned(identity));
     unsigned x=regcache.values[a],y=regcache.values[b];
     if(commutative_alu(op) && x>y){unsigned t=x;x=y;y=t;}
@@ -57,7 +56,7 @@ static int regcache_optimize(uint32_t instruction)
         for(unsigned g=1;g<GUEST_REGS;g++)if(regcache.values[g]==e.value)return copy_value(d,g);
     }
     bool wa=signed_word(a),wb=signed_word(b);
-    if(!regcache_direct(instruction))return 0;
+    if(!regcache_direct(instruction, op))return 0;
     switch(op) {
     case R4300_OP_ADDIU:case R4300_OP_ADDU:case R4300_OP_SUBU:case R4300_OP_ANDI:
     case R4300_OP_SLT:case R4300_OP_SLTU:case R4300_OP_SLTI:case R4300_OP_SLTIU:

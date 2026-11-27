@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 #if defined(__i386__) || defined(_M_IX86)
@@ -25,10 +26,12 @@ struct Label { size_t offset = size_t(-1); std::vector<size_t> sites; };
 class Assembler {
 #ifdef N64EMU_JIT32_X86
     struct ScratchAllocator : Xbyak::Allocator { bool useProtect() const override { return false; } } allocator;
-    std::vector<uint8_t> buffer = std::vector<uint8_t>(1024 * 1024);
+    // Encoding writes each byte before use, so avoid zeroing the arena at
+    // the start of every CPU block or RSP region.
+    std::unique_ptr<uint8_t[]> buffer;
 public:
     Xbyak::CodeGenerator code;
-    explicit Assembler(size_t capacity=1024*1024) : buffer(capacity),code(capacity,buffer.data(),&allocator) {}
+    explicit Assembler(size_t capacity=1024*1024) : buffer(new uint8_t[capacity]),code(capacity,buffer.get(),&allocator) {}
     static constexpr unsigned FP=5, STATE=6, DMEM=7, INDIRECT=3, TEMP=0, COUNT=1, AUX=2;
     static Xbyak::Reg32 reg(unsigned n) { return Xbyak::Reg32(n); }
     static Xbyak::Address mem(unsigned bits,unsigned base,int32_t offset) {
@@ -90,7 +93,7 @@ public:
         if(label.offset!=size_t(-1))patch(label,site);
     }
     void patch(const Label& label,size_t site) {
-        uint32_t delta=uint32_t(label.offset-site-4);std::memcpy(buffer.data()+site,&delta,4);
+        uint32_t delta=uint32_t(label.offset-site-4);std::memcpy(buffer.get()+site,&delta,4);
     }
     void frame() {
         code.push(code.ebp);code.mov(code.ebp,code.esp);

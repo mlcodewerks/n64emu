@@ -148,10 +148,9 @@ static void emit_state_store(size_t offset, int reg)
 }
 static uint64_t word_signed(uint64_t value) { return (uint64_t)(int64_t)(int32_t)(uint32_t)value; }
 #include "../optimizer.inc"
-static int regcache_fold(uint32_t instruction)
+static int regcache_fold(uint32_t instruction, enum r4300_opcode op)
 {
     unsigned a,b,d; guest_operands(instruction, &a,&b,&d);
-    enum r4300_opcode op = r4300_get_idec(instruction)->opcode;
     if (!d) return 1; /* Nontrapping instructions writing r0 have no data effect. */
     if (!(regcache.known & (UINT64_C(1) << a)) || !(regcache.known & (UINT64_C(1) << b))) return 0;
     uint64_t x = regcache.constants[a], y = regcache.constants[b], value;

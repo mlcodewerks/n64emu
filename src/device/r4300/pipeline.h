@@ -133,10 +133,20 @@ static osal_force_inline uint64_t r4300_pipeline_fpu_result(uint32_t op,
 static osal_force_inline unsigned int r4300_pipeline_cycles(struct r4300_core* r,
                                                             uint32_t op)
 {
-    const struct r4300_idec* d = NULL;
     unsigned int major = op >> 26;
     unsigned int rs = (op >> 21) & 31;
     unsigned int rt = (op >> 16) & 31;
+    /* Integer ALU and branch opcodes only consume the previous GPR load
+     * interlock. They leave no history for the next instruction. */
+    if (major < 0x10) {
+        uint32_t load = (uint32_t)r->pipeline_load_mask & ~UINT32_C(1);
+        unsigned int stalled = (r->pipeline_load_mask >> 32) == 0 &&
+            (((load >> rs) | (load >> rt)) & 1);
+        r4300_pipeline_reset(r);
+        return stalled;
+    }
+
+    const struct r4300_idec* d = NULL;
     unsigned int fs = (op >> 11) & 31;
     unsigned int fn = op & 63;
     unsigned int fr = (r->cp0.regs[CP0_STATUS_REG] & CP0_STATUS_FR) != 0;

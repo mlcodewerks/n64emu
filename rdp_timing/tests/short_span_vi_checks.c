@@ -6,6 +6,33 @@
 #include <string.h>
 #include "../rdp_timing.h"
 
+static uint64_t buffered_span_cost(struct rdp_timing *t, unsigned left, unsigned right,
+    uint64_t color, uint64_t depth, unsigned color_read, unsigned depth_read,
+    unsigned color_write, unsigned depth_write)
+{
+    struct rdp_timing_vi vi;
+    rdp_timing_vi_init(&vi, t);
+    return rdp_timing_buffered_span(t, &vi, left, right, color, depth,
+        color_read, depth_read, color_write, depth_write);
+}
+
+static uint64_t span_cost(struct rdp_timing *t, int y, int left, int right)
+{
+    struct rdp_timing_vi vi;
+    rdp_timing_vi_init(&vi, t);
+    return rdp_timing_span(t, &vi, y, left, right);
+}
+
+
+static unsigned shared_bank_read_response(const struct rdp_timing *t, uint64_t service,
+    uint64_t color, uint64_t depth, unsigned color_read, unsigned depth_read)
+{
+    struct rdp_timing_vi vi;
+    rdp_timing_vi_init(&vi, t);
+    return rdp_timing_shared_bank_read_response(t, &vi, service, color, depth,
+        color_read, depth_read);
+}
+
 /* Frozen Q8 costs from the pre-change policy for unaffected topologies and
  * long spans, and the published response floors for the changed short spans.
  * The long two-cycle same-device tuple includes shared read recovery.
@@ -46,7 +73,7 @@ static unsigned topology_checks(void)
             vi[12] = 512; vi[13] = 1024;
             t.vi_regs = vi; t.vi_field_ticks = 783000; t.deadline = cases[i].phase;
         }
-        clocks = rdp_timing_buffered_span(&t, 0, cases[i].pixels,
+        clocks = buffered_span_cost(&t, 0, cases[i].pixels,
             (uint64_t)cases[i].color*8, (uint64_t)cases[i].depth*8,
             p&1, (p>>1)&1, (p>>2)&1, (p>>3)&1);
         assert(clocks != UINT64_MAX);
@@ -61,7 +88,7 @@ static uint64_t pipeline_cost(unsigned modes,unsigned cycle,uint64_t color,uint6
     struct rdp_timing t;
     uint64_t clocks;
     memset(&t,0,sizeof(t));t.fb_size=2;t.modes=modes;t.cycle_type=cycle;
-    clocks=rdp_timing_buffered_span(&t,0,pixels,color,depth,
+    clocks=buffered_span_cost(&t,0,pixels,color,depth,
         color_read,depth_read,color_write,depth_write);
     assert(clocks!=UINT64_MAX);
     return clocks*256+t.span_fraction;
@@ -99,7 +126,7 @@ static unsigned paired_device_checks(void)
         struct rdp_timing t;
         memset(&t,0,sizeof(t));t.fb_size=2;t.cycle_type=1;
         /* Mixed-bank partial buffers retain their conservative fallback. */
-        assert(rdp_timing_buffered_span(&t,0,8,UINT64_C(0x800000)-64,
+        assert(buffered_span_cost(&t,0,8,UINT64_C(0x800000)-64,
             independent,1,1,1,1)==UINT64_MAX); ++checks;
     }
     return checks;
@@ -171,53 +198,53 @@ static unsigned shared_bank_checks(void)
     vi[12] = 512; vi[13] = 1024;
     t.fb_size = 2; t.vi_regs = vi; t.vi_field_ticks = 783000;
     t.deadline = 100000;
-    assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
-    assert(rdp_timing_shared_bank_read_response(&t,
+    assert(shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    assert(shared_bank_read_response(&t,
         (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256-1,color,depth,1,1)==
         RDP_SHARED_BANK_READ_RESPONSE); ++checks;
-    assert(!rdp_timing_shared_bank_read_response(&t,
+    assert(!shared_bank_read_response(&t,
         (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256,color,depth,1,1)); ++checks;
-    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 0, 1)); ++checks;
-    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 0)); ++checks;
-    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, color + 8, 1, 1)); ++checks;
-    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, UINT64_C(0x210000) * 8, 1, 1)); ++checks;
-    assert(!rdp_timing_shared_bank_read_response(&t, UINT64_MAX, color, depth, 1, 1)); ++checks;
+    assert(!shared_bank_read_response(&t, 0, color, depth, 0, 1)); ++checks;
+    assert(!shared_bank_read_response(&t, 0, color, depth, 1, 0)); ++checks;
+    assert(!shared_bank_read_response(&t, 0, color, color + 8, 1, 1)); ++checks;
+    assert(!shared_bank_read_response(&t, 0, color, UINT64_C(0x210000) * 8, 1, 1)); ++checks;
+    assert(!shared_bank_read_response(&t, UINT64_MAX, color, depth, 1, 1)); ++checks;
     vi[1] = 0x100000;
-    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    assert(!shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
     /* The current source row, rather than ORIGIN alone, selects the bank. */
     vi[1] = 0x3fff00;
-    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    assert(!shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
     vi[1] = 0x300000;
     vi[0] = 0;
-    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    assert(!shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
     vi[0] = 2; t.deadline = 0;
-    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    assert(!shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
     t.deadline = t.vi_field_ticks - 1;
-    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    assert(!shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
     t.deadline = 100000 + t.vi_field_ticks;
-    assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
-    assert(rdp_timing_shared_bank_read_response(&t,
+    assert(shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    assert(shared_bank_read_response(&t,
         (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256-1,color,depth,1,1)==
         RDP_SHARED_BANK_READ_RESPONSE); ++checks;
-    assert(!rdp_timing_shared_bank_read_response(&t,
+    assert(!shared_bank_read_response(&t,
         (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256,color,depth,1,1)); ++checks;
     t.vi_field_start = INT64_C(0x100000000);
     t.deadline = t.vi_field_start + 100000;
-    assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
-    assert(rdp_timing_shared_bank_read_response(&t,
+    assert(shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    assert(shared_bank_read_response(&t,
         (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256-1,color,depth,1,1)==
         RDP_SHARED_BANK_READ_RESPONSE); ++checks;
-    assert(!rdp_timing_shared_bank_read_response(&t,
+    assert(!shared_bank_read_response(&t,
         (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256,color,depth,1,1)); ++checks;
     t.vi_field_start = t.deadline = 0; t.vi_elapsed = 133334;
-    assert(rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
-    assert(rdp_timing_shared_bank_read_response(&t,
+    assert(shared_bank_read_response(&t, 0, color, depth, 1, 1) != 0); ++checks;
+    assert(shared_bank_read_response(&t,
         (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256-1,color,depth,1,1)==
         RDP_SHARED_BANK_READ_RESPONSE); ++checks;
-    assert(!rdp_timing_shared_bank_read_response(&t,
+    assert(!shared_bank_read_response(&t,
         (uint64_t)2*RDP_SHARED_BANK_READ_RESPONSE*256,color,depth,1,1)); ++checks;
     t.vi_regs = NULL;
-    assert(!rdp_timing_shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
+    assert(!shared_bank_read_response(&t, 0, color, depth, 1, 1)); ++checks;
     return checks;
 }
 
@@ -307,11 +334,11 @@ static unsigned single_cycle_feedback_checks(void)
         t.vi_regs = interlaced;
         t.modes = cases[i].modes;
         t.atomic_primitive = cases[i].atomic;
-        assert(rdp_timing_span(&t, 0, 0, cases[i].pixels) == cases[i].on);
+        assert(span_cost(&t, 0, 0, cases[i].pixels) == cases[i].on);
         t.vi_elapsed = t.length / 2 + 1;
         t.span_fraction = 0;
         t.overlap_span_startup = 1;
-        assert(rdp_timing_span(&t, 0, 0, cases[i].pixels) == cases[i].off);
+        assert(span_cost(&t, 0, 0, cases[i].pixels) == cases[i].off);
     }
 
     struct rdp_timing t;
@@ -320,11 +347,11 @@ static unsigned single_cycle_feedback_checks(void)
     t.modes = 0x504240u;
     t.fb_size = 2;
     t.fb_width = 320;
-    assert(rdp_timing_span(&t, 0, 0, 8) == 64);
+    assert(span_cost(&t, 0, 0, 8) == 64);
     t.vi_regs = progressive;
-    assert(rdp_timing_span(&t, 0, 0, 8) == 64);
+    assert(span_cost(&t, 0, 0, 8) == 64);
     t.vi_regs = same_pitch;
-    assert(rdp_timing_span(&t, 0, 0, 8) == 64);
+    assert(span_cost(&t, 0, 0, 8) == 64);
     return 2 * i + 3;
 }
 
@@ -355,11 +382,11 @@ static unsigned interlaced_store_and_compare_checks(void)
     t.modes = 0x850;
     t.vi_field_ticks = 783000;
     t.deadline = 100000;
-    uint64_t translucent = rdp_timing_buffered_span(&t, 0, 8,
+    uint64_t translucent = buffered_span_cost(&t, 0, 8,
         UINT64_C(0x1000000), UINT64_C(0x1800000), 1, 1, 1, 0);
     assert(translucent == 129 && t.span_fraction == 0);
     t.modes |= 8; /* AA reintroduces a coverage dependency. */
-    assert(rdp_timing_buffered_span(&t, 0, 8,
+    assert(buffered_span_cost(&t, 0, 8,
         UINT64_C(0x1000000), UINT64_C(0x1800000), 1, 1, 1, 0) > translucent);
     return 7;
 }
@@ -388,7 +415,7 @@ int main(void)
                     t.fb_size = 2; t.cycle_type = cycle;
                     t.vi_regs = vi; t.vi_field_ticks = 783000; t.deadline = 100000;
                     t.reject = (p >> 4) & 1; t.modes = (p & 16) ? 0x20 : 0;
-                    work = rdp_timing_buffered_span(&t, 0, width,
+                    work = buffered_span_cost(&t, 0, width,
                         UINT64_C(0x1000000), UINT64_C(0x1800000), cr, zr, cw, zw);
                     /* At this scanout load each short memory schedule fits
                      * inside the original per-read response floor. */
@@ -407,7 +434,7 @@ int main(void)
     /* The independently calibrated single-read path keeps its old Q8 cost.
      * It must not inherit the interleaved two-read overlap estimate. */
     vi[1] = 0x300000; t.reject = 0; t.cycle_type = 0; t.span_fraction = 0;
-    assert(rdp_timing_buffered_span(&t, 0, 1, UINT64_C(0x800000),
+    assert(buffered_span_cost(&t, 0, 1, UINT64_C(0x800000),
         UINT64_C(0x1000000), 1, 0, 1, 0) == 71);
     assert(t.span_fraction == 130);
     ++checks;
@@ -415,7 +442,7 @@ int main(void)
      * deliberately outside ordinary console scanout settings. */
     vi[0] = 3; vi[9] = 1023; vi[10] = 526; vi[12] = 4095;
     t.span_fraction = 0; t.reject = 0; t.cycle_type = 0;
-    assert(rdp_timing_buffered_span(&t, 0, 8, UINT64_C(0x1000000),
+    assert(buffered_span_cost(&t, 0, 8, UINT64_C(0x1000000),
         UINT64_C(0x1800000), 1, 1, 1, 1) > 113);
     ++checks;
     checks += topology_checks();

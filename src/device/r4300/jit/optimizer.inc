@@ -31,10 +31,9 @@ static bool known_value(unsigned guest, uint64_t &value)
 }
 /* Returns a source for an exact 64-bit identity, or -1. A word-sized add or
  * shift by zero is an identity only for a proven sign-extended operand. */
-static int identity_source(uint32_t instruction)
+static int identity_source(uint32_t instruction, enum r4300_opcode op)
 {
     unsigned a,b,d; guest_operands(instruction,&a,&b,&d);
-    auto op = r4300_get_idec(instruction)->opcode;
     uint64_t x=0,y=0; bool ka=known_value(a,x),kb=known_value(b,y);
     if((op==R4300_OP_OR || op==R4300_OP_AND) && regcache.values[a]==regcache.values[b])return a;
     switch(op) {
@@ -47,6 +46,18 @@ static int identity_source(uint32_t instruction)
         if(kb && !y && signed_word(a))return a;if(ka && !x && signed_word(b))return b;break;
     case R4300_OP_DSUBU: if(kb && !y)return a;break;
     case R4300_OP_SUBU: if(kb && !y && signed_word(a))return a;break;
+    case R4300_OP_SLL: case R4300_OP_SRL: case R4300_OP_SRA:
+        if (!(instruction & (31u << 6)) && signed_word(a)) return a;
+        break;
+    case R4300_OP_SLLV: case R4300_OP_SRLV: case R4300_OP_SRAV:
+        if (ka && !(x & 31) && signed_word(b)) return b;
+        break;
+    case R4300_OP_DSLL: case R4300_OP_DSRL: case R4300_OP_DSRA:
+        if (!(instruction & (31u << 6))) return a;
+        break;
+    case R4300_OP_DSLLV: case R4300_OP_DSRLV: case R4300_OP_DSRAV:
+        if (ka && !(x & 63)) return b;
+        break;
     case R4300_OP_AND:
         if(kb && y==UINT64_MAX)return a;if(ka && x==UINT64_MAX)return b;
         if(regcache.values[a]==regcache.values[b])return a;break;
@@ -72,10 +83,9 @@ static bool folded_branch(enum r4300_opcode op,unsigned rs,unsigned rt,bool &tak
     default:return false;
     }
 }
-static int regcache_absorb(uint32_t instruction)
+static int regcache_absorb(uint32_t instruction, enum r4300_opcode op)
 {
     unsigned a,b,d; guest_operands(instruction,&a,&b,&d);
-    auto op=r4300_get_idec(instruction)->opcode;
     if(!d)return 0;
     uint64_t x=0,y=0;bool ka=known_value(a,x),kb=known_value(b,y);
     bool equal=regcache.values[a]==regcache.values[b];

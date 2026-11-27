@@ -156,17 +156,118 @@ static inline int rdp_timing_row_conflict(uint64_t a, uint64_t b)
     return (a >> 23) == (b >> 23) && (a >> 14) != (b >> 14);
 }
 
-/* A live register binding alone does not imply scanout memory traffic. */
-static inline int rdp_timing_vi_enabled(const struct rdp_timing *t)
+/* VI geometry is stable while one RDP packet is evaluated. Keep the last
+ * queried window in Q8 quarter-COUNT units so integer transfers and buffered
+ * spans can reuse the same halfline boundary and source address. */
+struct rdp_timing_vi {
+    uint64_t period, phase_base, line;
+    uint64_t window_begin, window_end;
+    unsigned bytes, requests, total, first, last;
+    unsigned source, stride, y_scale, y_offset;
+    unsigned address;
+    int phase_wraparound;
+};
+
+static inline uint64_t rdp_timing_vi_phase_base(const struct rdp_timing *t, uint64_t ticks,
+    int *wraparound)
 {
+    *wraparound = 0;
+    if (t->clock_overhang <= 3) {
+        /* Subtract in COUNT units before reducing. Most deadlines are in
+         * the currently active field, so neither timestamp needs division. */
+        uint64_t delta = (uint64_t)t->deadline - (uint64_t)t->vi_field_start;
+        if (t->deadline < t->vi_field_start) {
+            delta = -delta % ticks;
+            if (delta) delta = ticks - delta;
+        } else if (delta >= ticks) {
+            delta %= ticks;
+        }
+        uint64_t quarters = delta * 4;
+        if (quarters < t->clock_overhang) quarters += ticks * 4;
+        return quarters - t->clock_overhang;
+    }
+
+    /* Retain the legacy unsigned arithmetic for out-of-range overhangs
+     * supplied by standalone callers. */
+    int64_t start = t->deadline % (int64_t)ticks;
+    int64_t origin = t->vi_field_start % (int64_t)ticks;
+    if (start < 0) start += ticks;
+    if (origin < 0) origin += ticks;
+    uint64_t period = ticks * 4;
+    uint64_t base = (uint64_t)start * 4 + period * 2 - (uint64_t)origin * 4;
+    *wraparound = t->clock_overhang > base;
+    base -= t->clock_overhang;
+    return *wraparound ? base : base % period;
+}
+
+static inline void rdp_timing_vi_init(struct rdp_timing_vi *vi, const struct rdp_timing *t)
+{
+    vi->period = 0;
     const uint32_t *v = t->vi_regs;
-    if (!v || (v[0] & 3) < 2 || !t->vi_field_ticks) return 0;
+    if (!v || (v[0] & 3) < 2 || !t->vi_field_ticks) return;
     unsigned hs = (v[9] >> 16) & 1023, he = v[9] & 1023;
     unsigned vs = (v[10] >> 16) & 1023, ve = v[10] & 1023;
     unsigned total = (v[6] & 1023) + 1;
-    return he > hs && ve > vs && vs < total && total >= 2 &&
-        (v[2] & 4095) && (v[12] & 4095) &&
-        (uint64_t)t->vi_field_ticks * 8 / ((uint64_t)total * 3) >= 2;
+    unsigned stride = v[2] & 4095, scale = v[12] & 4095;
+    if (he <= hs || ve <= vs || vs >= total || total < 2 || !stride || !scale) return;
+    uint64_t ticks = t->vi_field_ticks;
+    uint64_t line = ticks * 8 / ((uint64_t)total * 3);
+    if (line < 2) return;
+    vi->phase_base = rdp_timing_vi_phase_base(t, ticks, &vi->phase_wraparound);
+    unsigned bpp = (v[0] & 3) == 3 ? 4 : 2;
+    vi->bytes = (((he - hs) * scale + 1023) >> 10) * bpp;
+    vi->requests = (vi->bytes + 15) / 16;
+    vi->period = ticks * 1024;
+    vi->line = line;
+    vi->total = total;
+    vi->first = vs;
+    vi->last = ve;
+    vi->source = (v[1] & 0xffffffu) + (((v[12] >> 16) & 4095) >> 10) * bpp;
+    vi->stride = stride * bpp;
+    vi->y_scale = v[13] & 4095;
+    vi->y_offset = (v[13] >> 16) & 4095;
+    vi->window_begin = vi->window_end = 0;
+}
+
+static inline uint64_t rdp_timing_vi_phase(const struct rdp_timing_vi *vi,
+    uint64_t elapsed, unsigned fraction, int buffered)
+{
+    const uint64_t period = vi->period >> 8;
+    if (elapsed >= period) elapsed %= period;
+    uint64_t phase = vi->phase_base + elapsed * 3;
+    if (vi->phase_wraparound && !buffered) return (phase % period) << 8;
+    phase = (phase << 8) + (uint64_t)fraction * 3;
+    if (phase >= vi->period) phase -= vi->period;
+    return phase < vi->period ? phase : phase % vi->period;
+}
+
+/* An inactive window has no source address. Compute a new window only
+ * when a span reaches a different halfline or crosses a field boundary. */
+static inline void rdp_timing_vi_window(struct rdp_timing_vi *vi, uint64_t phase)
+{
+    if (phase >= vi->window_begin && phase < vi->window_end) return;
+    unsigned halfline = (unsigned)(phase * vi->total / vi->period);
+    unsigned first = halfline, last = halfline + 1;
+    vi->address = UINT32_MAX;
+    if (halfline < vi->first) {
+        first = 0;
+        last = vi->first;
+    } else if (halfline >= vi->last) {
+        first = vi->last;
+        last = vi->total;
+    } else {
+        unsigned y = (((halfline - vi->first) / 2) * vi->y_scale + vi->y_offset) >> 10;
+        vi->address = (vi->source + y * vi->stride) & 0xffffffu;
+    }
+    const uint64_t rounding = vi->total - 1;
+    vi->window_begin = (first * vi->period + rounding) / vi->total;
+    vi->window_end = (last * vi->period + rounding) / vi->total;
+}
+
+/* Round the Q8 boundary up to the next whole RCP clock. */
+static inline uint64_t rdp_timing_vi_whole_window(const struct rdp_timing_vi *vi, uint64_t phase)
+{
+    return (vi->window_end - phase + 767) / 768;
 }
 
 /* A doubled VI pitch scans alternating rows of the interlaced color image. */
@@ -182,79 +283,49 @@ static inline int rdp_timing_vi_alternate_rows(const uint32_t *vi, unsigned fb_w
  * Arbitration stretches memory service, leaving pixel work free to overlap.
  * Coverage-dependent extra-line fetches and horizontal burst phase are not
  * simulated. Vertical phase and source-row banking follow programmed VI. */
-static inline uint64_t rdp_timing_vi_service(const struct rdp_timing *t, uint64_t bus, uint64_t overlap,
-    uint64_t color, uint64_t depth, unsigned color_stream, unsigned depth_stream,
-    unsigned depth_write)
+static inline uint64_t rdp_timing_vi_service(const struct rdp_timing *t, struct rdp_timing_vi *vi,
+    uint64_t bus, uint64_t overlap, uint64_t color, uint64_t depth, unsigned color_stream,
+    unsigned depth_stream, unsigned depth_write)
 {
-    const uint32_t *v = t->vi_regs;
-    if (!bus || !rdp_timing_vi_enabled(t)) return bus - overlap;
-    unsigned hs = (v[9] >> 16) & 1023, he = v[9] & 1023;
-    unsigned vs = (v[10] >> 16) & 1023, ve = v[10] & 1023;
-    unsigned total = (v[6] & 1023) + 1, stride = v[2] & 4095;
-    unsigned scale = v[12] & 4095;
-    uint64_t ticks = t->vi_field_ticks, period = ticks * 4;
-    int64_t start = t->deadline % (int64_t)ticks;
-    int64_t origin = t->vi_field_start % (int64_t)ticks;
-    if (start < 0) start += ticks;
-    if (origin < 0) origin += ticks;
-    uint64_t phase = ((uint64_t)start * 4 + period * 2 - (uint64_t)origin * 4 -
-        t->clock_overhang + (t->vi_elapsed % period) * 3) % period;
-    unsigned bpp = (v[0] & 3) == 3 ? 4 : 2;
-    uint64_t width = ((uint64_t)(he - hs) * scale + 1023) >> 10;
-    uint64_t bytes = width * bpp;
-    uint64_t requests = (bytes + 15) / 16;
-    uint64_t line = ticks * 8 / ((uint64_t)total * 3);
+    if (!bus || !vi->period) return bus - overlap;
+    uint64_t phase = rdp_timing_vi_phase(vi, t->vi_elapsed, 0, 0);
     uint64_t remaining = bus - overlap, elapsed = 0, credit = 0;
-    uint64_t service_scale = overlap ? bus : 1, divisor = line * service_scale;
+    uint64_t line = vi->line, divisor = line * (overlap ? bus : 1);
     while (remaining) {
-        unsigned halfline = (unsigned)(phase * total / period);
-        unsigned active = halfline >= vs && halfline < ve;
-        uint64_t boundary;
-        if (active) boundary = ((uint64_t)(halfline + 1) * period + total - 1) / total;
-        else if (halfline < vs) boundary = ((uint64_t)vs * period + total - 1) / total;
-        else boundary = period;
-        uint64_t window = (boundary - phase + 2) / 3;
-        uint64_t budget = 0;
-        if (active) {
-            uint64_t source_y = (((uint64_t)(halfline - vs) / 2) * (v[13] & 4095) +
-                ((v[13] >> 16) & 4095)) >> 10;
-            uint64_t address = ((v[1] & 0xffffffu) + source_y * stride * bpp +
-                (((v[12] >> 16) & 4095) >> 10) * bpp) & 0xffffffu;
+        rdp_timing_vi_window(vi, phase);
+        uint64_t window = rdp_timing_vi_whole_window(vi, phase);
+        uint64_t budget = 0, service_scale = overlap ? bus : 1;
+        if (vi->address != UINT32_MAX) {
+            uint64_t address = vi->address;
             unsigned shared = (color_stream && rdp_timing_row_conflict(color, address * 8)) ||
                 (depth_stream && rdp_timing_row_conflict(depth, address * 8));
-            budget = (bytes + 7) / 8 + requests * (5u + 3u * depth_write + 3u * shared);
+            budget = (vi->bytes + 7) / 8 + vi->requests * (5u + 3u * depth_write + 3u * shared);
             if (budget >= line) budget = line - 1;
             /* Shared-bank VI requests remove the independent-bank overlap
              * during this active service window. Blank windows retain it. */
             unsigned same_bank = (color_stream && (color >> 23) == (address >> 20)) ||
                 (depth_stream && (depth >> 23) == (address >> 20));
             if (overlap && same_bank) service_scale = bus - overlap;
-            else service_scale = overlap ? bus : 1;
         }
-        if (!active) service_scale = overlap ? bus : 1;
-        /* Keep fractional service credit in the same units across windows;
-         * rounding a lost-overlap reservation to whole clocks loses it on
-         * saturated VI configurations. */
+        /* Preserve fractional service credit when crossing a VI boundary. */
         uint64_t available = (line - budget) * service_scale;
         uint64_t stretched = (remaining * divisor - credit + available / 2) / available;
         if (stretched <= window) return elapsed + stretched;
-        /* Retire service up to the next phase boundary, then reevaluate VI
-         * activity and source banking. Long loads and spans can cross blank
-         * intervals or wrap a field; they must not inherit their start phase. */
         uint64_t service = window * available + credit;
         remaining -= service / divisor;
         credit = service % divisor;
         elapsed += window;
-        phase = (phase + window * 3) % period;
+        phase += window * 768;
+        if (phase >= vi->period) phase -= vi->period;
     }
     return elapsed;
 }
 
-static inline uint64_t rdp_timing_vi_bus(const struct rdp_timing *t, uint64_t bus,
-    uint64_t color, uint64_t depth, unsigned color_stream, unsigned depth_stream,
+static inline uint64_t rdp_timing_vi_bus(const struct rdp_timing *t, struct rdp_timing_vi *vi,
+    uint64_t bus, uint64_t color, uint64_t depth, unsigned color_stream, unsigned depth_stream,
     unsigned depth_write)
 {
-    return rdp_timing_vi_service(t, bus, 0, color, depth, color_stream, depth_stream, depth_write);
+    return rdp_timing_vi_service(t, vi, bus, 0, color, depth, color_stream, depth_stream, depth_write);
 }
 
 /* Estimate a 16-byte color buffer: eight RGBA16 or four RGBA32 pixels.
@@ -417,51 +488,40 @@ static const int32_t rdp_vi_grants[2][20][5] = {
 static const int32_t rdp_vi_device_grant[2] = { 620, 0 };
 /* Q8 time, Q12 exposed service per VI transfer word. Source scanout width,
  * field/halfline phase and bank/device topology remain live inputs. */
-static inline uint64_t rdp_timing_buffered_vi(struct rdp_timing *t,uint64_t work,
-    unsigned profile,uint64_t color,uint64_t depth,unsigned color_live,unsigned depth_live)
+static inline uint64_t rdp_timing_buffered_vi(struct rdp_timing *t, struct rdp_timing_vi *vi,
+    uint64_t work, unsigned profile, uint64_t color, uint64_t depth,
+    unsigned color_live, unsigned depth_live)
 {
-    if(!rdp_timing_vi_enabled(t))return work;
+    if (!vi->period) return work;
     if(profile==1 || profile==2)profile=18;
     else if(profile==3)profile=19;
     else if(profile==6)profile=5;
     else if(profile==7)profile=15;
     else if(profile==12)profile=4;
     else if(profile==13)profile=14;
-    if(!rdp_vi_grants[t->cycle_type][profile][0])return UINT64_MAX;
-    const uint32_t *v=t->vi_regs;
-    unsigned hs=v[9]>>16&1023,he=v[9]&1023,vs=v[10]>>16&1023,ve=v[10]&1023;
-    unsigned total=(v[6]&1023)+1,stride=v[2]&4095,bpp=(v[0]&3)==3?4:2;
-    uint64_t ticks=t->vi_field_ticks,period=ticks*4;
-    int64_t start=t->deadline%(int64_t)ticks,origin=t->vi_field_start%(int64_t)ticks;
-    if(start<0)start+=ticks;
-    if(origin<0)origin+=ticks;
-    uint64_t phase=(((uint64_t)start*4+period*2-(uint64_t)origin*4-
-        t->clock_overhang+(t->vi_elapsed%period)*3)*256+(uint64_t)t->span_fraction*3)%(period*256);
-    period*=256;
-    uint64_t width=((uint64_t)(he-hs)*(v[12]&4095)+1023)>>10;
-    uint64_t words=(width*bpp+7)/8,line=ticks*8/((uint64_t)total*3);
-    uint64_t remaining=work,elapsed=0,credit=0;
-    const int32_t *grants=rdp_vi_grants[t->cycle_type][profile];
-    while(remaining) {
-        unsigned halfline=(unsigned)(phase*total/period),active=halfline>=vs&&halfline<ve;
-        uint64_t boundary=active?((uint64_t)(halfline+1)*period+total-1)/total:
-            halfline<vs?((uint64_t)vs*period+total-1)/total:period;
-        uint64_t window=(boundary-phase+2)/3,denominator=line*4096,budget=0;
-        if(active) {
-            uint64_t y=(((uint64_t)(halfline-vs)/2)*(v[13]&4095)+((v[13]>>16)&4095))>>10;
-            uint64_t address=((v[1]&0xffffffu)+y*stride*bpp+(((v[12]>>16)&4095)>>10)*bpp)&0xffffffu;
-            unsigned cb=color_live && (color>>23)==(address>>20);
-            unsigned zb=depth_live && (depth>>23)==(address>>20);
-            unsigned split=color_live&&depth_live&&(color>>23)!=(depth>>23);
+    const int32_t *grants = rdp_vi_grants[t->cycle_type][profile];
+    if (!grants[0]) return UINT64_MAX;
+
+    uint64_t phase = rdp_timing_vi_phase(vi, t->vi_elapsed, t->span_fraction, 1);
+    uint64_t remaining = work, elapsed = 0, credit = 0;
+    uint64_t words = (vi->bytes + 7) / 8, denominator = vi->line * 4096;
+    unsigned split = color_live && depth_live && (color >> 23) != (depth >> 23);
+    while (remaining) {
+        rdp_timing_vi_window(vi, phase);
+        uint64_t window = (vi->window_end - phase + 2) / 3, budget = 0;
+        if (vi->address != UINT32_MAX) {
+            unsigned address = vi->address;
+            unsigned cb = color_live && (color >> 23) == (address >> 20);
+            unsigned zb = depth_live && (depth >> 23) == (address >> 20);
             int64_t exposed=grants[0]+(split?grants[1]:0);
             if(cb&&zb)exposed+=grants[4];
             else if(cb)exposed+=grants[2];
             else if(zb)exposed+=grants[3];
             else if((color_live&&(color>>24)==(address>>21)) ||
                     (depth_live&&(depth>>24)==(address>>21)))exposed+=rdp_vi_device_grant[t->cycle_type];
-            if(exposed<0)exposed=0;
-            budget=words*(uint64_t)exposed;
-            if(budget>=denominator)budget=denominator-1;
+            if (exposed < 0) exposed = 0;
+            budget = words * (uint64_t)exposed;
+            if (budget >= denominator) budget = denominator - 1;
         }
         uint64_t available=denominator-budget;
         uint64_t demand=remaining*denominator;
@@ -473,7 +533,10 @@ static inline uint64_t rdp_timing_buffered_vi(struct rdp_timing *t,uint64_t work
         uint64_t served=service/denominator;
         credit=service%denominator;
         if(served>remaining)served=remaining;
-        remaining-=served;elapsed+=window;phase=(phase+window*3)%period;
+        remaining -= served;
+        elapsed += window;
+        phase += window * 3;
+        if (phase >= vi->period) phase -= vi->period;
     }
     return elapsed;
 }
@@ -486,31 +549,15 @@ static inline uint64_t rdp_timing_buffered_vi(struct rdp_timing *t,uint64_t work
 enum { RDP_SHARED_BANK_READ_RESPONSE = 95,
        RDP_SHARED_DEVICE_READ_RECOVERY_Q8 = 256 };
 static inline unsigned rdp_timing_shared_bank_read_response(
-    const struct rdp_timing *t, uint64_t service, uint64_t color, uint64_t depth,
-    unsigned color_read, unsigned depth_read)
+    const struct rdp_timing *t, struct rdp_timing_vi *vi, uint64_t service,
+    uint64_t color, uint64_t depth, unsigned color_read, unsigned depth_read)
 {
     if (!color_read || !depth_read ||
         service >= UINT64_C(2) * RDP_SHARED_BANK_READ_RESPONSE * 256 ||
-        !rdp_timing_row_conflict(color, depth) || !rdp_timing_vi_enabled(t)) return 0;
-    const uint32_t *v = t->vi_regs;
-    uint64_t ticks = t->vi_field_ticks, period = ticks * 4;
-    int64_t start = t->deadline % (int64_t)ticks;
-    int64_t origin = t->vi_field_start % (int64_t)ticks;
-    if (start < 0) start += ticks;
-    if (origin < 0) origin += ticks;
-    uint64_t phase = (((uint64_t)start * 4 + period * 2 - (uint64_t)origin * 4 -
-        t->clock_overhang + (t->vi_elapsed % period) * 3) * 256 +
-        (uint64_t)t->span_fraction * 3) % (period * 256);
-    unsigned total = (v[6] & 1023) + 1;
-    unsigned halfline = (unsigned)(phase * total / (period * 256));
-    unsigned vs = v[10] >> 16 & 1023, ve = v[10] & 1023;
-    if (halfline < vs || halfline >= ve) return 0;
-    uint64_t y = (((uint64_t)(halfline - vs) / 2) * (v[13] & 4095) +
-        ((v[13] >> 16) & 4095)) >> 10;
-    unsigned bpp = (v[0] & 3) == 3 ? 4 : 2;
-    uint64_t address = ((v[1] & 0xffffffu) + y * (v[2] & 4095) * bpp +
-        (((v[12] >> 16) & 4095) >> 10) * bpp) & 0xffffffu;
-    return (address >> 20) == (color >> 23) ? RDP_SHARED_BANK_READ_RESPONSE : 0;
+        !rdp_timing_row_conflict(color, depth) || !vi->period) return 0;
+    rdp_timing_vi_window(vi, rdp_timing_vi_phase(vi, t->vi_elapsed, t->span_fraction, 1));
+    return vi->address != UINT32_MAX && (vi->address >> 20) == (color >> 23) ?
+        RDP_SHARED_BANK_READ_RESPONSE : 0;
 }
 
 static inline unsigned rdp_timing_span_startup(const struct rdp_timing *t, int memory_overlap,
@@ -557,7 +604,8 @@ static inline unsigned rdp_timing_span_startup(const struct rdp_timing *t, int m
     return t->overlap_span_startup ? 9u : memory_overlap ? 11u : 15u;
 }
 
-static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned left,unsigned right,
+static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t, struct rdp_timing_vi *vi,
+    unsigned left, unsigned right,
     uint64_t color,uint64_t depth,unsigned color_read,unsigned depth_read,
     unsigned color_write,unsigned depth_write)
 {
@@ -665,7 +713,7 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
             response = 39;
         }
     }
-    unsigned shared=rdp_timing_shared_bank_read_response(t,q,color,depth,color_read,depth_read);
+    unsigned shared=rdp_timing_shared_bank_read_response(t,vi,q,color,depth,color_read,depth_read);
     if(shared>response)response=shared;
     uint64_t transient=(color_read+depth_read)*response*256;
     if(!interleaved) {
@@ -681,7 +729,7 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
         uint64_t pipeline=raster+startup*256u;
         if(q<pipeline)q=pipeline;
     } else q+=startup*256u;
-    q=rdp_timing_buffered_vi(t,q,profile,color,depth,color_live,depth_live);
+    q=rdp_timing_buffered_vi(t,vi,q,profile,color,depth,color_live,depth_live);
     if(q==UINT64_MAX)return q;
     if(interleaved) {
         transient+=startup*256u;
@@ -703,7 +751,7 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t,unsigned le
  * VI reserves memory service through the coarse model above; other RCP
  * clients and individual memory requests remain unmodeled. Uniform
  * command-derived rejection suppresses stores while retaining earlier reads. */
-static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, int right)
+static inline uint64_t rdp_timing_span(struct rdp_timing* t, struct rdp_timing_vi *vi, int y, int left, int right)
 {
     if (right <= left || !rdp_timing_keeps_row(t, y)) return 0;
     uint64_t pixels = (unsigned)(right - left);
@@ -712,7 +760,7 @@ static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, in
         ((uint64_t)y * t->fb_width + (unsigned)left) * bits_per_pixel;
     uint64_t color = rdp_timing_bus_words(first, pixels * bits_per_pixel);
     if (t->cycle_type >= 2) {
-        uint64_t work = rdp_timing_vi_bus(t, color, first, 0, 1, 0, 0);
+        uint64_t work = rdp_timing_vi_bus(t, vi, color, first, 0, 1, 0, 0);
         if (t->cycle_type == 2) {
             /* Copy can emit four 16-bit or two 32-bit texels per clock.
              * Unaligned writes may take more beats than the TMEM pipeline. */
@@ -736,7 +784,7 @@ static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, in
         ((uint64_t)y * t->fb_width + (unsigned)left) * 16;
     uint64_t depth_words = rdp_timing_bus_words(depth, pixels * 16);
     if(t->fb_size==2) {
-        uint64_t buffered=rdp_timing_buffered_span(t,(unsigned)left,(unsigned)right,first,depth,
+        uint64_t buffered=rdp_timing_buffered_span(t,vi,(unsigned)left,(unsigned)right,first,depth,
             color_read,depth_read,color_write,depth_write);
         if(buffered!=UINT64_MAX){t->vi_elapsed+=buffered;return buffered;}
     }
@@ -774,10 +822,10 @@ static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, in
     }
     /* A bank-crossing span needs a per-bank service schedule; retain the
      * conservative estimate rather than assigning its credit to one bank. */
-    if (bank_overlap && rdp_timing_vi_enabled(t) &&
+    if (bank_overlap && vi->period &&
         (((first + (pixels - 1) * bits_per_pixel) >> 23) != (first >> 23) ||
         ((depth + (pixels - 1) * 16) >> 23) != (depth >> 23))) bank_overlap = 0;
-    bus = rdp_timing_vi_service(t, bus, bank_overlap, first, depth, color_write || color_read,
+    bus = rdp_timing_vi_service(t, vi, bus, bank_overlap, first, depth, color_write || color_read,
         depth_read || depth_write, depth_write);
     uint64_t raster = pixels * (t->cycle_type + 1);
     /* Effective buffered-read floor calibrated against Thar0's 320x240
@@ -804,7 +852,7 @@ static inline uint64_t rdp_timing_span(struct rdp_timing* t, int y, int left, in
          * below, so the same contention is never added to both paths. */
         if (reads > 1) {
             uint64_t stream = depth_words + segments * 5;
-            response += rdp_timing_vi_bus(t, stream, first, depth,
+            response += rdp_timing_vi_bus(t, vi, stream, first, depth,
                 color_write || color_read, depth_read || depth_write, depth_write) - stream;
         }
     }
@@ -846,24 +894,42 @@ static inline uint64_t rdp_timing_rectangle(struct rdp_timing* t,
     unsigned x0, unsigned y0, unsigned x1, unsigned y1)
 {
     if (x1 <= x0 || y1 <= y0) return 0;
-    if (t->cycle_type < 2 || rdp_timing_vi_enabled(t)) {
-        uint64_t work = 0;
-        for (unsigned y = y0; y < y1; ++y)
-            work += rdp_timing_span(t, y, x0, x1);
-        return work;
-    }
+    struct rdp_timing_vi vi;
+    rdp_timing_vi_init(&vi, t);
     unsigned period = 16u >> (t->fb_size & 3);
-    unsigned rows = y1 - y0, tail = rows % period;
-    unsigned sample_rows = rows < period ? rows : period;
-    uint64_t start = t->vi_elapsed;
-    uint64_t repeated = 0, remainder = 0;
-    for (unsigned i = 0; i < sample_rows; ++i) {
-        uint64_t span = rdp_timing_span(t, y0 + i, x0, x1);
-        repeated += span;
-        if (i < tail) remainder += span;
+    unsigned rows = y1 - y0;
+    if (t->cycle_type >= 2 && rows > period) {
+        uint64_t blank_clocks = UINT64_MAX;
+        if (vi.period) {
+            uint64_t phase = rdp_timing_vi_phase(&vi, t->vi_elapsed, 0, 0);
+            rdp_timing_vi_window(&vi, phase);
+            blank_clocks = vi.address == UINT32_MAX && !vi.phase_wraparound ?
+                rdp_timing_vi_whole_window(&vi, phase) : 0;
+        }
+        if (blank_clocks) {
+            /* A rectangle that fits entirely in blanking contends with no
+             * VI requests. Count its repeating word alignment once. */
+            struct rdp_timing_vi blank;
+            blank.period = 0;
+            unsigned tail = rows % period;
+            uint64_t start = t->vi_elapsed;
+            uint64_t repeated = 0, remainder = 0;
+            for (unsigned i = 0; i < period; ++i) {
+                uint64_t span = rdp_timing_span(t, &blank, y0 + i, x0, x1);
+                repeated += span;
+                if (i < tail) remainder += span;
+            }
+            uint64_t work = repeated * (rows / period) + remainder;
+            if (work <= blank_clocks && (!vi.period || work <= UINT64_MAX - start)) {
+                t->vi_elapsed = start + work;
+                return work;
+            }
+            t->vi_elapsed = start;
+        }
     }
-    uint64_t work = repeated * (rows / period) + remainder;
-    t->vi_elapsed = start + work;
+    uint64_t work = 0;
+    for (unsigned y = y0; y < y1; ++y)
+        work += rdp_timing_span(t, &vi, y, x0, x1);
     return work;
 }
 
@@ -914,6 +980,8 @@ static inline uint64_t rdp_timing_load(struct rdp_timing *t, unsigned op)
     unsigned bytes = steps * (palette ? 2 : t->tex_size ? 8 : 1);
     uint64_t start = t->vi_elapsed;
     uint64_t previous = UINT64_MAX;
+    struct rdp_timing_vi vi;
+    rdp_timing_vi_init(&vi, t);
     for (unsigned row = tl; row <= th; ++row) {
         uint64_t source = (uint64_t)t->tex_address +
             (((uint64_t)row * t->tex_width + sl) << t->tex_size) / 2;
@@ -928,7 +996,7 @@ static inline uint64_t rdp_timing_load(struct rdp_timing *t, unsigned op)
             unsigned setup = previous == UINT64_MAX ? 5 :
                 (previous >> 11) == (physical >> 11) ? 0 :
                 (previous >> 20) == (physical >> 20) ? 3 : 5;
-            t->vi_elapsed += rdp_timing_vi_bus(t, (next - address) / 8 + setup,
+            t->vi_elapsed += rdp_timing_vi_bus(t, &vi, (next - address) / 8 + setup,
                 physical * 8, 0, 1, 0, 0);
             previous = physical + next - address - 8;
             address = next;
@@ -999,6 +1067,8 @@ static inline uint64_t rdp_timing_clocks(struct rdp_timing* t)
         int flip = (w[0] >> 23) & 1;
         int64_t ah = xh & ~INT64_C(1), am = xm & ~INT64_C(1), al = xl & ~INT64_C(1);
         int64_t sh = (dh >> 2) & ~1, sm = (dm >> 2) & ~1, sl = (dl >> 2) & ~1;
+        struct rdp_timing_vi vi;
+        if (first < last) rdp_timing_vi_init(&vi, t);
         for (int y = first; y < last; ++y) {
             if (!rdp_timing_keeps_row(t, y)) continue;
             /* The rasterizer visits the union of all four quarter-row edges,
@@ -1023,7 +1093,7 @@ static inline uint64_t rdp_timing_clocks(struct rdp_timing* t)
             if (right > (int64_t)((t->right + 3) >> 2)) right = (t->right + 3) >> 2;
             if (right > left) {
                 RDP_TIMING_OBSERVE_SPAN(t, right-left, 1);
-                work += rdp_timing_span(t, y, (int)left, (int)right);
+                work += rdp_timing_span(t, &vi, y, (int)left, (int)right);
             }
         }
     } else if (op == 0x24 || op == 0x25 || op == 0x36) {

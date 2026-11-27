@@ -477,7 +477,6 @@ using RSPTimingOp = RSPTimingDecoder::OpInfo;
 struct RSPTimingPipeline {
     struct Stage { bool load = false; uint32_t rw = 0, vw = 0; } previous[3];
     bool single = false;
-    void stall() { previous[2] = previous[1]; previous[1] = previous[0]; previous[0] = {}; }
     unsigned issue(RSPTimingOp a, const RSPTimingOp* b = nullptr) {
         if (b) {
             a.r.use |= b->r.use; a.v.use |= b->v.use;
@@ -486,16 +485,17 @@ struct RSPTimingPipeline {
             a.v.def |= b->v.def;
             a.flags = (a.flags | b->flags) & ~RSPTimingOp::Bypass;
         }
-        unsigned stalls = 0, n = 0;
-        if (a.r.use & previous[0].rw) n = 2;
-        else if (a.r.use & previous[1].rw) n = 1;
-        while (n) { --n; stall(); ++stalls; }
-        if (a.v.use & previous[0].vw) n = 3;
-        else if (a.v.use & previous[1].vw) n = 2;
-        else if (a.v.use & previous[2].vw) n = 1;
-        while (n) { --n; stall(); ++stalls; }
-        while (a.store() && previous[1].load) { stall(); ++stalls; }
-        previous[2] = previous[1]; previous[1] = previous[0];
+        // Scalar and vector dependencies age during the same stall clocks.
+        unsigned stalls;
+        if (a.v.use & previous[0].vw) stalls = 3;
+        else if ((a.v.use & previous[1].vw) || (a.r.use & previous[0].rw)) stalls = 2;
+        else stalls = (a.v.use & previous[2].vw) || (a.r.use & previous[1].rw);
+        if (a.store()) {
+            if (stalls == 0 && previous[1].load) ++stalls;
+            if (stalls == 1 && previous[0].load) ++stalls;
+        }
+        previous[2] = stalls == 0 ? previous[1] : stalls == 1 ? previous[0] : Stage{};
+        previous[1] = stalls == 0 ? previous[0] : Stage{};
         previous[0] = {a.load(), a.bypass() ? 0u : a.r.def & ~1u, a.v.def};
         single = a.branch();
         return 1 + stalls;

@@ -25,16 +25,18 @@ ReturnMode Interpreter::run(uint32_t limit) {
 #ifdef RSP_INTERPRETER_OBSERVE_BEFORE
         const uint32_t observer_before = state.cycles;
 #endif
-        auto decoded = RSPTimingDecoder::decoderEXECUTE(op);
         if (!timed)
             ++state.cycles;
         else if (paired)
             paired = false;
         else {
-            auto second = RSPTimingDecoder::decoderEXECUTE(state.imem[((pc + 4) & 0xffc) >> 2]);
-            paired = !pipeline.single && !state.has_delay_slot && !decoded.branch() &&
-                     !decoded.mayHalt() && !decoded.endBlock() &&
-                     RSPTimingDecoder::canDualIssue(decoded, second);
+            auto decoded = RSPTimingDecoder::decoderEXECUTE(op);
+            RSPTimingDecoder::OpInfo second;
+            if (!pipeline.single && !state.has_delay_slot && !decoded.branch() &&
+                !decoded.mayHalt() && !decoded.endBlock()) {
+                second = RSPTimingDecoder::decoderEXECUTE(state.imem[((pc + 4) & 0xffc) >> 2]);
+                paired = RSPTimingDecoder::canDualIssue(decoded, second);
+            }
             state.cycles += pipeline.issue(decoded, paired ? &second : nullptr);
         }
 #ifdef RSP_INTERPRETER_OBSERVE_BEFORE

@@ -5,6 +5,24 @@
 #include "../rdp_timing_adapter.h"
 #include "observe.h"
 
+static uint64_t buffered_span_cost(struct rdp_timing *t, unsigned left, unsigned right,
+    uint64_t color, uint64_t depth, unsigned color_read, unsigned depth_read,
+    unsigned color_write, unsigned depth_write)
+{
+    struct rdp_timing_vi vi;
+    rdp_timing_vi_init(&vi, t);
+    return rdp_timing_buffered_span(t, &vi, left, right, color, depth,
+        color_read, depth_read, color_write, depth_write);
+}
+
+static uint64_t buffered_vi_cost(struct rdp_timing *t, uint64_t work, unsigned profile,
+    uint64_t color, uint64_t depth, unsigned color_live, unsigned depth_live)
+{
+    struct rdp_timing_vi vi;
+    rdp_timing_vi_init(&vi, t);
+    return rdp_timing_buffered_vi(t, &vi, work, profile, color, depth, color_live, depth_live);
+}
+
 #ifdef RDP_TIMING_DIFFERENTIAL
 extern void port_reference_init(void);
 extern void port_reference_vi(const uint32_t *, int64_t, uint32_t);
@@ -95,6 +113,52 @@ static void raster_work_checks(void)
     assert(t.reject && rdp_timing_uniform(&t, t.z_address));
     rdp_timing_invalidate_range(&t, t.z_address, 2);
     assert(rdp_timing_clocks(&t) > rejected && !t.reject);
+}
+
+static void blanking_rectangle_checks(void)
+{
+    uint32_t regs[14] = {0};
+    regs[0] = 3;
+    regs[2] = 320;
+    regs[6] = 524;
+    regs[9] = (108u << 16) | 748;
+    regs[10] = (37u << 16) | 511;
+    regs[12] = 512;
+    regs[13] = 1024;
+    static const int64_t deadlines[] = {0, 54500, 56000, 760000, 780000};
+
+    /* Exercise a rectangle wholly in blanking, straddling active video,
+     * and crossing the field wrap. Cover both interlace parities and all
+     * of the framebuffer word-alignment periods. */
+    for (unsigned d = 0; d < sizeof(deadlines) / sizeof(deadlines[0]); ++d) {
+        for (unsigned mode = 2; mode <= 3; ++mode) {
+            for (unsigned size = 0; size <= 3; ++size) {
+                for (unsigned field = 0; field <= 3; ++field) {
+                    struct rdp_timing t;
+                    memset(&t, 0, sizeof(t));
+                    t.vi_regs = regs;
+                    t.vi_field_ticks = 781251;
+                    t.deadline = deadlines[d];
+                    t.clock_overhang = 3;
+                    t.vi_elapsed = 2;
+                    t.cycle_type = mode;
+                    t.fb_size = size;
+                    t.fb_width = 321;
+                    t.fb_address = 5;
+                    t.scissor_field = field;
+
+                    struct rdp_timing reference = t;
+                    struct rdp_timing_vi vi;
+                    rdp_timing_vi_init(&vi, &reference);
+                    uint64_t expected = 0;
+                    for (unsigned y = 3; y < 244; ++y)
+                        expected += rdp_timing_span(&reference, &vi, y, 2, 319);
+                    assert(rdp_timing_rectangle(&t, 2, 3, 319, 244) == expected);
+                    assert(t.vi_elapsed == reference.vi_elapsed);
+                }
+            }
+        }
+    }
 }
 
 static void fixed_checks(void)
@@ -212,14 +276,14 @@ static void buffered_checks(void)
     for (cycle = 0; cycle < 2; ++cycle) {
         for (width = 128; width <= 512; width += 8) {
             t.cycle_type = cycle;t.span_fraction = 0;other = t;
-            aligned = rdp_timing_buffered_span(&t, 0, width, 0x800000, 0, 1, 0, 1, 0);
-            unaligned = rdp_timing_buffered_span(&other, 0, width, 0x800010, 0, 1, 0, 1, 0);
+            aligned = buffered_span_cost(&t, 0, width, 0x800000, 0, 1, 0, 1, 0);
+            unaligned = buffered_span_cost(&other, 0, width, 0x800010, 0, 1, 0, 1, 0);
             assert(unaligned * 256 + other.span_fraction == aligned * 256 + t.span_fraction + 512);
         }
     }
     t.cycle_type = 0;t.span_fraction = 0;
-    assert(rdp_timing_buffered_span(&t, 0, 0, 0, 0, 0, 0, 1, 0) == UINT64_MAX);
-    assert(rdp_timing_buffered_span(&t, 0, 16, 0x7ffff0, 0, 0, 0, 1, 0) == UINT64_MAX);
+    assert(buffered_span_cost(&t, 0, 0, 0, 0, 0, 0, 1, 0) == UINT64_MAX);
+    assert(buffered_span_cost(&t, 0, 16, 0x7ffff0, 0, 0, 0, 1, 0) == UINT64_MAX);
     /* Independently verify the far-buffer row proof against every actual
      * handoff. It applies to arbitrary span widths and client combinations. */
     for (width = 1; width <= 1024; width += 7) {
@@ -240,18 +304,18 @@ static void buffered_checks(void)
     vi[9] = (108u << 16) | 748;vi[10] = (37u << 16) | 511;
     vi[12] = 512;vi[13] = 1024;
     t.vi_regs = vi;t.vi_field_ticks = 783000;t.span_fraction = 0;
-    assert(rdp_timing_buffered_vi(&t, work, 5, 0x800000, 0, 1, 0) == work);
+    assert(buffered_vi_cost(&t, work, 5, 0x800000, 0, 1, 0) == work);
     t.deadline = 100000;
-    active = rdp_timing_buffered_vi(&t, work, 5, 0x800000, 0, 1, 0);
+    active = buffered_vi_cost(&t, work, 5, 0x800000, 0, 1, 0);
     assert(active > work);
     t.deadline += t.vi_field_ticks;
-    assert(rdp_timing_buffered_vi(&t, work, 5, 0x800000, 0, 1, 0) == active);
+    assert(buffered_vi_cost(&t, work, 5, 0x800000, 0, 1, 0) == active);
     vi[0] = 0;
-    assert(rdp_timing_buffered_vi(&t, work, 5, 0x800000, 0, 1, 0) == work);
+    assert(buffered_vi_cost(&t, work, 5, 0x800000, 0, 1, 0) == work);
     /* Deliberately overcommit every halfline. Fractional service must carry
      * across windows, even when each window alone rounds down to zero. */
     vi[0] = 3;vi[9] = 1023;vi[10] = 526;vi[12] = 4095;
-    active = rdp_timing_buffered_vi(&t, 1, 5, 0x800000, 0, 1, 0);
+    active = buffered_vi_cost(&t, 1, 5, 0x800000, 0, 1, 0);
     assert(active > 1 && active < UINT64_MAX);
     printf("Buffered service: alignment, partial/bank boundaries, %u row proofs, VI phase and saturated grants passed.\n", trials);
 }
@@ -327,6 +391,7 @@ int main(void)
 {
     texture_load_checks();
     raster_work_checks();
+    blanking_rectangle_checks();
     fixed_checks();
     buffered_checks();
     puts("Portable API: clock carry, fences, packet sizes, endian input, restore, VI snapshots, invalidation and overflow passed.");

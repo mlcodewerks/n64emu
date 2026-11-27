@@ -54,10 +54,9 @@ static void emit_allocated_variable_shift(int dest,unsigned kind,int wide,bool w
 #include "../optimizer_shift.inc"
 #undef SHIFT_COUNT
 #undef SHIFT_TEMP
-static int regcache_direct(uint32_t instruction)
+static int regcache_direct(uint32_t instruction, enum r4300_opcode op)
 {
-    if(regcache_shift(instruction))return 1;
-    enum r4300_opcode op = r4300_get_idec(instruction)->opcode;
+    if(regcache_shift(instruction, op))return 1;
     unsigned a,b,d; guest_operands(instruction,&a,&b,&d);
     int word = 0, immediate = 0, compare = 0;
     unsigned opcode = 0, extension = 0;

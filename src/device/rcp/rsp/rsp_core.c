@@ -24,8 +24,6 @@
 
 static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma, int64_t start)
 {
-    unsigned int i,j;
-
     unsigned int l = dma->length;
 
     unsigned int length = ((l & 0xfff) | 7) + 1;
@@ -38,43 +36,39 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma, int64_t sta
     unsigned char *spmem = (unsigned char*)sp->mem + (dma->memaddr & 0x1000);
     unsigned char *dram = (unsigned char*)sp->ri->rdram->dram;
 
-    if (dma->dir == SP_DMA_READ)
-    {
-        for(j=0; j<count; j++) {
+    const int to_rdram = dma->dir == SP_DMA_READ;
+    for (unsigned j = 0; j < count; ++j) {
+        if (to_rdram)
             rsp_dma_write_memory(sp, dramaddr, length);
-            for(i=0; i<length; i++) {
-                unsigned address = (dramaddr ^ S8) & 0xffffff;
-                if (address < sp->ri->rdram->dram_size)
-                    dram[address] = spmem[(memaddr^S8) & 0xfff];
-                memaddr++;
-                dramaddr++;
-            }
-
-            if (j + 1 < count) dramaddr+=skip;
-        }
-
-        sp->regs[SP_MEM_ADDR_REG] = (dma->memaddr & 0x1000) | (memaddr & 0xfff);
-        sp->regs[SP_DRAM_ADDR_REG] = dramaddr & 0xffffff;
-        sp->regs[SP_RD_LEN_REG] = sp->regs[SP_WR_LEN_REG] = (l & 0xff800000) | 0xff8;
-    }
-    else
-    {
-        for(j=0; j<count; j++) {
+        else
             rsp_dma_read_memory(sp, dramaddr, length);
 
-            for(i=0; i<length; i++) {
-                unsigned address = (dramaddr ^ S8) & 0xffffff;
-                spmem[(memaddr^S8) & 0xfff] = address < sp->ri->rdram->dram_size ? dram[address] : 0;
-                memaddr++;
-                dramaddr++;
+        unsigned ram = dramaddr & 0xffffff, offset = memaddr & 0xfff;
+        const size_t ram_size = sp->ri->rdram->dram_size;
+        /* Both ends use the same byte lanes and are aligned to eight bytes. */
+        if (length <= 0x1000 - offset && length <= 0x1000000 - ram &&
+            ram < ram_size && length <= ram_size - ram) {
+            if (to_rdram) memcpy(dram + ram, spmem + offset, length);
+            else memcpy(spmem + offset, dram + ram, length);
+        } else if (to_rdram) {
+            for (unsigned i = 0; i < length; ++i) {
+                unsigned address = ((dramaddr + i) ^ S8) & 0xffffff;
+                if (address < ram_size)
+                    dram[address] = spmem[((memaddr + i) ^ S8) & 0xfff];
             }
-            if (j + 1 < count) dramaddr+=skip;
+        } else {
+            for (unsigned i = 0; i < length; ++i) {
+                unsigned address = ((dramaddr + i) ^ S8) & 0xffffff;
+                spmem[((memaddr + i) ^ S8) & 0xfff] = address < ram_size ? dram[address] : 0;
+            }
         }
-
-        sp->regs[SP_MEM_ADDR_REG] = (dma->memaddr & 0x1000) | (memaddr & 0xfff);
-        sp->regs[SP_DRAM_ADDR_REG] = dramaddr & 0xffffff;
-        sp->regs[SP_RD_LEN_REG] = sp->regs[SP_WR_LEN_REG] = (l & 0xff800000) | 0xff8;
+        memaddr += length;
+        dramaddr += length + (j + 1 < count ? skip : 0);
     }
+
+    sp->regs[SP_MEM_ADDR_REG] = (dma->memaddr & 0x1000) | (memaddr & 0xfff);
+    sp->regs[SP_DRAM_ADDR_REG] = dramaddr & 0xffffff;
+    sp->regs[SP_RD_LEN_REG] = sp->regs[SP_WR_LEN_REG] = (l & 0xff800000) | 0xff8;
 
     if (dma->dir == SP_DMA_WRITE && (dma->memaddr & 0x1000))
         rsp_capture_imem((const unsigned char *)sp->mem + 0x1000,

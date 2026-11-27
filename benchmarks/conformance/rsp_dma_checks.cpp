@@ -19,7 +19,8 @@ int main()
     using namespace RSP;
     CPUState sp;
     uint32_t registers[16] = {}, irq = 0;
-    uint32_t dmem[DMEM_WORDS] = {}, imem[IMEM_WORDS] = {}, rdram[2048] = {};
+    uint32_t dmem[DMEM_WORDS] = {}, imem[IMEM_WORDS] = {};
+    static uint32_t rdram[0x800000 / sizeof(uint32_t)];
     for (unsigned i = 0; i < 16; ++i) sp.cp0.cr[i] = registers + i;
     sp.cp0.irq = &irq;
     sp.dmem = dmem;
@@ -64,5 +65,33 @@ int main()
     assert(dmem[0] == rdram[0x100 / 4] && dmem[4] == rdram[0x118 / 4]);
     write(0x830, 7, 25);
 
-    std::puts("RSP DMA: consecutive writes, row boundaries, expiry, direction changes and strided reads passed.");
+    for (unsigned i = 0; i < 4; ++i) rdram[0x900 / 4 + i] = 0x12340000 + i;
+    registers[CP0_REGISTER_DMA_DRAM] = 0x900;
+    registers[CP0_REGISTER_DMA_CACHE] = 0x11f8;
+    sp.sr[1] = 15;
+    sp.dirty_blocks = 0;
+    assert(RSP_MTC0(&sp, CP0_REGISTER_DMA_READ_LENGTH, 1) == MODE_CHECK_FLAGS);
+    assert(sp.dirty_blocks == 7);
+    for (unsigned i = 0; i < 4; ++i) assert(imem[0x1f8 / 4 + i] == 0x12340000 + i);
+
+    registers[CP0_REGISTER_DMA_DRAM] = 0x900;
+    registers[CP0_REGISTER_DMA_CACHE] = 0x1ff8;
+    sp.dirty_blocks = 0;
+    assert(RSP_MTC0(&sp, CP0_REGISTER_DMA_READ_LENGTH, 1) == MODE_CHECK_FLAGS);
+    assert(sp.dirty_blocks == 0xc001);
+    assert(imem[1022] == 0x12340000 && imem[1023] == 0x12340001);
+    assert(imem[0] == 0x12340002 && imem[1] == 0x12340003);
+
+    registers[CP0_REGISTER_DMA_DRAM] = 0x7ffff8;
+    registers[CP0_REGISTER_DMA_CACHE] = 0x1ff8;
+    assert(RSP_MTC0(&sp, CP0_REGISTER_DMA_WRITE_LENGTH, 1) == MODE_CONTINUE);
+    assert(rdram[0x7ffff8 / 4] == 0x12340000 && rdram[0x7ffffc / 4] == 0x12340001);
+    registers[CP0_REGISTER_DMA_DRAM] = 0x7ffff8;
+    registers[CP0_REGISTER_DMA_CACHE] = 0x0ff8;
+    sp.dirty_blocks = 0;
+    assert(RSP_MTC0(&sp, CP0_REGISTER_DMA_READ_LENGTH, 1) == MODE_CONTINUE);
+    assert(dmem[1022] == 0x12340000 && dmem[1023] == 0x12340001);
+    assert(dmem[0] == 0 && dmem[1] == 0);
+
+    std::puts("RSP DMA: clocks, strides, IMEM invalidation, SP wrap and RDRAM bounds passed.");
 }

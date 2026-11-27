@@ -135,8 +135,13 @@ static inline unsigned r4300_vi_bus_latency(const struct r4300_core* r,uint32_t 
     const struct vi_controller* vi=r->vi;
     if(r->compat_issue_clock||!vi||(vi->regs[VI_STATUS_REG]&3)<2||!vi->field_ticks)return 0;
     uint32_t start=(vi->regs[VI_V_START_REG]>>16)&0x3ff,end=vi->regs[VI_V_START_REG]&0x3ff;
-    uint64_t elapsed=r->cp0.count_clock>vi->field_start_count_clock?(uint64_t)(r->cp0.count_clock-vi->field_start_count_clock):0;
-    unsigned scan=(elapsed%vi->field_ticks)*((vi->regs[VI_V_SYNC_REG]&0x3ff)+1)/vi->field_ticks;
+    uint32_t ticks = vi->field_ticks;
+    uint64_t elapsed = r->cp0.count_clock > vi->field_start_count_clock ?
+        (uint64_t)r->cp0.count_clock - (uint64_t)vi->field_start_count_clock : 0;
+    uint32_t phase = (uint32_t)(elapsed < ticks ? elapsed : elapsed % ticks);
+    uint32_t halflines = (vi->regs[VI_V_SYNC_REG] & 0x3ff) + 1;
+    unsigned scan = phase <= UINT32_MAX / 1024 ? phase * halflines / ticks :
+        (uint64_t)phase * halflines / ticks;
     if(scan<start||scan>=end)return 0;
     if(line)return R4300_VI_LINE_CYCLES;
     uint32_t row=(((scan-start)>>1)*(vi->regs[VI_Y_SCALE_REG]&0xfff)+((vi->regs[VI_Y_SCALE_REG]>>16)&0xfff))>>10;

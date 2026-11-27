@@ -1,6 +1,5 @@
-static int regcache_shift(uint32_t instruction)
+static int regcache_shift(uint32_t instruction, enum r4300_opcode op)
 {
-    auto op=r4300_get_idec(instruction)->opcode;
     bool word=false,variable=false;unsigned kind=0;
     switch(op) {
     case R4300_OP_SLL:word=true;kind=4;break;case R4300_OP_SRL:word=true;kind=5;break;case R4300_OP_SRA:word=true;kind=7;break;

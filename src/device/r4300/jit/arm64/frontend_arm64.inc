@@ -112,11 +112,18 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
         memcpy(extended_ops, ops, count * sizeof(*ops));
         branch_index = count - 1; extended_ops[count++] = config->delay_op; ops = extended_ops;
     }
+    // Share opcode and clock decoding between region planning, emission and resumes.
+    enum r4300_opcode decoded_ops[MAX_INSTRUCTIONS];
+    unsigned base_cycles[MAX_INSTRUCTIONS];
+    for (unsigned i = 0; i < count; ++i) {
+        decoded_ops[i] = r4300_get_idec(ops[i])->opcode;
+        base_cycles[i] = r4300_base_cycles(ops[i], 0);
+    }
     /* Reserve for the expanded A64 address/immediate sequences and per-memory
      * side exits. Compile only with all generated frames unwound. */
     size_t reserve = 8192;
     for (unsigned i=0;i<count;++i)
-        reserve += optimized && native_ram_opcode(r4300_get_idec(ops[i])->opcode) ? 12288 :
+        reserve += optimized && native_ram_opcode(decoded_ops[i]) ? 12288 :
                    optimized && native_fpu_instruction(ops[i]) ? 8192 : 2048;
     reserve = (reserve+15) & ~(size_t)15;
     if (reserve > N64EMUJIT_ARM64_SEGMENT_BYTES) return NULL;
@@ -160,22 +167,22 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     JIT(hint(38)); /* BTI jc: both IP0/IP1 and general-register tail links */
     regcache.active=0;
     for (unsigned i = 0; i < count;) {
-        enum r4300_opcode op = r4300_get_idec(ops[i])->opcode;
+        enum r4300_opcode op = decoded_ops[i];
         if (native_opcode(op) || i == branch_index || (optimized && (native_ram_opcode(op) || op == R4300_OP_ADDI))) {
             unsigned end = i + 1;
             if (optimized) {
                 int memory_region = native_ram_opcode(op);
                 while (end < count) {
                     if (ram_delay && end == branch_index) break;
-                    enum r4300_opcode next = r4300_get_idec(ops[end])->opcode;
+                    enum r4300_opcode next = decoded_ops[end];
                     if (!native_opcode(next) && end != branch_index && !native_ram_opcode(next) && next != R4300_OP_ADDI) break;
                     memory_region |= native_ram_opcode(next); ++end;
                 }
                 unsigned base = 0, memory_count = 0, memory_flags = 0;
                 bool trapping_region = false;
                 for (unsigned j = i; j < end; ++j) {
-                    base += r4300_base_cycles(ops[j], 0);
-                    const auto decoded = r4300_get_idec(ops[j])->opcode;
+                    base += base_cycles[j];
+                    const auto decoded = decoded_ops[j];
                     memory_count += native_ram_opcode(decoded) != 0;
                     memory_flags |= native_memory_flags(ops[j]);
                     if (j == branch_index && (ops[j] >> 26) == 17) memory_flags |= 2;
@@ -217,7 +224,7 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                      * only the next line needs another tag check. */
                     int check_line = j == i || ((config->virtual_pc + j * 4) >> 5) !=
                         ((config->virtual_pc + (j - 1) * 4) >> 5);
-                    enum r4300_opcode instruction_op = r4300_get_idec(ops[j])->opcode;
+                    enum r4300_opcode instruction_op = decoded_ops[j];
                     if (instruction_op == R4300_OP_ADDI && ((ops[j] >> 21) & 31) && int16_t(ops[j])) {
                         // Execute the overflowing instruction precisely with its prefix committed.
                         emit_pending_clocks(config,pending_cycles,pending_fetches);
@@ -255,9 +262,9 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                         pipeline_live = 1;
                         exit->resume = out; exit->resume_registers = regcache;
                     } else {
-                        pending_cycles+=r4300_base_cycles(ops[j],0)+r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
+                        pending_cycles+=base_cycles[j]+r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
                         ++pending_fetches;
-                        emit_fetch_native(config, j, i, r4300_base_cycles(ops[j], 0), check_line,true);
+                        emit_fetch_native(config, j, i, base_cycles[j], check_line,true);
                         unsigned reservation = r4300_cached_issue_reservation(config->compat_issue_clock, config->cache_timing);
                         if (config->cache_timing && !reservation && pipeline_live) {
                             if (j == i && j == branch_index && branch_major == 17) {
@@ -280,9 +287,9 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
                             annul_registers = regcache;
                             if (ram_delay) emit_mem(0x89,0,TARGET,SP,-1,0,16);
                         }
-                        else if (!regcache_optimize(ops[j])) emit_native(ops[j], instruction_op);
+                        else if (!regcache_optimize(ops[j], instruction_op)) emit_native(ops[j], instruction_op);
                         if ((!config->cache_timing || reservation) &&
-                            (j + 1 == end || native_ram_opcode(r4300_get_idec(ops[j + 1])->opcode))) emit_pipeline_clear();
+                            (j + 1 == end || native_ram_opcode(decoded_ops[j + 1]))) emit_pipeline_clear();
                     }
                 }
                 emit_pending_clocks(config,pending_cycles,pending_fetches);
@@ -368,8 +375,8 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
             }
             unsigned base = 0, memory_count = 0, memory_flags = 0;
             for (unsigned j = exit->index + 1; j < exit->end; ++j) {
-                base += r4300_base_cycles(ops[j], 0);
-                memory_count += native_ram_opcode(r4300_get_idec(ops[j])->opcode) != 0;
+                base += base_cycles[j];
+                memory_count += native_ram_opcode(decoded_ops[j]) != 0;
                 memory_flags |= native_memory_flags(ops[j]);
                 if (j == branch_index && (ops[j] >> 26) == 17) memory_flags |= 2;
             }

@@ -2,9 +2,55 @@
 #define main full_rsp_unit_main
 #include "../../src/device/rcp/rsp/p_rsp/jit_tests.cpp"
 #undef main
+#include "../../src/device/rcp/rsp/p_rsp/rsp/timing.hpp"
+
+static void pipeline_overlap_checks()
+{
+    for (unsigned mask = 0; mask < 256; ++mask) {
+        RSPTimingPipeline pipeline;
+        for (unsigned stage = 0; stage < 3; ++stage) {
+            pipeline.previous[stage].rw = mask & (1u << stage) ? 32 : 2;
+            pipeline.previous[stage].vw = mask & (8u << stage) ? 128 : 4;
+            pipeline.previous[stage].load = (mask & (64u << stage)) != 0;
+        }
+        for (unsigned store = 0; store < 2; ++store) {
+            auto actual = pipeline, expected = pipeline;
+            RSPTimingOp op{};
+            op.r.use = 32;
+            op.v.use = 128;
+            op.flags = store ? RSPTimingOp::Store : 0u;
+            const auto shift = [&expected]() {
+                expected.previous[2] = expected.previous[1];
+                expected.previous[1] = expected.previous[0];
+                expected.previous[0] = {};
+            };
+            unsigned clocks = 1;
+            while ((expected.previous[0].rw | expected.previous[1].rw) & op.r.use) {
+                shift();
+                ++clocks;
+            }
+            while ((expected.previous[0].vw | expected.previous[1].vw | expected.previous[2].vw) & op.v.use) {
+                shift();
+                ++clocks;
+            }
+            while (store && expected.previous[1].load) {
+                shift();
+                ++clocks;
+            }
+            shift();
+            require(actual.issue(op) == clocks, "RSP overlapping pipeline stalls");
+            for (unsigned stage = 0; stage < 3; ++stage) {
+                const auto &a = actual.previous[stage], &b = expected.previous[stage];
+                require(a.load == b.load && a.rw == b.rw && a.vw == b.vw,
+                        "RSP pipeline history after overlapping stalls");
+            }
+        }
+    }
+}
 
 int main(int argc, char **argv)
 {
+    pipeline_overlap_checks();
     Fixture f;
     unsigned checks = 0;
     for (uint32_t value : {0u,1u,0x7fffu,0x8000u,0x7fffffffu,0x80000000u,0xffff8000u,0xffffffffu})

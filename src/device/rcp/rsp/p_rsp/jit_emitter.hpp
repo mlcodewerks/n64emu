@@ -449,6 +449,16 @@ public:
 #define RSP_STORE(name, op) void name(unsigned i,unsigned b,unsigned s) { code.op(w(s),Xbyak_aarch64::ptr(r(b),r(i))); }
     RSP_STORE(stxr_c, strb) RSP_STORE(stxr_s, strh) RSP_STORE(stxr_i, str)
 #undef RSP_STORE
+    void add_state_word(unsigned offset, unsigned increment)
+    {
+        using namespace Xbyak_aarch64;
+        assert(offset % 4 == 0 && offset < 16384 && increment < 4096);
+        const auto field = ptr(r(JIT_V0), offset);
+        const WReg scratch(16);
+        code.ldr(scratch, field);
+        code.add(scratch, scratch, increment);
+        code.str(scratch, field);
+    }
 #else
 private:
     static Xbyak::Reg64 r(unsigned i)
@@ -601,6 +611,10 @@ public:
     void stxr_c(unsigned i,unsigned b,unsigned s) { code.mov(code.byte[r(b)+r(i)],r(s).cvt8()); }
     void stxr_s(unsigned i,unsigned b,unsigned s) { code.mov(code.word[r(b)+r(i)],r(s).cvt16()); }
     void stxr_i(unsigned i,unsigned b,unsigned s) { code.mov(code.dword[r(b)+r(i)],r(s).cvt32()); }
+    void add_state_word(unsigned offset, unsigned increment)
+    {
+        code.add(code.dword[r(JIT_V0) + offset], increment);
+    }
 #endif
 };
 } }
