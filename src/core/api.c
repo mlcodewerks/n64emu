@@ -10,8 +10,10 @@ static n64emu_host host;
 static char *system_directory;
 static bool initialized, loaded, changed;
 static const struct retro_core_option_v2_definition *definitions;
+static const struct retro_core_option_v2_category *categories;
 static const char *selected[64];
 static unsigned option_count;
+static unsigned category_count;
 
 /* Reuse bundled UTF-8/large-file IO without involving a host VFS service. */
 static struct retro_vfs_file_handle *file_open(const char *p, unsigned m, unsigned h)
@@ -78,7 +80,12 @@ static bool environment(unsigned command, void *data)
     case RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION:
         *(unsigned *)data = 2; return true;
     case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: {
-        definitions = ((struct retro_core_options_v2 *)data)->definitions;
+        const struct retro_core_options_v2 *options = data;
+        definitions = options->definitions;
+        categories = options->categories;
+        category_count = 0;
+        while (categories && categories[category_count].key)
+            ++category_count;
         option_count = 0;
         while (option_count < 64 && definitions[option_count].key) {
             selected[option_count] = definitions[option_count].default_value;
@@ -137,7 +144,7 @@ bool n64emu_init(const n64emu_host *callbacks)
     if (!system_directory) return false;
     strcpy(system_directory, path);
     host = *callbacks;
-    option_count = 0; definitions = NULL; changed = false;
+    option_count = category_count = 0; definitions = NULL; categories = NULL; changed = false;
     core_runtime_set_environment(environment);
     core_runtime_set_video_refresh(video);
     core_runtime_set_audio_sample_batch(audio);
@@ -155,7 +162,7 @@ void n64emu_deinit(void)
     core_runtime_deinit();
     free(system_directory); system_directory = NULL;
     memset(&host, 0, sizeof(host));
-    initialized = false; definitions = NULL; option_count = 0;
+    initialized = false; definitions = NULL; categories = NULL; option_count = category_count = 0;
 }
 bool n64emu_load(const char *path, const void *rom, size_t size)
 {
@@ -200,6 +207,14 @@ bool n64emu_get_option(unsigned index, n64emu_option *out)
     }
     return true;
 }
+unsigned n64emu_option_category_count(void) { return category_count; }
+bool n64emu_get_option_category(unsigned index, n64emu_option_category *out)
+{
+    if (!out || index >= category_count) return false;
+    const struct retro_core_option_v2_category *category = &categories[index];
+    *out = (n64emu_option_category){category->key, category->desc, category->info};
+    return true;
+}
 bool n64emu_set_option(const char *key, const char *value)
 {
     if (!initialized || !key || !value) return false;
@@ -220,3 +235,9 @@ void *n64emu_save_memory(size_t *size)
     if (size) *size = loaded ? core_runtime_get_memory_size(RETRO_MEMORY_SAVE_RAM) : 0;
     return loaded ? core_runtime_get_memory_data(RETRO_MEMORY_SAVE_RAM) : NULL;
 }
+
+bool n64emu_cheat_validate(const char *codes) { return core_runtime_cheat_validate(codes); }
+bool n64emu_cheat_set(unsigned index, bool enabled, const char *codes)
+{ return loaded && core_runtime_cheat_set(index, enabled, codes); }
+void n64emu_cheat_reset(void) { if (loaded) core_runtime_cheat_reset(); }
+void n64emu_cheat_press_button(void) { if (loaded) core_runtime_cheat_press_button(); }

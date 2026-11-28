@@ -337,6 +337,26 @@ bool Compiler::instruction(uint32_t op) {
     // Arithmetic into the zero register has no data result to emit.
     if (major ? !rt : !rd) return true;
     if(major==15) {constant(uint64_t(int64_t(int32_t(op<<16))));store(rt);return true;}
+    if (!major) {
+        if (rs == rt && (fn == 35 || fn == 38 || fn == 42 || fn == 43 || fn == 47)) {
+            host.imm(0, 0);
+            host.store(0, STATE, gpr(rd));
+            host.store(0, STATE, gpr(rd) + 4);
+            word_pending &= ~(1u << rd);
+            return true;
+        }
+        const bool copy_either = fn == 37 || fn == 38 || fn == 45;
+        if ((copy_either && (!rs || !rt)) || (fn == 47 && !rt) ||
+            (rs == rt && (fn == 36 || fn == 37))) {
+            const unsigned source = rs ? rs : rt;
+            if (rd != source) { load(source); store(rd); }
+            return true;
+        }
+    }
+    if (major == 25 && !uint16_t(op)) {
+        if (rt != rs) { load(rs); store(rt); }
+        return true;
+    }
     if (major == 9) {
         const uint32_t imm = uint32_t(int32_t(int16_t(op)));
         if (!rs) host.imm(0, imm);

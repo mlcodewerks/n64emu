@@ -5,11 +5,20 @@
 #include <string.h>
 
 struct renderer_settings renderer_settings;
+#ifndef N64EMU_USF
+static struct retro_core_option_v2_category categories[] = {
+    {"hacks", "Hacks", "Compatibility settings that can change game timing or behavior."},
+    {NULL, NULL, NULL}
+};
+#endif
 /* Legacy options are supported by every libretro frontend; first value is default.
  * Renderer resources are latched at content load; shared VI controls update live. */
 static const struct retro_variable options[] = {
 #ifndef N64EMU_USF
     {"n64emu_cycle_timing", "Cycle timing (restart required); on|off"},
+    {"n64emu_cpu_overclock", "CPU clock multiplier (restart required); 1x|2x|4x"},
+    {"n64emu_ignore_tlb_exceptions", "Ignore TLB exceptions (restart required); disabled|enabled"},
+    {"n64emu_disable_expansion_pak", "Disable Expansion Pak (restart required); disabled|enabled"},
 #endif
     {"wtfn64_angrylion_deinterlace", "VI deinterlacing; weave|bob"},
     {"wtfn64_vi_filter", "VI filtering; enabled|disabled"},
@@ -60,6 +69,18 @@ void renderer_register_options(retro_environment_t environment)
                 "Changes take effect while content is running.";
             if (!strcmp(d->key, "n64emu_cycle_timing"))
                 d->info = "On models CPU caches and pipeline interlocks. Off uses a fixed CPU RAM timing estimate and may skip disabled floating-point inexact-status reporting. Both retain arithmetic results, enabled exceptions and RCP timing. Restart content after changing this option.";
+            if (!strcmp(d->key, "n64emu_cpu_overclock")) {
+                d->info = "Run more emulated CPU cycles per system tick. 1x is stock. Higher multipliers can change game behavior. Save states require the same multiplier. Restart content after changing this option.";
+                d->category_key = "hacks";
+            }
+            if (!strcmp(d->key, "n64emu_ignore_tlb_exceptions")) {
+                d->info = "Suppress the CPU's TLB miss, invalid-entry and write-protection exceptions. Faulting accesses are skipped. Some ROM hacks rely on this behavior.";
+                d->category_key = "hacks";
+            }
+            if (!strcmp(d->key, "n64emu_disable_expansion_pak")) {
+                d->info = "Boot with a Jumper Pak and 4 MiB of RDRAM. Some games require 8 MiB. Save states require the same memory size.";
+                d->category_key = "hacks";
+            }
             if (!strcmp(d->key, "wtfn64_vi_filter") || !strcmp(d->key, "wtfn64_vi_dedither") ||
                 !strcmp(d->key, "wtfn64_vi_blur"))
                 d->info = "Applies immediately to SoftRDP.";
@@ -85,7 +106,11 @@ void renderer_register_options(retro_environment_t environment)
             legacy_definitions[i].default_value = d->default_value;
         }
         if (version >= 2) {
+#ifdef N64EMU_USF
             struct retro_core_options_v2 v2 = {NULL, definitions};
+#else
+            struct retro_core_options_v2 v2 = {categories, definitions};
+#endif
             /* SET_CORE_OPTIONS_V2 returns category support, not registration success. */
             environment(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &v2);
         } else environment(RETRO_ENVIRONMENT_SET_CORE_OPTIONS, legacy_definitions);
@@ -127,7 +152,11 @@ void renderer_read_options(retro_environment_t env)
 #else
     /* Explicit opt-in; obsolete/invalid settings leave Accurate enabled. */
     const char *timing = value(env, "n64emu_cycle_timing", "on");
+    const char *overclock = value(env, "n64emu_cpu_overclock", "1x");
     s->per_cycle_timing = strcmp(timing, "off") != 0;
+    s->cpu_overclock_shift = !strcmp(overclock, "2x") ? 1 : !strcmp(overclock, "4x") ? 2 : 0;
+    s->ignore_tlb_exceptions = toggle(env, "n64emu_ignore_tlb_exceptions", false);
+    s->disable_expansion_pak = toggle(env, "n64emu_disable_expansion_pak", false);
     s->relaxed_fp_status = N64EMU_RELAXED_FP_STATUS_AVAILABLE && !s->per_cycle_timing;
     s->component_timing = true;
 #endif

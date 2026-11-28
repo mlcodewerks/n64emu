@@ -431,6 +431,7 @@ void nmi_int_handler(void* opaque)
     // set next instruction address to reset vector
     r4300->cp0.last_addr = r4300->start_address;
     generic_jump_to(r4300, r4300->start_address);
+    if (dev->on_boot) dev->on_boot(dev);
 }
 
 
@@ -449,6 +450,7 @@ void reset_hard_handler(void* opaque)
     init_interrupt(&r4300->cp0);
     *r4300_pc_struct(r4300) = &r4300->instruction_pc;
     generic_jump_to(r4300, r4300->cp0.last_addr);
+    if (dev->on_boot) dev->on_boot(dev);
 }
 
 

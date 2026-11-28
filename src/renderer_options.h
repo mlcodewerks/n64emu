@@ -18,6 +18,8 @@ struct renderer_settings {
     bool per_cycle_timing;
     bool component_timing;
     bool relaxed_fp_status;
+    unsigned cpu_overclock_shift;
+    bool ignore_tlb_exceptions, disable_expansion_pak;
     unsigned threads, upscale;
     bool vi_filter, dedither, blur, overscan, bob;
     bool native_lod;

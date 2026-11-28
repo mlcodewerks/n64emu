@@ -76,6 +76,7 @@ struct n64emujit_config {
     unsigned alu_regions; /* Step callback implements phase 12. */
     unsigned fast_memory_timing;
     const bool* break_requested; /* Shared 32-bit direct-link stop guard. */
+    unsigned scaled_clock; /* Time native ALU regions through the common CPU model. */
 };
 struct n64emujit* n64emujit_create(void);
 void n64emujit_destroy(struct n64emujit*);

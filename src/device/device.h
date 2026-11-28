@@ -88,6 +88,7 @@ struct device
     struct cart cart;
 
     struct dd_controller dd;
+    void (*on_boot)(struct device* dev);
 };
 
 /* Setup device "static" properties.  */

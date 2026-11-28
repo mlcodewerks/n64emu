@@ -6,9 +6,11 @@
 
 #include "libretro.h"
 #include "libretro_private.h"
+#include "core/audio.h"
 #include "core/lifecycle.h"
 #include "core/file.h"
 #include "core/input.h"
+#include "core/cheats.h"
 
 #include "core/frontend.h"
 #include "device/rcp/rdp/softrdp/softrdp_video.h"
@@ -46,8 +48,6 @@
 #endif
 
 #define PATH_SIZE 2048
-
-#define ISHEXDEC ((codeLine[cursor] >= '0') && (codeLine[cursor] <= '9')) || ((codeLine[cursor] >= 'a') && (codeLine[cursor] <= 'f')) || ((codeLine[cursor] >= 'A') && (codeLine[cursor] <= 'F'))
 
 struct retro_perf_callback perf_cb;
 retro_get_cpu_features_t perf_get_cpu_features_cb = NULL;
@@ -186,6 +186,10 @@ void n64emu_usf_step(void)
 }
 #endif
 
+#ifndef N64EMU_USF
+static void apply_boot_cheats(struct device *dev) { cheats_apply(dev, true); }
+#endif
+
 void run_emulation_frame()
 {
     if (initializing)
@@ -193,6 +197,10 @@ void run_emulation_frame()
         extern void main_prerun(void);
         main_prerun();
         initializing = false;
+#ifndef N64EMU_USF
+        g_dev.on_boot = apply_boot_cheats;
+        apply_boot_cheats(&g_dev);
+#endif
     }
     main_run();
 }
@@ -548,6 +556,7 @@ load_failed:
 void core_runtime_unload_game(void)
 {
     sync_close();
+    core_runtime_cheat_reset();
 
     /* Release backends and decoded CPU code before unmapping guest memory. */
     core_close_content();
@@ -573,7 +582,7 @@ void update_variables(bool startup)
         retro_screen_aspect = 4.0 / 3.0;
         AspectRatio = 1; // Aspect::a43
         EnableOverscan = 0;
-        IgnoreTLBExceptions = 1;
+        IgnoreTLBExceptions = renderer_settings.ignore_tlb_exceptions ? TLB_EXCEPTIONS_IGNORE_ALL : 1;
         update_controllers();
     }
     else
@@ -606,6 +615,11 @@ void core_runtime_run(void)
     const bool first_frame = initializing;
     const int64_t audio_start_clock = g_dev.r4300.cp0.count_clock;
     run_emulation_frame();
+#ifndef N64EMU_USF
+    if (input_cb && cheats_use_button() && input_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3))
+        cheats_press_button();
+    cheats_apply(&g_dev, false);
+#endif
     /* The frontend must pace these same guest fields, rather than advancing
      * a nominal 60/50 fields per wall-clock second for every VI mode. */
     const double refresh_rate = vi_actual_refresh_rate(&g_dev.vi);
@@ -663,7 +677,7 @@ size_t core_runtime_get_memory_size(unsigned type)
     switch (type)
     {
     case RETRO_MEMORY_SYSTEM_RAM:
-        return RDRAM_MAX_SIZE;
+        return renderer_settings.disable_expansion_pak ? RDRAM_BASE_SIZE : RDRAM_MAX_SIZE;
     case RETRO_MEMORY_TRANSFERPAK:
     case RETRO_MEMORY_DD:
     case RETRO_MEMORY_SAVE_RAM:
@@ -696,6 +710,10 @@ bool core_runtime_unserialize(const void *data, size_t size)
                    version >= 0x00010b00 ? 8192 : version >= 0x00010200 ? 4096 : 0;
     if (size < 16788288 + 1024 + 4 + extra) return false;
     if(!main_stateload(data))return false;
+#ifndef N64EMU_USF
+    /* Queued PCM and resampler history belong to the abandoned timeline. */
+    reset_audio_timeline_libretro(&g_dev.ai);
+#endif
     return true;
 }
 
@@ -719,34 +737,42 @@ unsigned core_runtime_api_version(void) { return RETRO_API_VERSION; }
 
 void core_runtime_cheat_reset(void)
 {
+#ifndef N64EMU_USF
+    cheats_clear();
+#endif
 }
 
-void core_runtime_cheat_set(unsigned index, bool enabled, const char *codeLine)
+bool core_runtime_cheat_set(unsigned index, bool enabled, const char *codes)
 {
+#ifdef N64EMU_USF
+    (void)index;
+    (void)enabled;
+    (void)codes;
+    return false;
+#else
+    return load_game_successful && cheats_set(index, enabled, codes);
+#endif
+}
+
+bool core_runtime_cheat_validate(const char *codes)
+{
+#ifdef N64EMU_USF
+    (void)codes;
+    return false;
+#else
+    return cheats_validate(codes);
+#endif
+}
+
+void core_runtime_cheat_press_button(void)
+{
+#ifndef N64EMU_USF
+    if (load_game_successful) cheats_press_button();
+#endif
 }
 
 void retro_return(void)
 {
-}
-
-static int GamesharkActive = 0;
-
-int event_gameshark_active(void)
-{
-    return GamesharkActive;
-}
-
-void event_set_gameshark(int active)
-{
-    // if boolean value doesn't change then just return
-    if (!active == !GamesharkActive)
-        return;
-
-    // set the button state
-    GamesharkActive = (active ? 1 : 0);
-
-    // notify front-end application that gameshark button state has changed
-
 }
 
 
@@ -857,6 +883,26 @@ void renderer_framebuffer_read_range(unsigned address, unsigned size) {
 #endif /* !N64EMU_USF: audio builds supply renderer stubs. */
 
 #if defined(N64EMU_HEADLESS_BENCHMARK)
+CORE_EXPORT void retro_debug_av_timing(struct core_av_timing_snapshot *out)
+{
+    const struct cp0 *cp0 = &g_dev.r4300.cp0;
+    *out = (struct core_av_timing_snapshot) {
+        .clock = cp0->count_clock,
+        .vi_boundary = g_dev.vi.field_start_count_clock,
+        .rdp_deadline = g_dev.dp.timing.deadline,
+        .vi_origin = g_dev.vi.regs[VI_ORIGIN_REG],
+        .ai_divider = g_dev.ai.regs[AI_DACRATE_REG],
+        .ai_status = g_dev.ai.regs[AI_STATUS_REG],
+        .ai_remaining = g_dev.ai.last_read,
+        .ai_queued = (g_dev.ai.regs[AI_STATUS_REG] >> 31) ? g_dev.ai.fifo[1].length : 0,
+    };
+    for (const struct node *event = cp0->q.first; event; event = event->next) {
+        if (event->data.type == DP_INT) out->dp_irq = event->data.deadline;
+        if (event->data.type == RSP_DMA_EVT) out->rsp_dma = event->data.deadline;
+        if (event->data.type == AI_INT) out->ai_completion = event->data.deadline;
+    }
+}
+
 /* Sample at the video callback, before the next field changes VI registers. */
 CORE_EXPORT void retro_debug_vi(uint32_t out[14])
 {
@@ -869,7 +915,7 @@ CORE_EXPORT void retro_debug_vi(uint32_t out[14])
 CORE_EXPORT bool retro_debug_peek_word(uint32_t address, uint32_t *out)
 {
     struct r4300_core *r = &g_dev.r4300;
-    if ((address & 3) || address >= 0x800000) return false;
+    if ((address & 3) || address >= core_runtime_get_memory_size(RETRO_MEMORY_SYSTEM_RAM)) return false;
     if (out) {
         unsigned index = (address >> 4) & 511;
         if (r->cache_timing == 1 &&

@@ -53,7 +53,7 @@ struct rdp_timing {
     uint32_t vi_field_ticks;
     uint64_t vi_elapsed;
     uint32_t span_fraction; /* Submission-local Q8 remainder; never serialized. */
-    uint32_t overlap_span_startup; /* Derived timing policy; never serialized. */
+    uint32_t overlap_span_startup; /* Derived fast timing profile; never serialized. */
 };
 
 /* Command-derived uniform regions are proofs, not samples from GPU-stale
@@ -681,7 +681,7 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t, struct rdp
         (color>>24)==(depth>>24) && (color>>23)!=(depth>>23);
     unsigned compare_only_feedback=t->cycle_type && profile==7 &&
         (t->modes&0x2cc8u)==0x840u;
-    unsigned interleaved=(paired && !t->cycle_type) || compare_only_feedback;
+    unsigned response_after_vi=(paired && !t->cycle_type) || compare_only_feedback;
     unsigned response=paired && t->cycle_type?60u:49u;
     /* A pixel-alpha forced blend consumes framebuffer feedback after the
      * combiner, without the earlier AA memory-coverage dependency. Independent
@@ -715,8 +715,15 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t, struct rdp
     }
     unsigned shared=rdp_timing_shared_bank_read_response(t,vi,q,color,depth,color_read,depth_read);
     if(shared>response)response=shared;
+    /* Accurate timing treats the default independent-device one-cycle read
+     * fill as elapsed pipeline time. VI arbitration stretches the transfers,
+     * then the response floor bounds their completion. The fast profile uses
+     * its calibrated response before arbitration and its FullSync allowance. */
+    if (!t->overlap_span_startup && !t->cycle_type && profile == 15 &&
+        independent_devices && !parallel_feedback)
+        response_after_vi = 1;
     uint64_t transient=(color_read+depth_read)*response*256;
-    if(!interleaved) {
+    if(!response_after_vi) {
         RDP_TIMING_OBSERVE_RESPONSE(t,transient>q?(transient-q+255)/256:0);
         if(q<transient)q=transient;
     }
@@ -731,7 +738,7 @@ static inline uint64_t rdp_timing_buffered_span(struct rdp_timing *t, struct rdp
     } else q+=startup*256u;
     q=rdp_timing_buffered_vi(t,vi,q,profile,color,depth,color_live,depth_live);
     if(q==UINT64_MAX)return q;
-    if(interleaved) {
+    if(response_after_vi) {
         transient+=startup*256u;
         RDP_TIMING_OBSERVE_RESPONSE(t,transient>q?(transient-q+255)/256:0);
         if(q<transient)q=transient;

@@ -29,7 +29,16 @@ bool core_runtime_serialize(void *data, size_t size);
 bool core_runtime_unserialize(const void *data, size_t size);
 void  core_runtime_set_controller_port_device(unsigned in_port, unsigned device);
 void  core_runtime_cheat_reset(void);
-void  core_runtime_cheat_set(unsigned index, bool enabled, const char *codeLine);
+bool core_runtime_cheat_set(unsigned index, bool enabled, const char *codes);
+bool core_runtime_cheat_validate(const char *codes);
+void core_runtime_cheat_press_button(void);
+
+/* Optional export in HEADLESS_BENCHMARK builds. Clocks are CP0 COUNT ticks. */
+struct core_av_timing_snapshot {
+    int64_t clock, vi_boundary, rdp_deadline, dp_irq, rsp_dma, ai_completion;
+    uint32_t vi_origin, ai_divider, ai_status, ai_remaining, ai_queued;
+};
+void retro_debug_av_timing(struct core_av_timing_snapshot *out);
 #ifdef __cplusplus
 }
 #endif

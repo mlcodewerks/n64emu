@@ -29,6 +29,9 @@ typedef struct n64emu_option {
     unsigned count;
     const char *values[128], *labels[128];
 } n64emu_option;
+typedef struct n64emu_option_category {
+    const char *key, *label, *info;
+} n64emu_option_category;
 typedef struct n64emu_host {
     void *userdata;
     /* XRGB8888; NULL pixels duplicates the previous frame. */
@@ -50,11 +53,20 @@ void n64emu_get_av(n64emu_av *av);
 void n64emu_set_controller(unsigned port, bool connected);
 unsigned n64emu_option_count(void);
 bool n64emu_get_option(unsigned index, n64emu_option *option);
+unsigned n64emu_option_category_count(void);
+bool n64emu_get_option_category(unsigned index, n64emu_option_category *category);
 bool n64emu_set_option(const char *key, const char *value);
 size_t n64emu_state_size(void);
 bool n64emu_save_state(void *data, size_t size);
 bool n64emu_load_state(const void *data, size_t size);
 void *n64emu_save_memory(size_t *size); /* valid until unload */
+/* GameShark address/value pairs, separated by whitespace, '+', ';' or ','.
+ * A NULL code toggles an existing index. A failed replacement leaves it intact.
+ * Disabling or clearing codes stops future writes. Codes clear on unload. */
+bool n64emu_cheat_validate(const char *codes);
+bool n64emu_cheat_set(unsigned index, bool enabled, const char *codes);
+void n64emu_cheat_reset(void);
+void n64emu_cheat_press_button(void); /* for the next frame */
 #ifdef __cplusplus
 }
 #endif

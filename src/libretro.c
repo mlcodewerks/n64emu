@@ -1,5 +1,6 @@
 /* Optional libretro ABI adapter. The standalone executable does not link this. */
 #include "core/runtime.h"
+#include "core/log.h"
 void  retro_init(void) { core_runtime_init(); }
 void  retro_deinit(void) { core_runtime_deinit(); }
 unsigned retro_api_version(void) { return core_runtime_api_version(); }
@@ -24,4 +25,10 @@ bool retro_serialize(void *data, size_t size) { return core_runtime_serialize(da
 bool retro_unserialize(const void *data, size_t size) { return core_runtime_unserialize(data, size); }
 void  retro_set_controller_port_device(unsigned in_port, unsigned device) { core_runtime_set_controller_port_device(in_port, device); }
 void  retro_cheat_reset(void) { core_runtime_cheat_reset(); }
-void  retro_cheat_set(unsigned index, bool enabled, const char *codeLine) { core_runtime_cheat_set(index, enabled, codeLine); }
+void retro_cheat_set(unsigned index, bool enabled, const char *codes)
+{
+    if (!core_runtime_cheat_set(index, enabled, codes)) {
+        if (enabled) core_log(CORE_LOG_WARNING, "Unsupported N64 cheat at index %u", index);
+        else core_runtime_cheat_set(index, false, NULL);
+    }
+}

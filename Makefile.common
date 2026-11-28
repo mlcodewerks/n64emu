@@ -101,6 +101,7 @@ ifeq ($(USF),1)
 # protection, presentation code, renderer worker pool or image/video decoder.
 SOURCES_C += $(CORE_DIR)/src/usf/rdp_stubs.c
 else
+SOURCES_C += $(CORE_DIR)/src/core/cheats.c
 SOURCES_C += $(addprefix $(CORE_DIR)/src/device/rcp/rdp/,fb.c rdp_core.c) \
              $(CORE_DIR)/src/device/rcp/rdp/performance_cores.c
 SOURCES_C += $(SOFTRDP_DIR)/worker_pool.c \

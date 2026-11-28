@@ -27,6 +27,7 @@ static unsigned MAX_AUDIO_FRAMES = 2048;
 
 static double GameFreq = 33600.0;
 #define AUDIO_QUEUE_FRAMES 16384
+#define AUDIO_PREROLL_FRAMES 32
 static int16_t audio_queue[AUDIO_QUEUE_FRAMES * 2];
 static size_t audio_read, audio_count, audio_due;
 static double audio_fraction;
@@ -63,19 +64,38 @@ void deinit_audio_libretro(void)
    audio_out_buffer_s16 = NULL;
 }
 
-void init_audio_libretro(unsigned max_audio_frames)
+static double game_audio_frequency(const struct ai_controller *ai, unsigned int fallback)
+{
+   return ai && ai->vi && ai->vi->clock && ai->regs[AI_DACRATE_REG]
+      ? ai->vi->clock / (ai->regs[AI_DACRATE_REG] + 1.0)
+      : fallback;
+}
+
+void reset_audio_timeline_libretro(const struct ai_controller *ai)
 {
    audio_read = audio_due = 0;
    /* Cover resampler startup and sample quantization, below 1 ms at 44.1 kHz. */
-   audio_count = 32;
+   audio_count = AUDIO_PREROLL_FRAMES;
    memset(audio_queue, 0, audio_count * 2 * sizeof(*audio_queue));
    audio_fraction = 0;
    dac_left = dac_right = 0;
    dac_valid = 0;
-   audio_frame_started = 0;
-   GameFreq = 33600.0;
-   retro_resampler_realloc(&resampler_audio_data, &resampler, "sinc", RESAMPLER_QUALITY_DONTCARE, 1.0);
+   audio_frame_started = ai != NULL;
+   GameFreq = game_audio_frequency(ai, ai ? 44100 : 33600);
 
+   void *new_data = NULL;
+   const retro_resampler_t *new_resampler = NULL;
+   if (retro_resampler_realloc(&new_data, &new_resampler, "sinc", RESAMPLER_QUALITY_DONTCARE, 1.0)) {
+      if (resampler_audio_data)
+         resampler->free(resampler_audio_data);
+      resampler_audio_data = new_data;
+      resampler = new_resampler;
+   }
+}
+
+void init_audio_libretro(unsigned max_audio_frames)
+{
+   reset_audio_timeline_libretro(NULL);
    MAX_AUDIO_FRAMES = max_audio_frames;
 
    audio_in_buffer_float  = malloc(2 * MAX_AUDIO_FRAMES * sizeof(float));
@@ -92,10 +112,7 @@ void init_audio_libretro(unsigned max_audio_frames)
 static void set_audio_format_via_libretro(void* user_data,
       unsigned int frequency)
 {
-   const struct ai_controller* ai = user_data;
-   GameFreq = ai && ai->vi && ai->vi->clock && ai->regs[AI_DACRATE_REG]
-      ? ai->vi->clock / (ai->regs[AI_DACRATE_REG] + 1.0)
-      : (frequency ? frequency : 44100.0);
+   GameFreq = game_audio_frequency(user_data, frequency ? frequency : 44100);
 }
 
 static void queue_audio(const int16_t *samples, size_t frames)
@@ -167,7 +184,7 @@ void audio_end_frame_libretro(double seconds)
    if (audio_due > AUDIO_QUEUE_FRAMES) audio_due = AUDIO_QUEUE_FRAMES;
    if (!dac_valid) {
       static const int16_t silence[512] = {0};
-      size_t target = audio_due + 32;
+      size_t target = audio_due + AUDIO_PREROLL_FRAMES;
       if (target > AUDIO_QUEUE_FRAMES) target = AUDIO_QUEUE_FRAMES;
       while (audio_count < target) {
          size_t n = target - audio_count;

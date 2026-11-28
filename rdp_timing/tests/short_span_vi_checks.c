@@ -33,29 +33,30 @@ static unsigned shared_bank_read_response(const struct rdp_timing *t, uint64_t s
         color_read, depth_read);
 }
 
-/* Frozen Q8 costs from the pre-change policy for unaffected topologies and
- * long spans, and the published response floors for the changed short spans.
- * The long two-cycle same-device tuple includes shared read recovery.
- * Addresses are eight-byte beats, as consumed by buffered_span. */
+/* Cover both timing profiles, quiet and active scanout, and the frozen Q8
+ * costs for the remaining topologies. The long two-cycle same-device case
+ * includes shared read recovery. The byte addresses become bit offsets. */
 static unsigned topology_checks(void)
 {
     static const struct {
-        unsigned cycle, pixels, color, depth, profile, scanout, phase, q8;
+        unsigned cycle, pixels, color, depth, profile, scanout, phase, fast, q8;
     } cases[] = {
-        {0,1,0,0,15,4,100000,32312},
-        {1,1,0,0,15,4,100000,32006},
-        {0,1,0,0x200000,15,4,100000,32949},
-        {1,1,0,0x200000,15,4,100000,32544},
-        {0,1,0,0x100000,15,0,0,28928},
-        {1,1,0,0x100000,15,0,0,34560},
-        {0,1,0,0x100000,15,4,100000,28928},
-        {1,1,0,0x100000,15,4,100000,38880},
-        {0,8,0,0x100000,7,4,700000,28928},
-        {1,8,0,0x100000,7,4,700000,38880},
-        {0,1,0x100000,0,15,4,100000,28928},
-        {0,1,0,0x100000,13,4,100000,18465},
-        {0,320,0,0x100000,15,4,100000,340106},
-        {1,320,0,0x100000,15,4,100000,344968}
+        {0,1,0,0,15,4,100000,0,32312},
+        {1,1,0,0,15,4,100000,0,32006},
+        {0,1,0,0x200000,15,0,0,0,28928},
+        {0,1,0,0x200000,15,4,100000,0,28928},
+        {0,1,0,0x200000,15,4,100000,1,32949},
+        {1,1,0,0x200000,15,4,100000,0,32544},
+        {0,1,0,0x100000,15,0,0,0,28928},
+        {1,1,0,0x100000,15,0,0,0,34560},
+        {0,1,0,0x100000,15,4,100000,0,28928},
+        {1,1,0,0x100000,15,4,100000,0,38880},
+        {0,8,0,0x100000,7,4,700000,0,28928},
+        {1,8,0,0x100000,7,4,700000,0,38880},
+        {0,1,0x100000,0,15,4,100000,0,28928},
+        {0,1,0,0x100000,13,4,100000,0,18465},
+        {0,320,0,0x100000,15,4,100000,0,340106},
+        {1,320,0,0x100000,15,4,100000,0,344968}
     };
     unsigned i;
     for (i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i) {
@@ -65,6 +66,7 @@ static unsigned topology_checks(void)
         uint64_t clocks;
         memset(&t, 0, sizeof(t)); memset(vi, 0, sizeof(vi));
         t.fb_size = 2; t.cycle_type = cases[i].cycle;
+        t.overlap_span_startup = cases[i].fast;
         t.reject = p >> 4; t.modes = t.reject ? 0x20 : 0;
         if (cases[i].scanout) {
             vi[0] = 2; vi[1] = (cases[i].scanout - 1)*0x100000;

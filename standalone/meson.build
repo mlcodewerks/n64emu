@@ -8,6 +8,7 @@ if cpp.get_id() == 'gcc'
   add_project_link_arguments('-static', '-static-libgcc', '-static-libstdc++', language: 'cpp')
 endif
 inc = include_directories('src', 'third_party/imgui', 'third_party/ImGuiColorTextEdit', 'third_party/libretro', 'third_party/librashader', 'third_party/fonts', '../src', 'third_party/cjson')
+core_inc = include_directories('../deps/libretro-common/include')
 deps = [dependency('threads')]
 foreach lib : ['dinput8', 'dxguid', 'xinput1_4', 'ole32', 'uuid', 'user32', 'gdi32', 'shell32', 'dwmapi', 'imm32', 'avrt']
   deps += cpp.find_library(lib)
@@ -22,7 +23,7 @@ platform = static_library('platform', ['src/common.cpp', 'src/config_store.cpp',
   'src/shader_library.cpp', 'src/shader_runtime.cpp', 'src/shader_diagnostics.cpp', 'src/shader_source_io.cpp', 'src/dsp_chain.cpp', 'src/dsp_chain_window.cpp',
   'third_party/imgui/imgui.cpp', 'third_party/imgui/imgui_draw.cpp', 'third_party/imgui/imgui_tables.cpp', 'third_party/imgui/imgui_widgets.cpp',
   'third_party/imgui/imgui_impl_win32.cpp', 'third_party/imgui/imgui_impl_dx9.cpp'],
-  include_directories: [inc, include_directories('../deps/libretro-common/include')], dependencies: deps)
+  include_directories: [inc, core_inc], dependencies: deps)
 
 # The core is built with its own native build rules, including scale variants and
 # runtime SIMD dispatch. build_core.py creates an archive without libretro.c.
@@ -40,12 +41,12 @@ if strip_release
   endif
   app_link_args += ['-Wl,--strip-all']
 endif
-app = executable('n64emu', ['src/main.cpp', 'src/core.cpp'], include_directories: inc,
+app = executable('n64emu', ['src/main.cpp', 'src/core.cpp'], include_directories: [inc, core_inc],
   link_with: platform, dependencies: deps, link_args: app_link_args,
   link_depends: core_archive, win_subsystem: 'windows', install: true)
 font_tests = executable('font-tests', 'tests/font_tests.cpp', include_directories: inc, link_with: platform, dependencies: deps)
 test('embedded-fonts', font_tests, timeout: 15)
-dialog_tests = executable('config-dialog-tests', ['tests/config_dialog_tests.cpp', 'src/core.cpp'], include_directories: inc,
+dialog_tests = executable('config-dialog-tests', ['tests/config_dialog_tests.cpp', 'src/core.cpp'], include_directories: [inc, core_inc],
   link_with: platform, dependencies: deps, link_args: [core_archive.full_path()], link_depends: core_archive)
 test('configuration-dialogs', dialog_tests, args: [meson.current_build_dir() / 'config-dialog-test'], timeout: 15)
 config_tests = executable('config-store-tests', 'tests/config_store_tests.cpp', include_directories: inc, link_with: platform, dependencies: deps)

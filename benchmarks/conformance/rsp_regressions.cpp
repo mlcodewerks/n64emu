@@ -52,6 +52,32 @@ int main(int argc, char **argv)
 {
     pipeline_overlap_checks();
     Fixture f;
+    for (bool constant : {false, true}) {
+        auto &state = f.cpu.get_state();
+        const uint32_t address = 0x95abcdef;
+        state.sr[1] = address;
+        f.cr[2] = 0x80000000;
+        f.cr[3] = 0xdeadbeef;
+        f.cr[5] = f.cr[6] = f.cr[7] = 1;
+        unsigned pc = 0;
+        if (constant) {
+            f.imem[pc++] = i_op(15, 1, 0, address >> 16);
+            f.imem[pc++] = i_op(13, 1, 1, address);
+        }
+        for (unsigned reg : {16u, 17u, 5u, 6u, 7u})
+            f.imem[pc++] = i_op(0x10, 1, 4, reg << 11);
+        for (unsigned reg = 0; reg < 4; ++reg)
+            f.imem[pc++] = i_op(0x10, reg + 2, 0, reg << 11);
+        f.imem[pc++] = i_op(0x10, 0, 0, 3 << 11);
+        f.imem[pc] = 13;
+        f.restart();
+        require(f.cpu.run() == MODE_BREAK, "CP0 latch sequence terminates");
+        require(state.sr[2] == (address & 0x1ff8) && state.sr[3] == (address & 0xfffff8),
+                "CP0 DMA address aliases and alignment");
+        require(state.sr[4] == f.cr[2] && state.sr[5] == f.cr[3] && !state.sr[0],
+                "CP0 length reads including r0");
+        require(f.cr[5] == 1 && f.cr[6] == 1 && !f.cr[7], "CP0 busy/full are read-only and semaphore clears");
+    }
     unsigned checks = 0;
     for (uint32_t value : {0u,1u,0x7fffu,0x8000u,0x7fffffffu,0x80000000u,0xffff8000u,0xffffffffu})
         for (unsigned imm : {0u,1u,0x7fffu,0x8000u,0xffffu}) for (unsigned constant=0;constant<2;++constant) {

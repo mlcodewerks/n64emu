@@ -5,6 +5,8 @@
 static unsigned version, registered, timing_queries;
 static const char *obsolete_timing;
 static const char *cycle_timing;
+static const char *cpu_overclock;
+static const char *compatibility_hack;
 static unsigned timing_registered;
 static const char *overscan;
 static unsigned crop_registered;
@@ -24,6 +26,8 @@ static bool environment(unsigned command, void *data)
                 assert(strstr(v->value, "; on|off")); ++timing_registered;
                 assert(strstr(v->value,"|fast")==NULL);
             }
+            if (!strcmp(v->key, "n64emu_cpu_overclock"))
+                assert(strstr(v->value, "(restart required); 1x|2x|4x"));
             if (!strcmp(v->key, "wtfn64_crop_overscan")) {
                 assert(!strcmp(v->value, "Crop overscan; enabled|disabled"));
                 ++crop_registered;
@@ -39,6 +43,8 @@ static bool environment(unsigned command, void *data)
                 assert(!strcmp(d->default_value, "on")); ++timing_registered;
                 assert(d->values[2].value==NULL);
             }
+            if (!strcmp(d->key, "n64emu_cpu_overclock"))
+                assert(!strcmp(d->default_value, "1x") && !strcmp(d->values[2].value, "4x"));
             if (!strcmp(d->key, "wtfn64_crop_overscan")) {
                 assert(!strcmp(d->default_value, "enabled"));
                 ++crop_registered;
@@ -48,15 +54,27 @@ static bool environment(unsigned command, void *data)
     }
     case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: {
         const struct retro_core_options_v2 *v2 = data;
-        assert(!v2->categories || !v2->categories[0].key);
+#ifdef N64EMU_USF
+        assert(!v2->categories);
+#else
+        assert(v2->categories && !strcmp(v2->categories[0].key, "hacks"));
+        assert(!strcmp(v2->categories[0].desc, "Hacks") && !v2->categories[1].key);
+#endif
         const struct retro_core_option_v2_definition *d = v2->definitions;
         for (; d->key; ++d) {
-            assert(!d->category_key);
             assert(strcmp(d->key, "wtfn64_timing"));
             if (!strcmp(d->key, "n64emu_cycle_timing")) {
                 assert(!strcmp(d->default_value, "on")); ++timing_registered;
                 assert(d->values[2].value==NULL);
             }
+            if (!strcmp(d->key, "n64emu_cpu_overclock")) {
+                assert(!strcmp(d->default_value, "1x") && !strcmp(d->values[1].value, "2x"));
+                assert(d->category_key && !strcmp(d->category_key, "hacks"));
+            } else if (!strcmp(d->key, "n64emu_ignore_tlb_exceptions") ||
+                       !strcmp(d->key, "n64emu_disable_expansion_pak")) {
+                assert(d->category_key && !strcmp(d->category_key, "hacks"));
+                assert(!strcmp(d->default_value, "disabled") && !strcmp(d->values[1].value, "enabled"));
+            } else assert(!d->category_key);
             ++registered;
             if (!strcmp(d->key, "wtfn64_crop_overscan")) {
                 assert(!strcmp(d->default_value, "enabled"));
@@ -69,6 +87,13 @@ static bool environment(unsigned command, void *data)
         struct retro_variable *v = data;
         if (!strcmp(v->key, "n64emu_cycle_timing")) {
             v->value = cycle_timing; return cycle_timing != NULL;
+        }
+        if (!strcmp(v->key, "n64emu_cpu_overclock")) {
+            v->value = cpu_overclock; return cpu_overclock != NULL;
+        }
+        if (!strcmp(v->key, "n64emu_ignore_tlb_exceptions") ||
+            !strcmp(v->key, "n64emu_disable_expansion_pak")) {
+            v->value = compatibility_hack; return compatibility_hack != NULL;
         }
         if (!strcmp(v->key, "wtfn64_crop_overscan")) {
             v->value = overscan; return overscan != NULL;
@@ -92,7 +117,7 @@ int main(void)
 #ifdef N64EMU_USF
         assert(registered == 9 && timing_registered == 0);
 #else
-        assert(registered == 10 && timing_registered == 1);
+        assert(registered == 13 && timing_registered == 1);
 #endif
         assert(crop_registered == 1);
         for (unsigned i = 0; i < sizeof(old_values)/sizeof(old_values[0]); ++i) {
@@ -106,6 +131,32 @@ int main(void)
         }
     }
     assert(timing_queries == 0);
+    const char *clock_values[] = {"1x", "2x", "4x", NULL, "invalid"};
+    for (unsigned i = 0; i < sizeof(clock_values) / sizeof(clock_values[0]); ++i) {
+        cpu_overclock = clock_values[i];
+        renderer_read_options(environment);
+#ifdef N64EMU_USF
+        unsigned shift = 0;
+#else
+        unsigned shift = i < 3 ? i : 0;
+#endif
+        assert(renderer_settings.cpu_overclock_shift == shift);
+        cpu_overclock = "1x";
+        renderer_read_live_options(environment);
+        assert(renderer_settings.cpu_overclock_shift == shift);
+    }
+    compatibility_hack = "enabled";
+    renderer_read_options(environment);
+#ifdef N64EMU_USF
+    assert(!renderer_settings.ignore_tlb_exceptions && !renderer_settings.disable_expansion_pak);
+#else
+    compatibility_hack = "disabled";
+    renderer_read_live_options(environment);
+    assert(renderer_settings.ignore_tlb_exceptions && renderer_settings.disable_expansion_pak);
+#endif
+    compatibility_hack = NULL;
+    renderer_read_options(environment);
+    assert(!renderer_settings.ignore_tlb_exceptions && !renderer_settings.disable_expansion_pak);
     const char *timing_values[] = {NULL, "off", "on", "fast", "invalid"};
     for (unsigned i = 0; i < sizeof(timing_values)/sizeof(timing_values[0]); ++i) {
         cycle_timing = timing_values[i];
@@ -137,6 +188,6 @@ int main(void)
         assert(renderer_settings.overscan);
     }
     puts("Crop overscan: legacy/v1/v2 registration, startup and live toggles passed.");
-    puts("Flat legacy/v1/v2 options and game/USF timing policy passed, including obsolete saved settings.");
+    puts("Legacy and categorized options and game/USF timing policy passed, including obsolete saved settings.");
     return 0;
 }

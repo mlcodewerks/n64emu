@@ -1,5 +1,6 @@
 /* Independent architectural vectors, in both timing modes. No ROM needed. */
 #include "headless.h"
+#include "core/frontend.h"
 #define main existing_cpu_timing_main
 #include "../benchmarks/cpu_timing.c"
 #undef main
@@ -91,5 +92,33 @@ int main(void)
         fresh(timing);code[0]=R(0x2d);cpu.cp0.regs[CP0_STATUS_REG]=CP0_STATUS_MODE_U;
         r4300_ops_execute_one(&cpu);assert((cpu.cp0.regs[CP0_CAUSE_REG]&0x7c)==0x10);++cases;
     }
+    for (unsigned cached = 0; cached < 2; ++cached) {
+        for (unsigned timing = 0; timing < 2; ++timing) {
+            for (unsigned ignore = 0; ignore < 2; ++ignore) {
+                setup(cached);
+                cpu.cache_timing = timing;
+                cpu.compat_issue_clock = !timing;
+                cpu.cp0.regs[CP0_STATUS_REG] = 0;
+                cpu.cp0.regs[CP0_CAUSE_REG] = 0;
+                cpu.cp0.cycle_count = -100000;
+                IgnoreTLBExceptions = ignore ? TLB_EXCEPTIONS_IGNORE_ALL : 0;
+                code[0] = 0x8c230000; /* LW r3, 0(r1), no TLB entry. */
+                cpu.regs[1] = 0x123000;
+                cpu.regs[3] = 0x55;
+                cpu.execute_one(&cpu);
+                assert(cpu.regs[3] == 0x55);
+                assert((cpu.cp0.regs[CP0_CAUSE_REG] & 0x7c) == (ignore ? 0 : CP0_CAUSE_EXCCODE_TLBL));
+                assert(cpu.instruction_pc.addr == (ignore ? 0x80000004 : 0x80000000));
+                if (ignore) {
+                    cpu.instruction_pc.addr = 0x123000;
+                    cpu.execute_one(&cpu);
+                    assert(cpu.instruction_pc.addr == 0x123004);
+                    assert(!(cpu.cp0.regs[CP0_STATUS_REG] & CP0_STATUS_EXL));
+                }
+                ++cases;
+            }
+        }
+    }
+    IgnoreTLBExceptions = 0;
     r4300_jit_destroy(&cpu);printf("CPU operations: %u independent timing-mode vectors passed.\n",cases);return 0;
 }

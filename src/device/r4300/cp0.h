@@ -180,10 +180,21 @@ struct cp0
     struct interrupt_handler interrupt_handlers[CP0_INTERRUPT_HANDLERS_COUNT];
 
     uint32_t last_addr;
-    uint32_t count_phase; /* CPU cycles modulo two; serialized since 1.9 */
+    uint32_t count_phase; /* CPU cycles accumulated toward the next COUNT tick. */
+    unsigned overclock_shift; /* log2 of the CPU clock multiplier. */
 
     struct tlb tlb;
 };
+
+static inline unsigned cp0_cpu_clock_shift(const struct cp0* cp0)
+{
+#ifdef N64EMU_USF
+    (void)cp0;
+    return 1;
+#else
+    return 1 + cp0->overclock_shift;
+#endif
+}
 
 #define R4300_CP0_REGS_OFFSET (\
     offsetof(struct r4300_core, cp0) + \

@@ -16,6 +16,7 @@ void parallelRSPSetDpcCallbacks(void* opaque,
 void parallelRSPSetDmaCallbacks(void* opaque,
     void (*read)(void*, uint32_t, uint32_t),
     void (*write)(void*, uint32_t, uint32_t));
+void parallelRSPSetRdramSize(uint32_t size);
 unsigned int parallelRSPExecutedCycles(void);
 enum { PARALLEL_RSP_STATE_WORDS = 369 };
 /* Five scalar control words and 33 GPR words precede the vector bank. */

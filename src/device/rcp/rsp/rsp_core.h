@@ -84,6 +84,7 @@ struct rsp_core
     struct ri_controller* ri;
     struct sp_dma fifo[SP_DMA_FIFO_SIZE];
     int64_t dma_end_clock;
+    uint32_t dma_end_overhang;
     /* Timed RSP continuations advance from scheduled boundaries, even if the
      * CPU services SP_INT late. Overhang is excess quarter COUNT ticks at the
      * start/end of a slice; only the end phase must be saved. */

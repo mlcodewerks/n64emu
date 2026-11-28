@@ -540,7 +540,8 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     uint32_t extended_ops[MAX_INSTRUCTIONS];
     unsigned branch_index = MAX_INSTRUCTIONS;
     bool ram_delay=false,fpu_zero_delay=false;
-    if (optimized && config && config->has_delay && !config->idle_end && count < MAX_INSTRUCTIONS &&
+    const bool scaled_clock = optimized && config && config->scaled_clock;
+    if (optimized && config && !scaled_clock && config->has_delay && !config->idle_end && count < MAX_INSTRUCTIONS &&
         native_branch_opcode(r4300_get_idec(ops[count - 1])->opcode) &&
         !((ops[count-1]>>26)==17 && ((((ops[count-1]>>21)&31)!=8) ||
             (((ops[count-1]>>16)&31)>=4) ||
@@ -638,6 +639,26 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     JIT(endbr64());
     for (unsigned i = 0; i < count;) {
         enum r4300_opcode op = decoded_ops[i];
+        if (scaled_clock) {
+            if (!native_opcode(op)) {
+                exits[exit_count++] = emit_step(block, i++, 2, step);
+                continue;
+            }
+            unsigned end = i + 1;
+            while (end < count && native_opcode(decoded_ops[end])) ++end;
+            exits[exit_count++] = emit_step(block, i, ((end - i) << 8) | 12, step);
+            emit_imm_op(7, RAX, 2, 0);
+            auto* replayed = emit_jump(4);
+            regcache_begin(ops, i, end);
+            for (unsigned j = i; j < end; ++j) {
+                regcache.index = j;
+                if (!regcache_optimize(ops[j], decoded_ops[j])) emit_native(ops[j], decoded_ops[j]);
+            }
+            regcache_flush();
+            patch_jump(replayed, out);
+            i = end;
+            continue;
+        }
         bool guarded_addi=N64EMUJIT_X64_GUARDED_ADDI && optimized && config && op==R4300_OP_ADDI;
         if (native_opcode(op) || guarded_addi || i == branch_index || (optimized && config && native_ram_opcode(op))) {
             unsigned end = i + 1;

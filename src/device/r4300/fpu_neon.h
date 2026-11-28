@@ -140,14 +140,20 @@ static inline unsigned int fpu_vfp_arithmetic(unsigned fmt, unsigned fn,
     case 1: VFP_BINARY("vsub"); break;
     case 2: VFP_BINARY("vmul"); break;
     case 3: VFP_BINARY("vdiv"); break;
-    default:
+    case 4:
         if (fmt == 16) VFP_TRANSACTION("vldr s0, [%[left]]","vsqrt.f32 s0, s0","vstr s0, [%[out]]",single);
         else VFP_TRANSACTION("vldr d0, [%[left]]","vsqrt.f64 d0, d0","vstr d0, [%[out]]",wide);
+        break;
+    case 32:
+        VFP_TRANSACTION("vldr d0, [%[left]]", "vcvt.f32.f64 s0, d0", "vstr s0, [%[out]]", single);
+        break;
+    default: /* CVT.D.S */
+        VFP_TRANSACTION("vldr s0, [%[left]]", "vcvt.f64.f32 d0, s0", "vstr d0, [%[out]]", wide);
         break;
     }
 #undef VFP_BINARY
 #undef VFP_TRANSACTION
-    *bits = fmt == 16 ? single : wide;
+    *bits = fn == 32 || (fn <= 4 && fmt == 16) ? single : wide;
     return ((status >> 4) & 1) | ((status >> 2) & 2) | (status & 4) |
            ((status << 2) & 8) | ((status << 4) & 16);
 }

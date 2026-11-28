@@ -1,11 +1,12 @@
-/* Standalone frontend for the unmodified core's Accurate/LLE ROM tests. */
+/* Standalone frontend for the core's LLE ROM tests. */
 #include "libretro.h"
+#include "../../src/core/runtime.h"
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "stdio_vfs.h"
 #if defined(_WIN32)
 #include <windows.h>
 #endif
@@ -22,10 +23,18 @@ struct core_api {
 static struct core_api core;
 static unsigned frames, pixel_format, frame_limit;
 static int done;
+static const char *timing_mode = "on";
+static const char *cpu_clock = "1x";
 static const char *stop_marker;
 static unsigned stop_marker_count=1,stop_markers_seen;
 static unsigned char *capture;
 static unsigned capture_width, capture_height;
+enum { SCAN_WIDTH = 96, SCAN_HEIGHT = 72 };
+static unsigned char scanout[SCAN_WIDTH * SCAN_HEIGHT];
+static FILE *scan_file, *audio_file, *timing_file;
+static uint64_t audio_frames;
+static bool capture_failed;
+static void (*av_timing)(struct core_av_timing_snapshot *);
 
 static void logger(enum retro_log_level level, const char *fmt, ...) {
  char text[4096]; va_list ap; va_start(ap, fmt); vsnprintf(text, sizeof(text), fmt, ap); va_end(ap);
@@ -36,18 +45,11 @@ static void logger(enum retro_log_level level, const char *fmt, ...) {
 }
 static bool environment(unsigned command, void *data) {
  switch(command) {
- case RETRO_ENVIRONMENT_GET_VFS_INTERFACE: {
-  struct retro_vfs_interface_info *info=data;
-  if(info->required_interface_version>1)return false;
-  info->iface=&stdio_vfs;return true;
- }
  case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: ((struct retro_log_callback*)data)->log=logger;return true;
  case RETRO_ENVIRONMENT_GET_VARIABLE: {
   struct retro_variable *v=data;const char *key=v->key;
-  if(!strcmp(key,"wtfn64_renderer"))v->value="softrdp";
-  else if(!strcmp(key,"wtfn64_timing"))v->value="on";
-  else if(!strcmp(key,"wtfn64_angrylion_threads"))v->value="auto";
-  else if(!strcmp(key,"wtfn64_angrylion_upscale"))v->value="1";
+  if(!strcmp(key,"n64emu_cycle_timing"))v->value=timing_mode;
+  else if(!strcmp(key,"n64emu_cpu_overclock"))v->value=cpu_clock;
   else {v->value=NULL;return false;}return true;
  }
  case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: *(bool*)data=false;return true;
@@ -90,11 +92,43 @@ static void capture_video(const void *data,unsigned width,unsigned height,size_t
  }
 }
 static void video(const void *data,unsigned width,unsigned height,size_t pitch) {
- if(frames && frames+1!=frame_limit && !done)return;
- capture_video(data,width,height,pitch);
+ if (!frames || frames + 1 == frame_limit || done) capture_video(data,width,height,pitch);
+ if (!scan_file || !data || data == RETRO_HW_FRAME_BUFFER_VALID || !width || !height) return;
+ for (unsigned y = 0; y < SCAN_HEIGHT; ++y) {
+  const uint8_t *row = (const uint8_t *)data + (y * height / SCAN_HEIGHT) * pitch;
+  for (unsigned x = 0; x < SCAN_WIDTH; ++x) {
+   const unsigned source = x * width / SCAN_WIDTH;
+   unsigned red, green, blue;
+   if (pixel_format == RETRO_PIXEL_FORMAT_XRGB8888) {
+    uint32_t color;
+    memcpy(&color, row + source * 4, 4);
+    red = (color >> 16) & 255;
+    green = (color >> 8) & 255;
+    blue = color & 255;
+   } else {
+    uint16_t color;
+    memcpy(&color, row + source * 2, 2);
+    const bool rgb565 = pixel_format == RETRO_PIXEL_FORMAT_RGB565;
+    red = ((color >> (rgb565 ? 11 : 10)) & 31) * 255 / 31;
+    green = ((color >> 5) & (rgb565 ? 63 : 31)) * 255 / (rgb565 ? 63 : 31);
+    blue = (color & 31) * 255 / 31;
+   }
+   scanout[y * SCAN_WIDTH + x] = (red * 77 + green * 150 + blue * 29) / 256;
+  }
+ }
 }
-static void audio(int16_t left,int16_t right){(void)left;(void)right;}
-static size_t audio_batch(const int16_t *data,size_t count){(void)data;return count;}
+static size_t audio_batch(const int16_t *data, size_t count)
+{
+ if (audio_file && fwrite(data, 2 * sizeof(*data), count, audio_file) != count)
+  capture_failed = true;
+ audio_frames += count;
+ return count;
+}
+static void audio(int16_t left,int16_t right)
+{
+ const int16_t sample[2] = {left, right};
+ audio_batch(sample, 1);
+}
 static void poll(void){}
 static int16_t input(unsigned port,unsigned device,unsigned index,unsigned id){(void)port;(void)device;(void)index;(void)id;return 0;}
 int main(int argc,char **argv) {
@@ -106,18 +140,38 @@ int main(int argc,char **argv) {
  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif
  int first=1;
+ if(argc>first && !strcmp(argv[first],"--timing-off")){timing_mode="off";++first;}
+ if(argc>first && !strncmp(argv[first],"--clock=",8)){
+  cpu_clock=argv[first++]+8;
+  if(strcmp(cpu_clock,"1x") && strcmp(cpu_clock,"2x") && strcmp(cpu_clock,"4x"))return 2;
+ }
+ const bool capture_av = argc > first && !strcmp(argv[first], "--capture-av");
+ if (capture_av) ++first;
 #ifdef CONFORMANCE_STATIC_CORE
 #define LOAD(name) core.name=retro_##name;
  CORE_FUNCTIONS(LOAD)
 #undef LOAD
 #else
- if(argc<4)return 2;
+ if(argc<first+3)return 2;
  HMODULE module=LoadLibraryA(argv[first++]);if(!module){fprintf(stderr,"LoadLibrary failed: %lu\n",GetLastError());return 2;}
 #define LOAD(name) core.name=(__typeof__(core.name))GetProcAddress(module,"retro_" #name);if(!core.name)return 2;
  CORE_FUNCTIONS(LOAD)
 #undef LOAD
+ if (capture_av)
+  av_timing = (void (*)(struct core_av_timing_snapshot *))GetProcAddress(module, "retro_debug_av_timing");
 #endif
- if(argc<first+2){fputs("runner [CORE.dll] ROM FRAMES [capture.ppm]\n",stderr);return 2;}
+ if(argc<first+2){fputs("runner [--timing-off] [--clock=1x|2x|4x] [--capture-av] [CORE.dll] ROM FRAMES [capture.ppm]\n",stderr);return 2;}
+ if (capture_av) {
+  if (!av_timing) {
+   fputs("A/V capture requires a HEADLESS_BENCHMARK=1 core DLL\n", stderr);
+   return 2;
+  }
+  scan_file = fopen("scan.gray", "wb");
+  audio_file = fopen("audio.pcm", "wb");
+  timing_file = fopen("timing.csv", "w");
+  if (!scan_file || !audio_file || !timing_file) return 2;
+  fputs("field,audio_frames,clock,vi_boundary,rdp_deadline,dp_irq,rsp_dma,ai_completion,vi_origin,ai_divider,ai_status,ai_remaining,ai_queued\n", timing_file);
+ }
  const char *path=argv[first++];unsigned limit=strtoul(argv[first++],NULL,10);frame_limit=limit;
  FILE *file=fopen(path,"rb");if(!file){perror(path);return 2;}fseek(file,0,SEEK_END);long length=ftell(file);rewind(file);
  void *rom=malloc(length);if(!rom || fread(rom,1,length,file)!=(size_t)length)return 2;fclose(file);
@@ -129,6 +183,17 @@ int main(int argc,char **argv) {
  unsigned reset_frame=reset?strtoul(reset,NULL,10):0;
  while(frames<limit && !done){
   core.run();++frames;
+  if (capture_av) {
+   struct core_av_timing_snapshot timing;
+   av_timing(&timing);
+   if (fwrite(scanout, 1, sizeof(scanout), scan_file) != sizeof(scanout) ||
+       fprintf(timing_file,"%u,%" PRIu64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%u,%u,%u,%u,%u\n",
+               frames,audio_frames,timing.clock,timing.vi_boundary,timing.rdp_deadline,timing.dp_irq,
+               timing.rsp_dma,timing.ai_completion,timing.vi_origin,timing.ai_divider,timing.ai_status,
+               timing.ai_remaining,timing.ai_queued) < 0)
+    capture_failed = true;
+   if (capture_failed) break;
+  }
   if(frames==reset_frame){
    core.reset();fprintf(stderr,"CONFORMANCE soft reset frame=%u\n",frames);
   }
@@ -144,8 +209,13 @@ int main(int argc,char **argv) {
  if(argc>first && capture){file=fopen(argv[first],"wb");if(file){fprintf(file,"P6\n%u %u\n255\n",capture_width,capture_height);fwrite(capture,3,(size_t)capture_width*capture_height,file);fclose(file);}}
  printf("CONFORMANCE frames=%u done=%d video=%ux%u\n",frames,done,capture_width,capture_height);fflush(stdout);
  core.unload_game();core.deinit();free(capture);free(rom);
+ if (capture_av) {
+  capture_failed |= fclose(scan_file) != 0;
+  capture_failed |= fclose(audio_file) != 0;
+  capture_failed |= fclose(timing_file) != 0;
+ }
 #if defined(_WIN32) && !defined(CONFORMANCE_STATIC_CORE)
  FreeLibrary(module);
 #endif
- return 0;
+ return capture_failed ? 3 : 0;
 }

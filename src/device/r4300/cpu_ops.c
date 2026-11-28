@@ -19,6 +19,7 @@
 #include <inttypes.h>
 
 #include "core/log.h"
+#include "core/frontend.h"
 #include "core/types.h"
 #include "device/r4300/r4300_core.h"
 #include "osal/preproc.h"
@@ -1285,6 +1286,8 @@ DECLARE_JUMP(BC1TL, PCADDR + (iimmediate + 1) * 4, ((r4300->cp1.fcr31) & FCR31_C
 DECLARE_INSTRUCTION(CACHE)
 {
     DECLARE_R4300
+    uint64_t effective = (uint64_t)irs + (uint64_t)(int64_t)iimmediate;
+    if (check_alignment(r4300, effective, 3, 0)) return;
     if(r4300->cache_timing&&!r4300->compat_issue_clock&&(r4300->instruction_pc.addr&0xfff)!=0xffc) {
         /* Invalidating I-cache does not withdraw an instruction already in
          * the fetch buffer. Preserve the next instruction across this op. */
@@ -1293,9 +1296,7 @@ DECLARE_INSTRUCTION(CACHE)
         if(word){r4300->prefetch_pc=next;r4300->prefetch_op=*word;r4300->prefetch_valid=1;}
     }
     if (r4300->cache_timing) {
-        uint64_t effective = (uint64_t)irs + (uint64_t)(int64_t)iimmediate;
         uint32_t va = (uint32_t)effective;
-        if (check_alignment(r4300, effective, 3, 0)) return;
         uint32_t pa = va;
         if (RT_OF(op) & 16) {
             int cached;
@@ -2053,7 +2054,11 @@ void r4300_ops_execute_one(struct r4300_core* r)
         check_alignment(r,r4300_pc64(r),3,0);
     } else {
         const uint32_t *address=buffered?&buffered_op:interp_fast_mem_access(r,pc);
-        if (!address) cp0_step_cycles(&r->cp0,1);
+        if (!address) {
+            cp0_step_cycles(&r->cp0, 1);
+            if (IgnoreTLBExceptions == TLB_EXCEPTIONS_IGNORE_ALL)
+                r->instruction_pc.addr += 4;
+        }
         else {
             const uint32_t op=*address;
             unsigned cycles=(op>>26)==17?1:r4300_base_cycles(op,0);

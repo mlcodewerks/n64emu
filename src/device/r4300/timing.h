@@ -50,14 +50,29 @@ static osal_force_inline unsigned int r4300_base_cycles(uint32_t op, uint32_t st
 
 static osal_force_inline void cp0_step_cycles(struct cp0* cp0, unsigned int cycles)
 {
-    /* COUNT runs at half the CPU clock. Retain odd cycles across dispatches,
-     * register reads and control-flow changes instead of rounding each time. */
+    /* Keep the scheduler's COUNT clock fixed. The stock CPU contributes two
+     * cycles per tick; an overclock increases the divider. */
     unsigned int total = cycles + cp0->count_phase;
     uint32_t ticks = total >> 1;
-    cp0->count_phase = total & 1;
+    unsigned int phase = total & 1;
+#ifndef N64EMU_USF
+    if (cp0->overclock_shift) {
+        uint64_t accelerated_total = (uint64_t)cycles + cp0->count_phase;
+        unsigned shift = cp0_cpu_clock_shift(cp0);
+        ticks = (uint32_t)(accelerated_total >> shift);
+        phase = (unsigned)accelerated_total & ((1u << shift) - 1);
+    }
+#endif
+    cp0->count_phase = phase;
     cp0->regs[CP0_COUNT_REG] += ticks;
     cp0->count_clock += ticks;
     cp0->cycle_count += ticks;
+}
+
+/* Polling shortcuts can consume only whole iterations before the next event. */
+static osal_force_inline uint64_t cp0_cycles_before_event(const struct cp0* cp0)
+{
+    return ((uint64_t)(-cp0->cycle_count) << cp0_cpu_clock_shift(cp0)) - cp0->count_phase - 1;
 }
 
 #include "cache_timing.h"
@@ -68,7 +83,7 @@ static osal_force_inline void cp0_step_cycles(struct cp0* cp0, unsigned int cycl
 static osal_force_inline uint32_t r4300_read_count(const struct r4300_core* r)
 {
     if (!r->compat_issue_clock && r->count_write_valid &&
-        r4300_cpu_clock(r) - r->count_write_clock <= 2)
+        r4300_cpu_clock(r) - r->count_write_clock <= (1u << cp0_cpu_clock_shift(&r->cp0)))
         return r->count_write_value;
     return r->cp0.regs[CP0_COUNT_REG];
 }

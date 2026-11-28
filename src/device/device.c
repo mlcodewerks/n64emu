@@ -91,6 +91,7 @@ void init_device(struct device* dev,
     size_t dd_rom_size,
     void* dd_disk, const struct storage_backend_interface* dd_idisk)
 {
+    dev->on_boot = NULL;
     struct interrupt_handler interrupt_handlers[] = {
         { &dev->vi,        vi_vertical_interrupt_event }, /* VI */
         { &dev->r4300,     compare_int_handler         }, /* COMPARE */

@@ -25,6 +25,22 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Expected an isolated settings directory");
         const auto directory = fs::u8path(argv[1]);
         fs::create_directories(directory);
+        const char cheats[] = "\xef\xbb\xbf" "# RetroArch list\r\n"
+            "cheats = 3\r\ncheat0_desc = \"Test #1\"\r\ncheat0_enable = true\r\n"
+            "cheat0_code = \"80000000 0001;81000002 1111\"\r\n"
+            "cheat1_code = \"80000000 XXXX\"\r\ncheat1_enable = true\r\n"
+            "cheat2_code = \"80000000 0002\"\r\ncheat2_handler = 1\r\n";
+        const auto cht = directory / L"import.cht";
+        write_file(cht, cheats, sizeof(cheats) - 1);
+        const auto entries = read_retroarch_cheats(cht);
+        if (entries.size() != 3 || entries[0].label != "Test #1" || !entries[0].enabled ||
+            !entries[0].supported || entries[1].enabled || entries[1].supported || entries[2].supported)
+            throw std::runtime_error("RetroArch import lost a name, code, enabled state or handler");
+        const char invalid_cheats[] = "cheats = invalid\n";
+        write_file(cht, invalid_cheats, sizeof(invalid_cheats) - 1);
+        bool rejected = false;
+        try { read_retroarch_cheats(cht); } catch (const std::runtime_error &) { rejected = true; }
+        if (!rejected) throw std::runtime_error("RetroArch import accepted an invalid cheat count");
         Json values(cJSON_CreateObject(), cJSON_Delete);
         cJSON_AddStringToObject(values.get(), "n64emu_cycle_timing", "off");
         cJSON_AddStringToObject(values.get(), "mupen64plus-pak3", "rumble");

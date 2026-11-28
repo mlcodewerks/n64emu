@@ -28,6 +28,7 @@
 #include "device/controllers.h"
 #include "device/gb.h"
 #include "device/pif.h"
+#include "device/rcp/rsp/p_rsp/dpc_bridge.h"
 
 #include "main.h"
 #include "savestates.h"
@@ -876,6 +877,10 @@ void main_prerun(void)
         ijoybus_devices[i] = &g_ijoybus_device_cart;
     }
 
+#ifndef N64EMU_USF
+    if (renderer_settings.disable_expansion_pak)
+        memset(mem_base_u32(g_mem_base, MM_RDRAM_DRAM + RDRAM_BASE_SIZE), 0, RDRAM_MAX_SIZE - RDRAM_BASE_SIZE);
+#endif
     init_device(&g_dev,
                 g_mem_base,
                 r4300_emumode,
@@ -887,7 +892,7 @@ void main_prerun(void)
 #ifdef N64EMU_USF
                 n64emu_usf_rdram_size(),
 #else
-                0x800000, /* Expansion Pak is always installed (8 MiB). */
+                renderer_settings.disable_expansion_pak ? RDRAM_BASE_SIZE : RDRAM_MAX_SIZE,
 #endif
                 joybus_devices, ijoybus_devices,
                 vi_clock_from_tv_standard(ROM_PARAMS.systemtype), vi_expected_refresh_rate_from_tv_standard(ROM_PARAMS.systemtype),
@@ -901,6 +906,9 @@ void main_prerun(void)
                 NULL, dd_rtc_iclock,
                 dd_rom_size,
                 &dd_disk, dd_idisk);
+#if defined(HAVE_PARALLEL_RSP) && !defined(N64EMU_USF)
+    parallelRSPSetRdramSize((uint32_t)g_dev.rdram.dram_size);
+#endif
 
     /* Open the selected built-in renderer. */
     renderer_open_content();

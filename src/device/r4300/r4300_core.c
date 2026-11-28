@@ -25,12 +25,15 @@ void init_r4300(struct r4300_core* r4300, struct memory* mem, struct mi_controll
 {
 
     (void)emumode;
+    init_cp0(&r4300->cp0, interrupt_handlers);
+#if defined(__LIBRETRO__) && !defined(N64EMU_USF)
+    r4300->cp0.overclock_shift = renderer_settings.cpu_overclock_shift;
+#endif
 #ifdef HAVE_N64EMUJIT
     r4300->emumode = EMUMODE_DYNAREC;
 #else
     r4300->emumode = EMUMODE_INTERPRETER;
 #endif
-    init_cp0(&r4300->cp0, interrupt_handlers);
     init_cp1(&r4300->cp1);
 
     r4300->mem = mem;

@@ -12,6 +12,11 @@ struct Option {
     bool visible = true;
 };
 struct OptionCategory { std::string key, label, info; };
+struct CheatEntry {
+    std::string label, code;
+    bool enabled = false, supported = false;
+};
+std::vector<CheatEntry> read_retroarch_cheats(const fs::path &path);
 class Core {
   public:
     Core(Video &, Input &, const fs::path &);
@@ -24,6 +29,11 @@ class Core {
     void load_state(unsigned slot);
     void save_state(const fs::path &path);
     void load_state(const fs::path &path);
+    void load_cheats(const fs::path &path);
+    bool add_cheat(const char *label, const char *code);
+    bool set_cheat_enabled(unsigned index, bool enabled);
+    void clear_cheats();
+    const std::vector<CheatEntry> &cheats() const { return cheat_entries; }
     void set_option(Option &, const std::string &);
     bool loaded() const { return game_loaded; }
     const std::string &name() const { return title; }
@@ -39,6 +49,7 @@ class Core {
     Input &input;
     fs::path directory, content_path, save_path;
     std::string title, callback_error;
+    std::vector<CheatEntry> cheat_entries;
     bool initialized = false, game_loaded = false;
     double sample_rate = 44100;
     void apply_av(const n64emu_av &);

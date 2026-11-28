@@ -9,6 +9,39 @@ static void fresh(unsigned accurate,unsigned phase)
     cpu.cp0.count_phase=phase;cpu.cp0.count_clock=1000;cpu.cp0.cycle_count=-100000;
     cpu.icache_fill_index=cpu.write_buffer_count=0;r4300_pipeline_reset(&cpu);
 }
+
+static void check_scaled_jit(unsigned accurate, unsigned shift)
+{
+    uint64_t result[7];
+    for (unsigned native = 0; native <= 1; ++native) {
+        setup(native);
+        cpu.cache_timing = accurate;
+        cpu.compat_issue_clock = !accurate;
+        cpu.cp0.overclock_shift = shift;
+        cpu.cp0.count_phase = (2u << shift) - 1;
+        cpu.cp0.interrupt_handlers[4].callback = stop_event;
+        code[0] = 0x24210001; /* ADDIU r1, r1, 1 */
+        code[1] = 0x24230007; /* ADDIU r3, r1, 7 */
+        code[2] = 0x00032080; /* SLL r4, r3, 2 */
+        code[3] = 0x40054800; /* MFC0 r5, COUNT */
+        code[4] = 0x1000fffb; /* BEQ zero, zero, back to code[0] */
+        code[5] = 0x24420001; /* ADDIU r2, r2, 1 in the delay slot */
+        add_interrupt_event(&cpu.cp0, PI_INT, 109);
+        if (native) r4300_jit_run(&cpu);
+        else while (!breakloop) r4300_ops_execute_one(&cpu);
+        const uint64_t observed[] = {cpu.regs[1], cpu.regs[2], cpu.regs[3], cpu.regs[4], cpu.regs[5],
+            cpu.instruction_pc.addr, r4300_cpu_clock(&cpu)};
+        assert(cpu.regs[1] > 1 && cpu.cp0.count_clock >= 109);
+        if (!native) memcpy(result, observed, sizeof(result));
+        else {
+            assert(!memcmp(result, observed, sizeof(result)));
+            uint64_t stats[2];
+            r4300_jit_optimization_stats(&cpu, stats);
+            assert(stats[0] > 0);
+        }
+    }
+}
+
 int main(void)
 {
     unit_headless();unsigned cases=0;
@@ -66,6 +99,38 @@ int main(void)
         fresh(accurate,1);uint64_t before=r4300_cpu_clock(&cpu);
         r4300_data_access_cycles_explicit(&cpu,0xa4040010,0x04040010,write,0);
         assert(r4300_cpu_clock(&cpu)-before==(write?8:21));++cases;
+    }
+    for (unsigned shift = 1; shift <= 2; ++shift) {
+        unsigned divider = 2u << shift;
+        for (unsigned accurate = 0; accurate <= 1; ++accurate) {
+            fresh(accurate, divider - 1);
+            cpu.cp0.overclock_shift = shift;
+            cpu.cp0.regs[CP0_COUNT_REG] = UINT32_MAX;
+            cpu.cp0.cycle_count = -2;
+            uint64_t before = r4300_cpu_clock(&cpu);
+            assert(cp0_cycles_before_event(&cpu.cp0) == divider);
+            cp0_step_cycles(&cpu.cp0, 1);
+            assert(cpu.cp0.count_phase == 0 && cpu.cp0.regs[CP0_COUNT_REG] == 0);
+            assert(cpu.cp0.count_clock == 1001 && cpu.cp0.cycle_count == -1);
+            assert(r4300_cpu_clock(&cpu) == before + 1);
+            r4300_data_access_cycles_explicit(&cpu, 0xa4040010, 0x04040010, 1, 0);
+            assert(cpu.cp0.count_phase == 0 && cpu.cp0.count_clock == 1005);
+            assert(r4300_cpu_clock(&cpu) == before + 1 + 8 * (1u << shift));
+            if (accurate) {
+                cpu.count_write_clock = r4300_cpu_clock(&cpu);
+                cpu.count_write_value = 123;
+                cpu.count_write_valid = 1;
+                cpu.cp0.regs[CP0_COUNT_REG] = 122;
+                cp0_step_cycles(&cpu.cp0, divider - 1);
+                assert(r4300_read_count(&cpu) == 123);
+                cp0_step_cycles(&cpu.cp0, 1);
+                assert(r4300_read_count(&cpu) == 123);
+            }
+            ++cases;
+        }
+        check_scaled_jit(0, shift);
+        check_scaled_jit(1, shift);
+        cases += 2;
     }
     for(unsigned phase=0;phase<2;++phase)for(unsigned cached=0;cached<2;++cached)
     for(unsigned write=0;write<2;++write){

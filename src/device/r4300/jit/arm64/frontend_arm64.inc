@@ -105,7 +105,8 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     const uint32_t branch_pc = config ? config->virtual_pc + (count - 1) * 4 : 0;
     const bool unsupported_bc1 = (branch_op >> 26) == 17 &&
         (((branch_op >> 21) & 31) != 8 || ((branch_op >> 16) & 31) >= 4 || (branch_pc & 4095) == 4092);
-    if (optimized && config->has_delay && !config->idle_end && count < MAX_INSTRUCTIONS &&
+    const bool scaled_clock = optimized && config && config->scaled_clock;
+    if (optimized && !scaled_clock && config->has_delay && !config->idle_end && count < MAX_INSTRUCTIONS &&
         !unsupported_bc1 && native_branch_opcode(r4300_get_idec(branch_op)->opcode) &&
         (native_opcode(r4300_get_idec(config->delay_op)->opcode) ||
          (ram_delay = native_ram_delay(branch_op,config->delay_op,branch_pc)))) {
@@ -168,6 +169,26 @@ static n64emujit_entry compile_block(struct n64emujit* s, void* block,
     regcache.active=0;
     for (unsigned i = 0; i < count;) {
         enum r4300_opcode op = decoded_ops[i];
+        if (scaled_clock) {
+            if (!native_opcode(op)) {
+                exits[exit_count++] = emit_step(block, i++, 2, step);
+                continue;
+            }
+            unsigned end = i + 1;
+            while (end < count && native_opcode(decoded_ops[end])) ++end;
+            exits[exit_count++] = emit_step(block, i, ((end - i) << 8) | 12, step);
+            emit_imm_op(7, T0, 2, 0);
+            auto* replayed = emit_jump(4);
+            regcache_begin(ops, i, end);
+            for (unsigned j = i; j < end; ++j) {
+                regcache.index = j;
+                if (!regcache_optimize(ops[j], decoded_ops[j])) emit_native(ops[j], decoded_ops[j]);
+            }
+            regcache_flush();
+            patch_jump(replayed, out);
+            i = end;
+            continue;
+        }
         if (native_opcode(op) || i == branch_index || (optimized && (native_ram_opcode(op) || op == R4300_OP_ADDI))) {
             unsigned end = i + 1;
             if (optimized) {

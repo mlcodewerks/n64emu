@@ -16,7 +16,7 @@ static int pure_alu(enum r4300_opcode op)
 }
 static int copy_value(unsigned destination,unsigned source)
 {
-    if(destination==source)return 1;
+    if(regcache.values[destination]==regcache.values[source])return 1;
     uint64_t value;
     if(known_value(source,value))return regcache_constant(destination,value);
     unsigned id=regcache.values[source];bool word=signed_word(source);
@@ -50,10 +50,19 @@ static int regcache_optimize(uint32_t instruction, enum r4300_opcode op)
     if(commutative_alu(op) && x>y){unsigned t=x;x=y;y=t;}
     unsigned major=instruction>>26;
     unsigned imm=major?instruction&65535:(instruction>>6)&31;
-    for(unsigned i=0;i<analysis.expression_count;i++) {
-        const auto &e=analysis.expressions[i];
-        if(e.op!=unsigned(op)||e.a!=x||e.b!=y||e.immediate!=imm)continue;
-        for(unsigned g=1;g<GUEST_REGS;g++)if(regcache.values[g]==e.value)return copy_value(d,g);
+    // Half the slots remain empty even when every instruction produces a value.
+    static_assert(MAX_INSTRUCTIONS <= 32, "value table requires an empty slot");
+    unsigned slot = (unsigned(op)*19 + x*11 + y*3 + imm + (imm>>6)) & 63;
+    while (analysis.expression_slots & (UINT64_C(1) << slot)) {
+        const auto &e = analysis.expressions[slot];
+        if (e.op == unsigned(op) && e.a == x && e.b == y && e.immediate == imm) {
+            if (regcache.values[e.producer] == e.value) return copy_value(d, e.producer);
+            // The original destination may have been overwritten after a copy.
+            for (unsigned g = 1; g < GUEST_REGS; ++g)
+                if (regcache.values[g] == e.value) return copy_value(d, g);
+            break;
+        }
+        slot = (slot + 1) & 63;
     }
     bool wa=signed_word(a),wb=signed_word(b);
     if(!regcache_direct(instruction, op))return 0;
@@ -67,7 +76,7 @@ static int regcache_optimize(uint32_t instruction, enum r4300_opcode op)
         if(wa&&wb)regcache.signed_words|=UINT64_C(1)<<d;break;
     default:break;
     }
-    assert(analysis.expression_count<MAX_INSTRUCTIONS);
-    analysis.expressions[analysis.expression_count++]={unsigned(op),x,y,imm,regcache.values[d]};
+    analysis.expression_slots |= UINT64_C(1) << slot;
+    analysis.expressions[slot] = {unsigned(op), x, y, imm, regcache.values[d], d};
     return 1;
 }

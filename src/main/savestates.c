@@ -37,7 +37,12 @@ enum { GB_CART_FINGERPRINT_OFFSET = 0x134 };
 enum { DD_DISK_ID_OFFSET = 0x43670 };
 
 /* The pipeline extension ends at 4080; older states zeroed this word. */
-enum { CPU_CACHED_BOOT_STATE_OFFSET = 4080 };
+enum { CPU_CACHED_BOOT_STATE_OFFSET = 4080, CPU_OVERCLOCK_STATE_OFFSET = 4084,
+       RCP_PHASE_STATE_OFFSET = 4092 };
+enum { AI_FIFO_STATE_OFFSET = 3968, AI_FIFO_STATE_TAG = 0x4149464f };
+
+_Static_assert(AI_FIFO_STATE_OFFSET + 3 * sizeof(uint32_t) <= RDP_TIMING_STATE_OFFSET,
+    "AI FIFO state overlaps RDP timing state");
 
 _Static_assert(16384 + 4 + PARALLEL_RSP_STATE_WORDS * 4 + 24 <= RDP_RASTER_STATE_OFFSET,
     "RDP raster state overlaps native RSP state");
@@ -45,7 +50,7 @@ _Static_assert(RDP_RASTER_STATE_OFFSET + 192 <= 20480,
     "RDP raster state exceeds its reserved area");
 
 static const char* savestate_magic = "M64+SAVE";
-static const int savestate_latest_version = 0x00012400; /* 1.36: native-only RSP; independent raster noise state */
+enum { SAVESTATE_STOCK_VERSION = 0x00012400, SAVESTATE_HACKS_VERSION = 0x00012500 };
 
 struct savestate_work {
     char *data;
@@ -98,7 +103,7 @@ int core_state_load(struct device* dev, const void *data)
     version = (version << 8) | *curr++;
     version = (version << 8) | *curr++;
     version = (version << 8) | *curr++;
-    if((version >> 16) != (savestate_latest_version >> 16) || version > (unsigned)savestate_latest_version)
+    if((version >> 16) != (SAVESTATE_HACKS_VERSION >> 16) || version > SAVESTATE_HACKS_VERSION)
         return 0;
     /* Previous states can contain a partially executed high-level task that
      * has no native instruction continuation. Reject before modifying devices. */
@@ -110,6 +115,26 @@ int core_state_load(struct device* dev, const void *data)
     if(memcmp((char *)curr, ROM_SETTINGS.MD5, 32))
         return 0;
     curr += 32;
+
+    /* CPU-local deadlines are in cycles at the saved multiplier. Check
+     * before restoring any device state. Older snapshots used stock speed. */
+    uint32_t settings[2] = {0, 0};
+    if (version >= SAVESTATE_HACKS_VERSION) {
+        memcpy(settings, (const unsigned char*)data + 16788288 + sizeof(queue) +
+            sizeof(using_tlb_data) + CPU_OVERCLOCK_STATE_OFFSET, sizeof(settings));
+        to_little_endian_buffer(settings, sizeof(settings[0]), 2);
+    }
+    if (settings[0] != dev->r4300.cp0.overclock_shift) {
+        core_log(CORE_LOG_WARNING, "This save state requires a different CPU clock multiplier.");
+        return 0;
+    }
+#ifndef N64EMU_USF
+    if (settings[1] != (uint32_t)(dev->rdram.dram_size == RDRAM_BASE_SIZE)) {
+        core_log(CORE_LOG_WARNING, "This save state requires a different Expansion Pak setting.");
+        return 0;
+    }
+#endif
+    const size_t rdram_words = (settings[1] ? RDRAM_BASE_SIZE : RDRAM_MAX_SIZE) / sizeof(uint32_t);
 
     /* Read the rest of the savestate */
     savestateSize = 16788244;
@@ -228,10 +253,7 @@ int core_state_load(struct device* dev, const void *data)
     dev->ai.fifo[1].length = GETDATA(curr, uint32_t);
     dev->ai.fifo[0].duration  = GETDATA(curr, uint32_t);
     dev->ai.fifo[0].length = GETDATA(curr, uint32_t);
-    /* best effort initialization of fifo addresses...
-     * You might get a small sound "pop" because address might be wrong.
-     * Proper initialization requires changes to savestate format
-     */
+    /* Legacy states save only the last AI address written by the CPU. */
     dev->ai.fifo[0].address = dev->ai.regs[AI_DRAM_ADDR_REG];
     dev->ai.fifo[1].address = dev->ai.regs[AI_DRAM_ADDR_REG];
     dev->ai.samples_format_changed = 1;
@@ -252,7 +274,8 @@ int core_state_load(struct device* dev, const void *data)
     dev->dp.dps_regs[DPS_BUFTEST_ADDR_REG] = GETDATA(curr, uint32_t);
     dev->dp.dps_regs[DPS_BUFTEST_DATA_REG] = GETDATA(curr, uint32_t);
 
-    COPYARRAY(dev->rdram.dram, curr, uint32_t, RDRAM_MAX_SIZE/4);
+    COPYARRAY(dev->rdram.dram, curr, uint32_t, rdram_words);
+    curr += RDRAM_MAX_SIZE - rdram_words * sizeof(uint32_t);
     COPYARRAY(dev->sp.mem, curr, uint32_t, SP_MEM_SIZE/4);
     COPYARRAY(dev->pif.ram, curr, uint8_t, PIF_RAM_SIZE);
 
@@ -336,6 +359,7 @@ int core_state_load(struct device* dev, const void *data)
     memset(dev->r4300.dcache_tags, 0, sizeof(dev->r4300.dcache_tags));
     memset(&dev->dp.timing, 0, sizeof(dev->dp.timing));
     dev->dp.pipe_sync_deadline = 0;
+    dev->dp.pipe_sync_overhang = 0;
     if (version >= 0x00012200) {
         curr = data_0001_0200 + 3936;
         dev->r4300.pc_extension = GETDATA(curr, uint64_t);
@@ -720,7 +744,8 @@ int core_state_load(struct device* dev, const void *data)
             dev->cart.flashram.mode = GETDATA(curr, uint16_t);
         }
         if (version >= 0x00010900)
-            dev->r4300.cp0.count_phase = GETDATA(curr, uint32_t) & 1;
+            dev->r4300.cp0.count_phase = GETDATA(curr, uint32_t) &
+                ((1u << cp0_cpu_clock_shift(&dev->r4300.cp0)) - 1);
         if (version >= 0x00010a00) {
             COPYARRAY(dev->r4300.cp0.regs_hi, curr, uint32_t, 32);
             COPYARRAY(dev->r4300.cp0.tlb_entryhi_hi, curr, uint32_t, 32);
@@ -914,6 +939,11 @@ int core_state_load(struct device* dev, const void *data)
     }
     dev->dp.timing.validate_uniform_ram = 1;
     ai_rebase_timing(&dev->ai);
+    curr = data_0001_0200 + AI_FIFO_STATE_OFFSET;
+    if (GETDATA(curr, uint32_t) == AI_FIFO_STATE_TAG) {
+        dev->ai.fifo[0].address = GETDATA(curr, uint32_t);
+        dev->ai.fifo[1].address = GETDATA(curr, uint32_t);
+    }
     if (version >= 0x00011400) {
         curr = data_0001_0200 + 3908;
         dev->ai.dma_start_clock = GETDATA(curr, int64_t);
@@ -921,6 +951,11 @@ int core_state_load(struct device* dev, const void *data)
         dev->ai.idle_phase = GETDATA(curr, uint64_t);
     }
     rsp_rebase_dma(&dev->sp);
+    curr = data_0001_0200 + RCP_PHASE_STATE_OFFSET;
+    /* Previous writers left this word zero. The two clocks use quarter ticks. */
+    uint32_t rcp_phase = GETDATA(curr, uint32_t);
+    if (get_event(&dev->r4300.cp0.q, RSP_DMA_EVT)) dev->sp.dma_end_overhang = rcp_phase & 3;
+    if (dev->dp.pipe_sync_deadline > 0) dev->dp.pipe_sync_overhang = (rcp_phase >> 2) & 3;
 
     dev->r4300.cp2_latch=0;
     memset(dev->r4300.icache_shadow_tags,0,sizeof(dev->r4300.icache_shadow_tags));
@@ -1043,10 +1078,17 @@ int core_state_save(const struct device* dev, void *data)
     // Write the save state data to memory
     PUTARRAY(savestate_magic, curr, unsigned char, 8);
 
-    outbuf[0] = (savestate_latest_version >> 24) & 0xff;
-    outbuf[1] = (savestate_latest_version >> 16) & 0xff;
-    outbuf[2] = (savestate_latest_version >>  8) & 0xff;
-    outbuf[3] = (savestate_latest_version >>  0) & 0xff;
+#ifdef N64EMU_USF
+    const uint32_t reduced_rdram = 0;
+#else
+    const uint32_t reduced_rdram = dev->rdram.dram_size == RDRAM_BASE_SIZE;
+#endif
+    const size_t rdram_words = (reduced_rdram ? RDRAM_BASE_SIZE : RDRAM_MAX_SIZE) / sizeof(uint32_t);
+    unsigned version = dev->r4300.cp0.overclock_shift || reduced_rdram ? SAVESTATE_HACKS_VERSION : SAVESTATE_STOCK_VERSION;
+    outbuf[0] = (version >> 24) & 0xff;
+    outbuf[1] = (version >> 16) & 0xff;
+    outbuf[2] = (version >>  8) & 0xff;
+    outbuf[3] = (version >>  0) & 0xff;
     PUTARRAY(outbuf, curr, unsigned char, 4);
 
     PUTARRAY(ROM_SETTINGS.MD5, curr, char, 32);
@@ -1191,7 +1233,8 @@ int core_state_save(const struct device* dev, void *data)
     PUTDATA(curr, uint32_t, dev->dp.dps_regs[DPS_BUFTEST_ADDR_REG]);
     PUTDATA(curr, uint32_t, dev->dp.dps_regs[DPS_BUFTEST_DATA_REG]);
 
-    PUTARRAY(dev->rdram.dram, curr, uint32_t, RDRAM_MAX_SIZE/4);
+    PUTARRAY(dev->rdram.dram, curr, uint32_t, rdram_words);
+    curr += RDRAM_MAX_SIZE - rdram_words * sizeof(uint32_t);
     PUTARRAY(dev->sp.mem, curr, uint32_t, SP_MEM_SIZE/4);
     PUTARRAY(dev->pif.ram, curr, uint8_t, PIF_RAM_SIZE);
 
@@ -1425,6 +1468,10 @@ int core_state_save(const struct device* dev, void *data)
     curr = save->data + 16788288 + sizeof(queue) + 4 + 3936;
     PUTDATA(curr, uint64_t, dev->r4300.pc_extension);
     PUTDATA(curr, int64_t, dev->dp.pipe_sync_deadline);
+    curr = save->data + 16788288 + sizeof(queue) + 4 + AI_FIFO_STATE_OFFSET;
+    PUTDATA(curr, uint32_t, AI_FIFO_STATE_TAG);
+    PUTDATA(curr, uint32_t, dev->ai.fifo[0].address);
+    PUTDATA(curr, uint32_t, dev->ai.fifo[1].address);
 
     /* Reserved bytes before the cache extension; older states clear history. */
     curr = save->data + 16788288 + sizeof(queue) + 4 + 4032;
@@ -1439,6 +1486,9 @@ int core_state_save(const struct device* dev, void *data)
 
     curr = save->data + 16788288 + sizeof(queue) + 4 + CPU_CACHED_BOOT_STATE_OFFSET;
     PUTDATA(curr, uint32_t, !!(dev->r4300.startup & R4300_STARTUP_CACHED_BOOT));
+    PUTDATA(curr, uint32_t, dev->r4300.cp0.overclock_shift);
+    PUTDATA(curr, uint32_t, reduced_rdram);
+    PUTDATA(curr, uint32_t, dev->sp.dma_end_overhang | (dev->dp.pipe_sync_overhang << 2));
 
     /* Fixed extension offset keeps the original extra-state layout intact. */
     curr = save->data + 16788288 + sizeof(queue) + 4 + 4096;

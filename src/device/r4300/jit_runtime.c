@@ -1310,7 +1310,8 @@ int r4300_jit_init(struct r4300_core* r4300)
             r4300_jit_destroy(r4300);
             return 0;
         }
-        r4300->jit->fastmem = r4300_fastmem_create(r4300, n64emujit_fault_guard(r4300->jit->jit));
+        if (!r4300->cp0.overclock_shift)
+            r4300->jit->fastmem = r4300_fastmem_create(r4300, n64emujit_fault_guard(r4300->jit->jit));
     }
 #endif
     return 1;
@@ -1749,6 +1750,7 @@ static void ci_execute_jit(struct r4300_core* r, int one)
         config.compat_issue_clock = r->compat_issue_clock;
         config.break_requested = &breakloop;
         config.fast_memory_timing = r->fast_memory_timing;
+        config.scaled_clock = r->cp0.overclock_shift != 0;
         config.fastmem = state->fastmem;
         config.links = one ? NULL : block->native_links;
         config.previous_block = &state->previous_block; config.epoch = &state->epoch;
@@ -1856,7 +1858,10 @@ void run_r4300(struct r4300_core* r4300)
             goto cpu_run_done;
         }
 #ifdef HAVE_N64EMUJIT
-        core_log(CORE_LOG_INFO,"CPU dynarec: " N64EMUJIT_BACKEND_NAME);
+        if (r4300->cp0.overclock_shift)
+            core_log(CORE_LOG_INFO, "CPU dynarec: " N64EMUJIT_BACKEND_NAME " (%ux CPU clock)",
+                1u << r4300->cp0.overclock_shift);
+        else core_log(CORE_LOG_INFO,"CPU dynarec: " N64EMUJIT_BACKEND_NAME);
 #else
         core_log(CORE_LOG_INFO,"CPU backend: portable interpreter");
 #endif

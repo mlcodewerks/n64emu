@@ -1,6 +1,7 @@
 /* Exercise real register/DMA devices, with strict mocks only at CPU,
  * renderer and Joybus boundaries. CPU IRQ delivery has its own real suite. */
 #include "support.h"
+#include "core/audio.h"
 #include "device/device.h"
 #include "device/r4300/interrupt.h"
 #include "device/dd_controller.h"
@@ -12,8 +13,9 @@ void r4300_check_interrupt(struct r4300_core* r,uint32_t mask,int set){if(set)r-
 void raise_maskable_interrupt(struct r4300_core* r,uint32_t mask){r4300_check_interrupt(r,mask,1);}
 void gen_interrupt(struct r4300_core* r){(void)r;assert(!"unexpected immediate CPU interrupt");}
 void add_interrupt_event(struct cp0* c,int type,unsigned delay){(void)c;event_type=type;event_delay=delay;++event_count;}
+void add_interrupt_event_count(struct cp0* c,int type,unsigned count){add_interrupt_event(c,type,count-c->regs[CP0_COUNT_REG]);}
 unsigned* get_event(const struct interrupt_queue* q,int type){(void)q;(void)type;return NULL;}
-void remove_event(struct interrupt_queue* q,int type){(void)q;assert(type==PI_INT);event_type=0;}
+void remove_event(struct interrupt_queue* q,int type){(void)q;assert(type==PI_INT || type==AI_INT);event_type=0;}
 void remove_interrupt_event(struct cp0* c){(void)c;event_type=0;}
 unsigned add_random_interrupt_time(struct r4300_core* r){(void)r;return 0;}
 void invalidate_r4300_cached_code(struct r4300_core* r,uint32_t address,size_t size){(void)r;assert(address<1024 && size<=64);++invalidations;}
@@ -28,6 +30,109 @@ static unsigned cart_read(void* p,const uint8_t* dram,uint32_t da,uint32_t ca,ui
 static unsigned cart_write(void* p,uint8_t* dram,uint32_t da,uint32_t ca,uint32_t n){(void)p;assert(da==0x100 && ca==0x10000000 && n==16);for(unsigned i=0;i<n;++i)dram[(da+i)^S8]=(uint8_t)i;++dma_calls;return 0;}
 static const struct pi_dma_handler cart_io={cart_read,cart_write};
 static void get_cart(struct cart* c,struct dd_controller* d,uint32_t a,void** p,const struct pi_dma_handler** h){(void)c;assert(!d && a==0x10000000);*p=NULL;*h=&cart_io;}
+
+struct audio_capture {
+    unsigned rate;
+    size_t bytes;
+    const void *last_buffer;
+};
+
+static void audio_format(void *opaque, unsigned rate)
+{
+    ((struct audio_capture *)opaque)->rate = rate;
+}
+
+static void audio_play(void *opaque, const void *samples, size_t bytes)
+{
+    struct audio_capture *capture = opaque;
+    capture->bytes += bytes;
+    capture->last_buffer = samples;
+}
+
+static void check_ai_divider(struct mi_controller *mi, struct ri_controller *ri)
+{
+    static const struct audio_out_backend_interface backend = {audio_format, audio_play, NULL};
+    struct audio_capture capture = {0};
+    struct ai_controller ai = {0};
+    struct vi_controller vi = {.clock = 46875000};
+    struct cp0 *cp0 = &mi->r4300->cp0;
+    cp0->count_clock = 0;
+    init_ai(&ai, mi, ri, &vi, &capture, &backend);
+    poweron_ai(&ai);
+    write_ai_regs(&ai, AI_CONTROL_REG * 4, 1, UINT32_MAX);
+    write_ai_regs(&ai, AI_DACRATE_REG * 4, 999, UINT32_MAX);
+    write_ai_regs(&ai, AI_LEN_REG * 4, 40, UINT32_MAX);
+    assert(event_type == AI_INT && event_delay == 10000 && capture.rate == 46875);
+    write_ai_regs(&ai, AI_STATUS_REG * 4, 0, UINT32_MAX);
+    write_ai_regs(&ai, AI_DRAM_ADDR_REG * 4, 0x100, UINT32_MAX);
+    write_ai_regs(&ai, AI_LEN_REG * 4, 32, UINT32_MAX);
+
+    cp0->count_clock = 4000;
+    write_ai_regs(&ai, AI_DACRATE_REG * 4, 1999, UINT32_MAX);
+    assert(capture.bytes == 16 && ai.last_read == 24 && capture.rate == 23437);
+    assert(event_type == AI_INT && event_delay == 12000 && !(mi->regs[MI_INTR_REG] & MI_INTR_AI));
+    cp0->count_clock = 6000;
+    ai_flush_samples(&ai);
+    assert(capture.bytes == 20 && ai.last_read == 20);
+
+    cp0->count_clock = 16000;
+    ai_end_of_dma_event(&ai);
+    assert(capture.bytes == 40 && ai.last_read == 32);
+    assert(event_type == AI_INT && event_delay == 16000 && (mi->regs[MI_INTR_REG] & MI_INTR_AI));
+    cp0->count_clock = 32000;
+    ai_end_of_dma_event(&ai);
+    assert(capture.bytes == 72 && capture.last_buffer == ri->rdram->dram + 0x40);
+    write_ai_regs(&ai, AI_STATUS_REG * 4, 0, UINT32_MAX);
+}
+
+static void check_ai_control(struct mi_controller *mi, struct ri_controller *ri)
+{
+    static const struct audio_out_backend_interface backend = {audio_format, audio_play, NULL};
+    struct audio_capture capture = {0};
+    struct ai_controller ai = {0};
+    struct vi_controller vi = {.clock = 46875000};
+    struct cp0 *cp0 = &mi->r4300->cp0;
+    cp0->count_clock = 0;
+    init_ai(&ai, mi, ri, &vi, &capture, &backend);
+    poweron_ai(&ai);
+    write_ai_regs(&ai, AI_DACRATE_REG * 4, 0xffffc3e7, UINT32_MAX);
+    write_ai_regs(&ai, AI_LEN_REG * 4, 0xfffc0007, UINT32_MAX);
+    assert(event_type == 0 && !(ai.regs[AI_STATUS_REG] & 0x40000000u));
+    write_ai_regs(&ai, AI_LEN_REG * 4, 0xfffc001f, UINT32_MAX);
+    write_ai_regs(&ai, AI_DRAM_ADDR_REG * 4, 0x100, UINT32_MAX);
+    write_ai_regs(&ai, AI_LEN_REG * 4, 16, UINT32_MAX);
+    assert(event_type == 0 && capture.rate == 46875);
+    uint32_t value;
+    read_ai_regs(&ai, AI_STATUS_REG * 4, &value);
+    assert(value == 0xc0000001u);
+    cp0->count_clock = 3000;
+    ai_flush_samples(&ai);
+    read_ai_regs(&ai, AI_LEN_REG * 4, &value);
+    assert(capture.bytes == 0 && value == 24);
+    write_ai_regs(&ai, AI_CONTROL_REG * 4, 1, UINT32_MAX);
+    assert(event_type == AI_INT && event_delay == 6000);
+
+    cp0->count_clock = 5500;
+    read_ai_regs(&ai, AI_DRAM_ADDR_REG * 4 + 0x20, &value);
+    assert(capture.bytes == 8 && value == 16);
+    write_ai_regs(&ai, AI_CONTROL_REG * 4, 0, UINT32_MAX);
+    assert(event_type == 0);
+    cp0->count_clock = 9000;
+    read_ai_regs(&ai, AI_LEN_REG * 4, &value);
+    assert(capture.bytes == 8 && value == 16);
+    write_ai_regs(&ai, AI_CONTROL_REG * 4, 1, UINT32_MAX);
+    assert(event_type == AI_INT && event_delay == 4000);
+    cp0->count_clock = 13000;
+    ai_end_of_dma_event(&ai);
+    assert(capture.bytes == 24 && event_delay == 4000 && (mi->regs[MI_INTR_REG] & MI_INTR_AI));
+    read_ai_regs(&ai, AI_LEN_REG * 4, &value);
+    assert(value == 16);
+    cp0->count_clock = 17000;
+    ai_end_of_dma_event(&ai);
+    assert(capture.bytes == 40);
+    write_ai_regs(&ai, AI_STATUS_REG * 4, 0, UINT32_MAX);
+}
+
 int main(void)
 {
     unit_headless();static struct r4300_core cpu;struct mi_controller mi;uint32_t value;cpu.cp0.cycle_count=-100000;
@@ -39,6 +144,9 @@ int main(void)
         write_mi_regs(&mi,MI_INTR_MASK_REG*4,1u<<(2*bit),UINT32_MAX);assert(!mi.regs[MI_INTR_MASK_REG]);
     }
     uint32_t dram[256]={0};struct rdram ram={0};ram.dram=dram;ram.dram_size=sizeof(dram);struct ri_controller ri;init_ri(&ri,&ram);poweron_ri(&ri);
+    check_ai_divider(&mi, &ri);
+    event_type = 0;
+    check_ai_control(&mi, &ri);
     for(unsigned bits=0;bits<8;++bits){ri.regs[RI_ERROR_REG]=bits&1;ri.regs[RI_MODE_REG]=(bits&2)?8:0;ri.regs[RI_SELECT_REG]=(bits&4)?16:0;read_ri_regs(&ri,RI_CURRENT_LOAD_REG*4,&value);assert(value==(6|(bits&1)|((bits&2)?8:0)|((bits&4)?16:0)));}
     struct vi_controller vi;init_vi(&vi,48681812,60,&mi,NULL);poweron_vi(&vi);vi.regs[VI_V_SYNC_REG]=524;vi.regs[VI_H_SYNC_REG]=3093;
     uint64_t sum=0,numerator=UINT64_C(46875000)*525*3094,denominator=UINT64_C(48681812)*2;
@@ -65,5 +173,5 @@ int main(void)
     write_si_regs(&si,SI_STATUS_REG*4,0,UINT32_MAX);assert(!(mi.regs[MI_INTR_REG]&MI_INTR_SI));
     memset(dram+64,0,64);write_si_regs(&si,SI_PIF_ADDR_RD64B_REG*4,0x1fc007c0,UINT32_MAX);si_end_of_dma_event(&si);
     for(unsigned i=0;i<16;++i)assert(dram[64+i]==0x10203000+i);assert(pif_updates==1 && invalidations==2);
-    puts("RCP: six MI IRQ masks, RI status, 1000 VI periods/Count independence, PI and SI DMA/busy/ack passed.");return 0;
+    puts("RCP: MI IRQ masks, RI status, AI FIFO pause/resume and divider changes, 1000 VI periods, PI and SI DMA passed.");return 0;
 }

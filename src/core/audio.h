@@ -3,6 +3,8 @@
 
 #include <stddef.h>
 
+struct ai_controller;
+
 struct audio_out_backend_interface
 {
     /* Allow the backend to be notified of sample frequency.
@@ -22,6 +24,7 @@ extern "C" {
 
 void init_audio_libretro(unsigned max_frames);
 void deinit_audio_libretro(void);
+void reset_audio_timeline_libretro(const struct ai_controller *ai);
 
 extern const struct audio_out_backend_interface g_libretro_audio_backend;
 

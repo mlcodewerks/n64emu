@@ -22,6 +22,7 @@ extern int retro_savestate_result;
 extern char *retro_dd_path_img, *retro_dd_path_rom;
 extern char *retro_transferpak_rom_path, *retro_transferpak_ram_path;
 extern uint32_t EnableFrameDuping, EnableFullspeed, EnableOverscan, AspectRatio;
+enum { TLB_EXCEPTIONS_IGNORE_ALL = 2 };
 extern uint32_t IgnoreTLBExceptions;
 uint32_t get_retro_screen_width(void);
 uint32_t get_retro_screen_height(void);

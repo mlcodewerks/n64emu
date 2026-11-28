@@ -25,7 +25,15 @@ int main(int argc, char **argv)
     CHECK(!n64emu_init(NULL));
     CHECK(n64emu_init(&host));
     CHECK(!n64emu_init(&host));
-    CHECK(n64emu_option_count() == 10);
+    CHECK(n64emu_cheat_validate("80000000 0001;81000002 0400"));
+    CHECK(!n64emu_cheat_validate("80000000 XXXX"));
+    CHECK(!n64emu_cheat_set(0, true, "80000000 0001"));
+    CHECK(n64emu_option_count() == 13);
+    CHECK(n64emu_option_category_count() == 1);
+    n64emu_option_category category;
+    CHECK(n64emu_get_option_category(0, &category));
+    CHECK(!strcmp(category.key, "hacks") && !strcmp(category.label, "Hacks"));
+    CHECK(!n64emu_get_option_category(1, &category));
     n64emu_option option;
     unsigned deinterlace=option_index("wtfn64_angrylion_deinterlace");
     CHECK(n64emu_get_option(deinterlace, &option));
@@ -41,9 +49,23 @@ int main(int argc, char **argv)
     CHECK(n64emu_set_option(option.key, "off"));
     CHECK(!n64emu_set_option(option.key, "fast"));
     CHECK(n64emu_set_option(option.key, "on"));
+    CHECK(n64emu_get_option(option_index("n64emu_cpu_overclock"), &option));
+    CHECK(!strcmp(option.value, "1x") && strstr(option.label, "(restart required)"));
+    CHECK(n64emu_set_option("n64emu_cpu_overclock", "2x"));
+    CHECK(!n64emu_set_option("n64emu_cpu_overclock", "3x"));
+    CHECK(n64emu_set_option("n64emu_cpu_overclock", "1x"));
+    const char *switches[] = {"n64emu_ignore_tlb_exceptions", "n64emu_disable_expansion_pak"};
+    for (unsigned i = 0; i < 2; ++i) {
+        CHECK(n64emu_get_option(option_index(switches[i]), &option));
+        CHECK(!strcmp(option.value, "disabled") && strstr(option.label, "(restart required)"));
+        CHECK(n64emu_set_option(option.key, "enabled"));
+        CHECK(n64emu_set_option(option.key, "disabled"));
+    }
     for (unsigned i = 0; i < n64emu_option_count(); ++i) {
         CHECK(n64emu_get_option(i, &option));
-        CHECK(option.category == NULL);
+        if (!strcmp(option.key, "n64emu_cpu_overclock") || !strcmp(option.key, switches[0]) || !strcmp(option.key, switches[1]))
+            CHECK(option.category && !strcmp(option.category, "hacks"));
+        else CHECK(option.category == NULL);
         CHECK(strcmp(option.key, "wtfn64_timing"));
     }
     CHECK(!n64emu_get_option(100, &option));
@@ -57,11 +79,17 @@ int main(int argc, char **argv)
     CHECK(!n64emu_save_memory(&size) && size == 0);
     n64emu_run(); n64emu_reset(); n64emu_unload();
     n64emu_deinit(); n64emu_deinit();
+    CHECK(n64emu_option_category_count() == 0);
     CHECK(n64emu_init(&host));
     CHECK(n64emu_get_option(option_index("wtfn64_angrylion_deinterlace"), &option) && !strcmp(option.value, "weave"));
     if (argc > 1) {
         for (unsigned cycle = 0; cycle < 2; ++cycle) {
             CHECK(n64emu_load(argv[1], NULL, 0));
+            CHECK(!n64emu_cheat_set(0, true, NULL));
+            CHECK(n64emu_cheat_set(0, false, "807ff000 0001"));
+            CHECK(n64emu_cheat_set(0, true, NULL));
+            CHECK(n64emu_cheat_set(0, false, NULL));
+            n64emu_cheat_reset();
             CHECK(!n64emu_load(argv[1], NULL, 0));
             n64emu_av av;
             n64emu_get_av(&av);

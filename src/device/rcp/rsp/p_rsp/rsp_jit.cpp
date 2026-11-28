@@ -1731,14 +1731,25 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 
 	case 020: // COP0
 	{
-		unsigned rd = (instr >> 11) & 31;
+		unsigned rd = (instr >> 11) & 15;
 		unsigned rs = (instr >> 21) & 31;
 		unsigned rt = (instr >> 16) & 31;
+		const auto cp0_offset = offsetof(CPUState, cp0) + offsetof(CP0, cr) + rd * sizeof(uint32_t *);
 
 		switch (rs)
 		{
 		case 000: // MFC0
 		{
+			// The address and length latches have no read side effects.
+			if (rd <= CP0_REGISTER_DMA_WRITE_LENGTH) {
+				if (rt) {
+					unsigned dest = regs.modify_mips_register(_jit, rt);
+					_jit->ldxi(dest, JIT_REGISTER_STATE, cp0_offset);
+					_jit->ldxi_i(dest, dest, 0);
+					regs.unlock_mips_register(rt);
+				}
+				break;
+			}
 			regs.flush_register_window(_jit);
 
 			jit_begin_call(_jit);
@@ -1757,6 +1768,25 @@ void CPU::jit_instruction(Emitter *_jit, uint32_t pc, uint32_t instr,
 
 		case 004: // MTC0
 		{
+			if (rd == CP0_REGISTER_DMA_FULL || rd == CP0_REGISTER_DMA_BUSY) break;
+			if (rd <= CP0_REGISTER_DMA_DRAM || rd == CP0_REGISTER_SP_RESERVED) {
+				const unsigned mask = rd == CP0_REGISTER_DMA_CACHE ? 0x1ff8 : 0xfffff8;
+				unsigned address = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER0);
+				unsigned value = regs.modify_mips_register(_jit, RegisterCache::SCRATCH_REGISTER1);
+				uint32_t known;
+				if (rd == CP0_REGISTER_SP_RESERVED) _jit->movi(value, 0);
+				else if (regs.constant_mips_register(rt, known)) _jit->movi(value, known & mask);
+				else {
+					unsigned source = regs.load_mips_register_noext(_jit, rt);
+					_jit->andi(value, source, mask);
+					regs.unlock_mips_register(rt);
+				}
+				_jit->ldxi(address, JIT_REGISTER_STATE, cp0_offset);
+				_jit->stxi_i(0, address, value);
+				regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER0);
+				regs.unlock_mips_register(RegisterCache::SCRATCH_REGISTER1);
+				break;
+			}
 			regs.flush_register_window(_jit);
 
 			jit_begin_call(_jit);

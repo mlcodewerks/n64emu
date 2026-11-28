@@ -83,8 +83,8 @@ static void check_fullsync_scheduling(void)
         {1, 1, 1, 1000,   0, 0, 0, NO_MODE_CHANGE, 902},
         {0, 0, 0,    0,   0, 0, 0, NO_MODE_CHANGE,  84},
         {0, 1, 0,    0,   0, 0, 0, NO_MODE_CHANGE,  80},
-        {1, 0, 0,    0,   0, 0, 0, NO_MODE_CHANGE, 147},
-        {1, 1, 0,    0,   0, 0, 0, NO_MODE_CHANGE, 140},
+        {1, 0, 0,    0,   0, 0, 0, NO_MODE_CHANGE, 168},
+        {1, 1, 0,    0,   0, 0, 0, NO_MODE_CHANGE, 160},
         {1, 0, 1,    0,   0, 0, 0, NO_MODE_CHANGE,  82},
         {0, 0, 1, 1000, 920, 0, 0, NO_MODE_CHANGE, 919},
         {1, 0, 1, 1000, 920, 0, 0, NO_MODE_CHANGE, 902},
@@ -146,6 +146,32 @@ static void check_fullsync_scheduling(void)
             write_dpc_regs(&dp, DPC_END_REG * 4, bytes, UINT32_MAX);
         assert(queued_events == 1 && queued_delay == cases[i].delay);
         assert(!(mi.regs[MI_INTR_REG] & MI_INTR_DP));
+    }
+
+    /* A close long Off-mode fence can leave one halfline to service DP.
+     * Cover its decoded deadline and the boundary below the ramp. */
+    static const struct { unsigned backlog, retrace, delay; } margin_cases[] = {
+        {19060, 9000, 18980},
+        {19090, 9000, 18992},
+        {18098, 9000, 18999},
+        {15758, 5700, 15680},
+        { 1000,  940,   939},
+    };
+    vi_regs[VI_V_SYNC_REG] = 524;
+    vi_regs[VI_V_START_REG] = (34u << 16) | 514u;
+    commands[0] = UINT32_C(0x2f000000);
+    commands[1] = 0x40;
+    commands[2] = UINT32_C(0x29000000);
+    cpu.cache_timing = 0;
+    for (unsigned i = 0; i < sizeof(margin_cases) / sizeof(margin_cases[0]); ++i) {
+        poweron_rdp(&dp);
+        dp.timing.deadline = margin_cases[i].backlog;
+        dp.dpc_regs[DPC_STATUS_REG] |= DPC_STATUS_XBUS_DMEM_DMA;
+        next_vi = 100 + margin_cases[i].retrace;
+        mi.regs[MI_INTR_REG] = 0;
+        queued_events = 0;
+        write_rsp_dpc_regs(&dp, DPC_END_REG * 4, 4 * sizeof(commands[0]), UINT32_MAX);
+        assert(queued_events == 1 && queued_delay == margin_cases[i].delay);
     }
 
     /* Alternate-row interlace keeps the allowance. A later SetColorImage
@@ -239,6 +265,17 @@ int main(void)
     struct mi_controller mi={0};mi.r4300=&cpu;struct rdp_core dp={0};uint32_t value;
     init_rdp(&dp,&sp,&mi,NULL,NULL,&cpu);poweron_rdp(&dp);
     read_dpc_regs(&dp,DPC_STATUS_REG*4,&value);assert(value==DPC_STATUS_START_GCLK);
+    dp.dpc_regs[DPC_STATUS_REG] = 0x28;
+    dp.pipe_sync_deadline = 102;
+    dp.pipe_sync_overhang = 1;
+    sp.slice_start_clock = 100;
+    sp.slice_overhang = 2;
+    rsp_cycles = 2;
+    read_rsp_dpc_regs(&dp, DPC_STATUS_REG * 4, &value);
+    assert(value == 0x28);
+    rsp_cycles = 3;
+    read_rsp_dpc_regs(&dp, DPC_STATUS_REG * 4, &value);
+    assert(value == 0 && dp.pipe_sync_deadline == 0 && dp.pipe_sync_overhang == 0);
     for(unsigned bit=0;bit<3;++bit){
         write_dpc_regs(&dp,DPC_STATUS_REG*4,2u<<(2*bit),UINT32_MAX);
         assert(dp.dpc_regs[DPC_STATUS_REG]&(1u<<bit));

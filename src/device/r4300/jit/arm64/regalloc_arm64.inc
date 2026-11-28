@@ -192,7 +192,7 @@ static void regcache_begin(const uint32_t* ops, unsigned start, unsigned end)
     for (unsigned i = 0; i < CACHE_REGS; ++i) regcache.map[i] = -1;
     regcache.known = regcache.signed_words = 1;
     regcache.serial = GUEST_REGS;
-    analysis.expression_count = 0;
+    analysis.expression_slots = 0;
     unsigned reads_a[MAX_INSTRUCTIONS],reads_b[MAX_INSTRUCTIONS],writes[MAX_INSTRUCTIONS];
     for(unsigned i=start;i<end;++i)guest_operands(ops[i],reads_a+i,reads_b+i,writes+i);
     for(unsigned g=0;g<GUEST_REGS;++g) {
@@ -214,10 +214,13 @@ static void regcache_flush(void)
 {
     for (unsigned h = 0; h < CACHE_REGS; ++h)
         if (regcache.dirty & (1u << h)) { cache_materialize(h); emit_state_store_raw(guest_offset(regcache.map[h]), cache_host[h]); }
+    uint64_t last = 0;
     for (unsigned g = 1; g < GUEST_REGS; ++g) {
         if (regcache.constant_dirty & (UINT64_C(1) << g)) {
-            emit_movimm64(regcache.constants[g], T0);
-            emit_state_store_raw(guest_offset(g), T0);
+            const uint64_t value = regcache.constants[g];
+            if (value && value != last) emit_movimm64(value, T0);
+            emit_state_store_raw(guest_offset(g), value ? T0 : 31); // XZR
+            if (value) last = value;
         }
     }
     regcache.active = 0;

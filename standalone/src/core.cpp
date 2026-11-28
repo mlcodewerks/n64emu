@@ -1,10 +1,14 @@
 #include "config_store.h"
 #include "core.h"
 #include "shader_chain.h"
+#include <charconv>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <map>
+#include <memory>
 #include <sstream>
+#include <file/config_file.h>
 
 Core::Core(Video &v, Input &i, const fs::path &dir) : video(v), input(i), directory(dir) {
     for (auto name : {L"system", L"saves"}) fs::create_directories(dir / name);
@@ -110,6 +114,7 @@ void Core::unload() {
     video.stop_core();
     if (initialized) n64emu_deinit();
     initialized = game_loaded = false;
+    cheat_entries.clear();
     input.end_core();
     callback_error.clear(); title.clear();
     if (!failure.empty()) log("Save error: " + failure + "\n", LogSource::Frontend, RETRO_LOG_ERROR);
@@ -130,6 +135,86 @@ void Core::run() {
     if (++frames % 600 == 0) save_ram();
 }
 void Core::reset() { if (game_loaded) { n64emu_reset(); audio.clear(); audio.dsp.reset(float(sample_rate)); } }
+
+std::vector<CheatEntry> read_retroarch_cheats(const fs::path &path) {
+    const auto bytes = read_file(path);
+    if (std::find(bytes.begin(), bytes.end(), 0) != bytes.end())
+        throw std::runtime_error("Expected a RetroArch text cheat file");
+    std::string text(bytes.begin(), bytes.end());
+    if (text.compare(0, 3, "\xef\xbb\xbf") == 0) text.erase(0, 3);
+    // Cheat lists use plain assignments. Ignore comment directives so an
+    // imported list cannot open additional files through the config reader.
+    std::istringstream lines(text);
+    std::string assignments, line;
+    size_t fields = 0;
+    while (std::getline(lines, line)) {
+        const auto first = line.find_first_not_of(" \t\r\v\f");
+        if (first == std::string::npos || line[first] == '#') continue;
+        assignments += line + '\n';
+        ++fields;
+    }
+    std::unique_ptr<config_file_t, decltype(&config_file_free)> file(
+        config_file_new_from_string(assignments.data(), nullptr), config_file_free);
+    if (!file) throw std::runtime_error("Invalid RetroArch cheat list");
+    auto field = [&](const std::string &key) -> std::string {
+        char *value = nullptr;
+        if (!config_get_string(file.get(), key.c_str(), &value)) return {};
+        std::unique_ptr<char, decltype(&std::free)> owned(value, std::free);
+        return owned.get();
+    };
+    const auto count_text = field("cheats");
+    const char *count_end = count_text.data() + count_text.size();
+    unsigned count = 0;
+    const auto parsed = std::from_chars(count_text.data(), count_end, count);
+    if (parsed.ec != std::errc{} || parsed.ptr != count_end || count > fields)
+        throw std::runtime_error("Invalid RetroArch cheat list");
+
+    std::vector<CheatEntry> imported;
+    imported.reserve(count);
+    for (unsigned i = 0; i < count; ++i) {
+        const auto key = "cheat" + std::to_string(i) + '_';
+        auto code = field(key + "code"), label = field(key + "desc");
+        if (label.empty()) label = "Cheat " + std::to_string(i + 1);
+        const auto *handler = config_get_entry(file.get(), (key + "handler").c_str());
+        const bool supported = (!handler || std::strcmp(handler->value, "0") == 0) && n64emu_cheat_validate(code.c_str());
+        bool enabled = false;
+        config_get_bool(file.get(), (key + "enable").c_str(), &enabled);
+        imported.push_back({std::move(label), std::move(code), supported && enabled, supported});
+    }
+    return imported;
+}
+
+void Core::load_cheats(const fs::path &path) {
+    if (!game_loaded) throw std::runtime_error("Open a ROM before loading cheats");
+    auto imported = read_retroarch_cheats(path);
+    clear_cheats();
+    cheat_entries = std::move(imported);
+    for (unsigned i = 0; i < cheat_entries.size(); ++i) {
+        if (cheat_entries[i].enabled && !set_cheat_enabled(i, true)) {
+            cheat_entries[i].enabled = false;
+            log("Could not enable " + cheat_entries[i].label + "\n", LogSource::Frontend, RETRO_LOG_WARN);
+        }
+    }
+}
+
+bool Core::add_cheat(const char *label, const char *code) {
+    if (!game_loaded || !n64emu_cheat_validate(code)) return false;
+    cheat_entries.push_back({*label ? label : "Cheat " + std::to_string(cheat_entries.size() + 1), code, false, true});
+    return true;
+}
+
+bool Core::set_cheat_enabled(unsigned index, bool enabled) {
+    auto &entry = cheat_entries.at(index);
+    if (!entry.supported || !n64emu_cheat_set(index, enabled, enabled ? entry.code.c_str() : nullptr))
+        return false;
+    entry.enabled = enabled;
+    return true;
+}
+
+void Core::clear_cheats() {
+    n64emu_cheat_reset();
+    cheat_entries.clear();
+}
 void Core::save_ram() {
     if (!game_loaded) return;
     size_t size = 0; void *data = n64emu_save_memory(&size);
@@ -191,6 +276,13 @@ void Core::restore_options() {
     }
     options = std::move(current);
     option_categories.clear();
+    const auto category_count = n64emu_option_category_count();
+    option_categories.reserve(category_count);
+    for (unsigned i = 0; i < category_count; ++i) {
+        n64emu_option_category category{};
+        if (n64emu_get_option_category(i, &category))
+            option_categories.push_back({category.key, category.label, category.info ? category.info : ""});
+    }
 }
 void Core::save_options() {
     Json values(cJSON_CreateObject(), cJSON_Delete);

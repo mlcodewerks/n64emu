@@ -115,9 +115,10 @@ static void retire_counters(struct rdp_core *dp, int64_t now)
 static void read_busy(struct rdp_core *dp, unsigned reg, int from_rsp)
 {
     if (reg == DPC_STATUS_REG && dp->pipe_sync_deadline > 0 &&
-        busy_now(dp, from_rsp) >= dp->pipe_sync_deadline * 4) {
+        busy_now(dp, from_rsp) >= dp->pipe_sync_deadline * 4 - dp->pipe_sync_overhang) {
         dp->dpc_regs[DPC_STATUS_REG] &= ~UINT32_C(0x28);
         dp->pipe_sync_deadline = 0;
+        dp->pipe_sync_overhang = 0;
     }
     if (!dp->instruction_timing || reg < DPC_BUFBUSY_REG || reg > DPC_TMEM_REG) return;
     int64_t now = busy_now(dp, from_rsp);
@@ -152,10 +153,32 @@ uint32_t rdp_sync_full_delay(const struct rdp_core* dp)
     return ticks > min_delay ? ticks : min_delay;
 }
 
+#ifndef N64EMU_USF
+static uint32_t rdp_retrace_service_margin(const uint32_t *vi,
+    uint32_t field_ticks, uint32_t until_vi)
+{
+    if (!vi || (vi[VI_STATUS_REG] & 3u) < 2u) return 1;
+
+    uint32_t halflines = (vi[VI_V_SYNC_REG] & 1023u) + 1u;
+    uint32_t first = (vi[VI_V_START_REG] >> 16) & 1023u;
+    uint32_t last = vi[VI_V_START_REG] & 1023u;
+    if (first >= last || last > halflines) return 1;
+
+    /* When a decoded fence is within one vertical blanking interval of
+     * retrace, leave a halfline to service DP before VI. Apply the margin
+     * to the estimated allowance, with the decoded deadline as its floor. */
+    uint32_t blank = halflines - (last - first);
+    if ((uint64_t)until_vi * halflines > (uint64_t)field_ticks * blank)
+        return 1;
+    return ((uint64_t)field_ticks + halflines - 1u) / halflines;
+}
+#endif
+
 static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
 {
     uint32_t dp_pending;
     struct rdp_timing_sync sync = {0};
+    int64_t submitted = dp->mi->r4300->cp0.count_clock;
     if (dp->dpc_regs[DPC_STATUS_REG] & DPC_STATUS_FREEZE)
         return;
     if (dp->dpc_regs[DPC_CURRENT_REG] == dp->dpc_regs[DPC_END_REG])
@@ -164,7 +187,6 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
     attach_timing(dp);
     dp_pending = dp->mi->regs[MI_INTR_REG] & MI_INTR_DP;
     if (dp->instruction_timing && (from_rsp || dp->vi_regs)) {
-        int64_t submitted = dp->mi->r4300->cp0.count_clock;
         unsigned submitted_overhang = 0;
 #if defined(HAVE_PARALLEL_RSP)
         if (from_rsp) {
@@ -175,6 +197,7 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
 #endif
         uint32_t begin = dp->dpc_regs[DPC_CURRENT_REG] & 0xfffff8;
         uint32_t end = dp->dpc_regs[DPC_END_REG] & 0xfffff8;
+        const uint32_t ram_size = dp->timing.rdram_bytes;
         for (uint32_t at = begin; at < end;) {
             uint32_t count = (end - at) / 4;
             const uint32_t *source;
@@ -182,8 +205,8 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
                 uint32_t available = (4096 - (at & 4095)) / 4;
                 if (count > available) count = available;
                 source = dp->sp->mem + ((at & 4095) >> 2);
-            } else if (at < 0x800000) {
-                uint32_t available = (0x800000 - at) / 4;
+            } else if (at < ram_size) {
+                uint32_t available = (ram_size - at) / 4;
                 if (count > available) count = available;
                 source = dp->fb.rdram->dram + (at >> 2);
             } else {
@@ -201,8 +224,10 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
     renderer_process_commands();
     protect_framebuffers(&dp->fb);
     dp->dpc_regs[DPC_STATUS_REG] |= DPC_STATUS_CBUF_READY;
-    if (sync.seen && !dp->timing.pos && ((dp->timing.words[0] >> 24) & 63) == 0x29)
+    if (sync.seen && !dp->timing.pos && ((dp->timing.words[0] >> 24) & 63) == 0x29) {
         dp->pipe_sync_deadline = dp->timing.deadline > 0 ? dp->timing.deadline : 1;
+        dp->pipe_sync_overhang = dp->timing.deadline > 0 ? dp->timing.clock_overhang : 0;
+    }
 
     /* Native RSP submissions can publish a decoded FullSync even when the
      * renderer has no completion signal. Preserve any latched DP interrupt. */
@@ -232,8 +257,15 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
                 if (!sync.seen) {
                     uint64_t fallback = rdp_sync_full_delay(dp);
 #if defined(HAVE_PARALLEL_RSP)
-                    if (from_rsp)
-                        fallback += rsp_count_ticks(parallelRSPExecutedCycles(), 0);
+                    if (from_rsp) {
+                        /* RSP slices are based on scheduled time. The CPU may
+                         * service a continuation before or after that clock. */
+                        int64_t until_submit = submitted - dp->mi->r4300->cp0.count_clock;
+                        if (!dp->instruction_timing)
+                            fallback += rsp_count_ticks(parallelRSPExecutedCycles(), 0);
+                        else if (until_submit > 0)
+                            fallback += (uint64_t)until_submit;
+                    }
 #endif
                     if (remaining < fallback)
                         remaining = fallback;
@@ -272,8 +304,16 @@ static void process_dpc_commands(struct rdp_core* dp, int from_rsp)
                                 if (next_vi <= field_ticks) {
                                     uint32_t until_vi = delay < next_vi ? next_vi - delay :
                                         field_ticks - (delay - next_vi) % field_ticks;
-                                    if (estimated_delay - delay >= until_vi)
-                                        estimated_delay = (uint64_t)delay + until_vi - 1;
+                                    /* Keep the fixed allowance on shorter work. A fence
+                                     * spanning at least one and a half fields can use
+                                     * the margin even before the allowance ramps up. */
+                                    int long_rsp_fence = decoded_rsp_fence &&
+                                        (uint64_t)delay * 2 >= (uint64_t)field_ticks * 3;
+                                    uint32_t margin = long_rsp_fence ?
+                                        rdp_retrace_service_margin(dp->vi_regs, field_ticks, until_vi) : 1;
+                                    uint32_t allowance = until_vi > margin ? until_vi - margin : 0;
+                                    if (estimated_delay - delay > allowance)
+                                        estimated_delay = (uint64_t)delay + allowance;
                                 }
                             }
                         }
@@ -382,6 +422,7 @@ void poweron_rdp(struct rdp_core* dp)
     dp->clock_base = 0;
     dp->clock_offset = 0;
     dp->pipe_sync_deadline = 0;
+    dp->pipe_sync_overhang = 0;
     rdp_counters_reset(&dp->counters);
     memset(&dp->timing, 0, sizeof(dp->timing));
     dp->timing.right = dp->timing.bottom = 4095;
@@ -458,6 +499,7 @@ static void write_dpc_regs_from(void* opaque, uint32_t address, uint32_t value, 
         if (!(dp->dpc_regs[DPC_STATUS_REG] & DPC_STATUS_FREEZE)) {
             dp->dpc_regs[DPC_STATUS_REG] |= UINT32_C(0xa8);
             dp->pipe_sync_deadline = -1;
+            dp->pipe_sync_overhang = 0;
         }
         process_dpc_commands(dp, from_rsp);
         break;

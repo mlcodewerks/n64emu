@@ -16,6 +16,7 @@ endif
 UNIT_EXES += $(OUT)/memory-mapping$(EXE) $(OUT)/pif-channels$(EXE) $(OUT)/disk-geometry$(EXE)
 UNIT_EXES += $(OUT)/rcp-devices$(EXE)
 UNIT_EXES += $(OUT)/rdp-registers$(EXE)
+UNIT_EXES += $(OUT)/cheats$(EXE)
 UNIT_EXES += $(OUT)/timing-policy$(EXE) $(OUT)/usf-timing-policy$(EXE)
 UNIT_EXES += $(OUT)/off-fp-status$(EXE)
 UNIT_EXES += $(OUT)/software-framebuffer$(EXE)
@@ -38,6 +39,8 @@ $(OUT)/usf-timing-policy$(EXE): tests/timing_policy.c src/device/r4300/memory_ti
 $(OUT)/rdp-registers$(EXE): tests/rdp_registers.c tests/support.c src/device/rcp/rdp/rdp_core.c $(wildcard src/device/rcp/rdp/*.h) src/device/rcp/rsp/p_rsp/dpc_bridge.h tests/support.h tests/headless.h | $(OUT)
 	$(CC) $(CFLAGS) $(INCLUDES) -DHAVE_PARALLEL_RSP -O2 -std=gnu99 -flto -fwhole-program $(filter %.c,$^) -lm -o $@
 UNIT_DEVICE_HEADERS := $(wildcard src/device/*.h) src/device/rcp/rcp.h $(wildcard src/device/r4300/*.h) $(wildcard src/core/*.h)
+$(OUT)/cheats$(EXE): tests/cheats.c src/core/cheats.c $(UNIT_DEVICE_HEADERS) src/device/rcp/rdp/fb.h | $(OUT)
+	$(CC) $(CFLAGS) $(INCLUDES) -O2 -std=gnu99 $(filter %.c,$^) -o $@
 $(OUT)/rdp-registers$(EXE) $(OUT)/rcp-devices$(EXE) $(OUT)/memory-mapping$(EXE) $(OUT)/pif-channels$(EXE) $(OUT)/disk-geometry$(EXE) $(OUT)/storage-devices$(EXE): $(UNIT_DEVICE_HEADERS)
 $(OUT)/rcp-devices$(EXE): tests/rcp_devices.c tests/support.c src/device/rcp/rcp.c tests/support.h tests/headless.h | $(OUT)
 	$(CC) $(CFLAGS) $(INCLUDES) -O2 -std=gnu99 -flto -fwhole-program $(filter %.c,$^) -lm -o $@

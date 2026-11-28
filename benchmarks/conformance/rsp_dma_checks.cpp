@@ -1,7 +1,9 @@
 #include <cassert>
 #include <cstdio>
+#include <initializer_list>
 
 #include "rsp_op.hpp"
+#include "dpc_bridge.h"
 #include "device/rcp/rsp/rsp_timing.h"
 
 namespace RSP
@@ -12,10 +14,25 @@ int SP_STATUS_TIMEOUT;
 
 extern "C" void renderer_process_commands(void) {}
 
+struct dma_notice { uint32_t address, bytes; unsigned count; };
+
+static void record_notice(void* opaque, uint32_t address, uint32_t bytes)
+{
+    auto &notice = *static_cast<dma_notice*>(opaque);
+    notice.address = address;
+    notice.bytes = bytes;
+    ++notice.count;
+}
+
 int main()
 {
     assert(rsp_count_ticks(rsp_dma_transfer_cycles(8, 1), 0) == 7);
     assert(rsp_count_ticks(rsp_dma_transfer_cycles(4096, 256), 0) == 98310);
+    const unsigned dma16_cycles = rsp_dma_transfer_cycles(16, 1);
+    const unsigned first = rsp_count_ticks(dma16_cycles, 0);
+    const unsigned carry = rsp_count_overhang(dma16_cycles, 0);
+    assert(first == 8 && carry == 2);
+    assert(first + rsp_count_ticks(dma16_cycles, carry) == 15);
     using namespace RSP;
     CPUState sp;
     uint32_t registers[16] = {}, irq = 0;
@@ -93,5 +110,35 @@ int main()
     assert(dmem[1022] == 0x12340000 && dmem[1023] == 0x12340001);
     assert(dmem[0] == 0 && dmem[1] == 0);
 
+    dma_notice notice{};
+    parallelRSPSetDmaCallbacks(&notice, record_notice, record_notice);
+    for (unsigned op : {CP0_REGISTER_DMA_READ_LENGTH, CP0_REGISTER_DMA_WRITE_LENGTH}) {
+        for (uint32_t address : {0x7ffff8u, 0x800000u, 0xfffff8u}) {
+            notice = {};
+            registers[CP0_REGISTER_DMA_DRAM] = address;
+            registers[CP0_REGISTER_DMA_CACHE] = 0;
+            assert(RSP_MTC0(&sp, op, 1) == MODE_CONTINUE);
+            if (address == 0x800000) assert(notice.count == 0);
+            else assert(notice.count == 1 && notice.bytes == 8 &&
+                        notice.address == (address == 0x7ffff8 ? address : 0));
+        }
+    }
+    parallelRSPSetRdramSize(0x400000);
+    const unsigned edge = 0x3ffff8 / 4;
+    rdram[edge] = 0x89abcdef;
+    rdram[edge + 2] = 0x76543210;
+    registers[CP0_REGISTER_DMA_DRAM] = 0x3ffff8;
+    registers[CP0_REGISTER_DMA_CACHE] = 0;
+    notice = {};
+    assert(RSP_MTC0(&sp, CP0_REGISTER_DMA_READ_LENGTH, 1) == MODE_CONTINUE);
+    assert(dmem[0] == 0x89abcdef && dmem[2] == 0);
+    assert(notice.count == 1 && notice.address == 0x3ffff8 && notice.bytes == 8);
+    dmem[2] = 0x11223344;
+    registers[CP0_REGISTER_DMA_DRAM] = 0x3ffff8;
+    registers[CP0_REGISTER_DMA_CACHE] = 0;
+    assert(RSP_MTC0(&sp, CP0_REGISTER_DMA_WRITE_LENGTH, 1) == MODE_CONTINUE);
+    assert(rdram[edge + 2] == 0x76543210);
+    parallelRSPSetRdramSize(0x800000);
+    parallelRSPSetDmaCallbacks(nullptr, nullptr, nullptr);
     std::puts("RSP DMA: clocks, strides, IMEM invalidation, SP wrap and RDRAM bounds passed.");
 }

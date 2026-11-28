@@ -43,6 +43,14 @@ the [MiSTer N64 ROM Database](https://github.com/MiSTer-devel/N64_ROM_Database).
 The [source data and its GPL-3.0 license](data/mister) accompany the generated
 header. Run `python tools/update_mister_rom_database.py --check` to verify it.
 
+### Windows x64 standalone
+
+The standalone build uses MSYS2 with UCRT64 GCC/G++, Python, Meson, Ninja,
+and GNU Make. From the repository root, run `standalone\build.bat` to build
+`standalone\build\n64emu.exe`. Add `-Test` to run the standalone tests after
+building. If MSYS2 is installed somewhere other than `C:\msys64`, pass
+`-Msys2Root "D:\msys64"` with the installation path.
+
 ### Libretro and USF libraries
 
 Linux builds require GNU Make and GCC/G++ 9 or newer. On Debian/Ubuntu, install
@@ -71,6 +79,50 @@ Explicit `CC`, `CXX` and `CROSS_COMPILE` overrides remain supported.
 `platform=win ARCH=x86` and `platform=win ARCH=x86_64` remain available.
 The Linux aliases use the host compiler with `-m64` or `-m32`; the existing
 `platform=unix ARCH=x86_64` and `platform=unix ARCH=i686` forms also work.
+
+### Compatibility hacks
+
+Open **Settings → Core → Hacks** in standalone or **Core Options → Hacks**
+in RetroArch. All three settings take effect when content restarts.
+
+**CPU clock multiplier** (`n64emu_cpu_overclock`) supports `1x`,
+`2x`, and `4x`. `1x` is the stock clock. All multipliers support the native
+CPU JIT in either Cycle Timing mode. At `2x` and `4x`, the 64-bit JITs use
+shared CPU timing for their generated integer code and precise handlers for
+other instructions. Peripheral clock rates and modeled bus service times
+keep their stock scale. Game behavior and host performance can change.
+Load save states at the multiplier used to create them.
+
+**Ignore TLB exceptions** (`n64emu_ignore_tlb_exceptions`) skips faulting TLB
+accesses for ROM hacks that rely on that behavior. Failed loads leave the
+destination register as it was. Address and alignment exceptions still apply.
+
+**Disable Expansion Pak** (`n64emu_disable_expansion_pak`) boots with 4 MiB of
+RDRAM. The default is 8 MiB. Load save states with the same memory size.
+
+### Controller accessories
+
+In libretro, use the **Player 1–4 controller pak** core options. In the
+standalone app, open **Settings → Input → Player 1–4 → Controller Pak**.
+Switch between a **Memory Pak** (Controller Pak) and a **Rumble Pak** while
+the game is running. The game sees the old Pak come out before the new one
+goes in. Memory Pak saves stay with the port. Rumble uses the libretro
+frontend's rumble interface or the standalone app's XInput support.
+
+### Nintendo 64 cheats
+
+Load a RetroArch `.cht` list or paste GameShark codes from **Emulation → Cheats**
+in standalone. You can toggle individual entries and press the virtual
+GameShark button there. In RetroArch, load and apply codes through the Cheats
+menu. Player 1's L3 input is the GameShark button.
+
+The native API in `src/core/api.h` validates and sets the same address/value
+pairs by index. Supported codes include 8- and 16-bit writes, conditional
+writes, repeaters, boot writes, and GameShark-button codes. Boot codes run on
+the first frame or when the game is reset. Disabling a cheat stops future
+writes, and unloading the ROM clears the list. Standalone imports `.cht`
+entries that use RetroArch's emulator handler and shows unsupported entries
+as unavailable.
 
 ## foobar2000 USF component
 

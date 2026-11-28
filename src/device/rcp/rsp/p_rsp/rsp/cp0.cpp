@@ -1,10 +1,10 @@
 #include "../state.hpp"
 #include "../dpc_bridge.h"
+#include "device/memory.h"
 #include <cstring>
 
 #ifdef PARALLEL_INTEGRATION
 #include "device/rcp/rsp/rsp_timing.h"
-#include "core/backend.h"
 #include "core/backend.h"
 namespace RSP
 {
@@ -29,6 +29,12 @@ extern "C"
 	static void* dma_opaque;
 	static void (*dma_read)(void*, uint32_t, uint32_t);
 	static void (*dma_write)(void*, uint32_t, uint32_t);
+	static uint32_t dma_rdram_size = RDRAM_MAX_SIZE;
+
+	void parallelRSPSetRdramSize(uint32_t size)
+	{
+		dma_rdram_size = size;
+	}
 
 	void parallelRSPSetDmaCallbacks(void* opaque,
 	    void (*read)(void*, uint32_t, uint32_t),
@@ -40,10 +46,16 @@ extern "C"
 	static void notify_dma(void (*callback)(void*, uint32_t, uint32_t), uint32_t address, uint32_t size)
 	{
 		if (!callback) return;
-		address &= 0x7fffff;
-		const uint32_t first = size < 0x800000 - address ? size : 0x800000 - address;
-		callback(dma_opaque, address, first);
-		if (first < size) callback(dma_opaque, 0, size - first);
+		address &= 0xffffff;
+		// DMA sees an unmapped range after installed RAM up to the 24-bit wrap.
+		// Notify only the RDRAM actually read or written by this row.
+		const uint32_t ram_size = dma_rdram_size;
+		if (address < ram_size) {
+			const uint32_t remaining = ram_size - address;
+			callback(dma_opaque, address, size < remaining ? size : remaining);
+		} else if (size > 0x1000000 - address) {
+			callback(dma_opaque, 0, size - (0x1000000 - address));
+		}
 	}
 
 	void parallelRSPSetDpcCallbacks(void* opaque,
@@ -200,6 +212,7 @@ extern "C"
 #ifdef PARALLEL_INTEGRATION
 	static int rsp_dma_read(RSP::CPUState *rsp)
 	{
+		const uint32_t ram_size = dma_rdram_size;
 		uint32_t length_reg = *rsp->cp0.cr[CP0_REGISTER_DMA_READ_LENGTH];
 		uint32_t length = (length_reg & 0xFFF) + 1;
 		uint32_t skip = (length_reg >> 20) & 0xFF8;
@@ -229,7 +242,7 @@ extern "C"
 			notify_dma(dma_read, source, length);
 			const uint32_t ram = source & 0xffffff;
 			const uint32_t offset = dest & 0xfff;
-			if (length <= 0x1000 - offset && ram < 0x800000 && length <= 0x800000 - ram)
+			if (length <= 0x1000 - offset && ram < ram_size && length <= ram_size - ram)
 			{
 				const bool imem = (dest & 0x1000) != 0;
 				std::memcpy((imem ? rsp->imem : rsp->dmem) + (offset >> 2),
@@ -250,7 +263,7 @@ extern "C"
 				{
 					const uint32_t source_addr = (source + j) & 0xFFFFFC;
 					uint32_t dest_addr = (dest & 0x1000) | ((dest + j) & 0xFFC);
-					const uint32_t word = source_addr < 0x800000 ? rsp->rdram[source_addr >> 2] : 0;
+					const uint32_t word = source_addr < ram_size ? rsp->rdram[source_addr >> 2] : 0;
 
 					if (dest_addr & 0x1000)
 					{
@@ -289,6 +302,7 @@ extern "C"
 
 	static void rsp_dma_write(RSP::CPUState *rsp)
 	{
+		const uint32_t ram_size = dma_rdram_size;
 		uint32_t length_reg = *rsp->cp0.cr[CP0_REGISTER_DMA_WRITE_LENGTH];
 		uint32_t length = (length_reg & 0xFFF) + 1;
 		uint32_t skip = (length_reg >> 20) & 0xFF8;
@@ -307,7 +321,7 @@ extern "C"
 		constexpr unsigned row_size = 2048;
 		constexpr unsigned write_reuse_cycles = 128;
 		const unsigned row_offset = dest & (row_size - 1);
-		const bool contiguous_block = count == 0 && !(source & 0x1000) && dest < 0x800000;
+		const bool contiguous_block = count == 0 && !(source & 0x1000) && dest < ram_size;
 		const bool reuse = contiguous_block && row_offset && length <= row_size - row_offset &&
 			dest == rsp->dma_write_end && rsp->cycles - rsp->dma_write_cycle <= write_reuse_cycles;
 		const unsigned min_write_cycles = reuse ? 24 : 25;
@@ -328,7 +342,7 @@ extern "C"
             notify_dma(dma_write, dest, length);
 			const uint32_t ram = dest & 0xffffff;
 			const uint32_t offset = source & 0xfff;
-			if (length <= 0x1000 - offset && ram < 0x800000 && length <= 0x800000 - ram)
+			if (length <= 0x1000 - offset && ram < ram_size && length <= ram_size - ram)
 			{
 				const uint32_t *bank = (source & 0x1000) ? rsp->imem : rsp->dmem;
 				std::memcpy(rsp->rdram + (ram >> 2), bank + (offset >> 2), length);
@@ -342,7 +356,7 @@ extern "C"
 					uint32_t source_addr = (source & 0x1000) | ((source + j) & 0xFFC);
 					const uint32_t dest_addr = (dest + j) & 0xFFFFFC;
 
-					if (dest_addr < 0x800000)
+					if (dest_addr < ram_size)
 						rsp->rdram[dest_addr >> 2] = (source_addr & 0x1000) ? rsp->imem[(source_addr & 0xfff) >> 2] : rsp->dmem[source_addr >> 2];
 
 					j += 4;

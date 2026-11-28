@@ -39,7 +39,27 @@ static int compare(unsigned int fmt, unsigned int fn, uint64_t a, uint64_t b, un
 
 int main(void)
 {
+    static const struct {
+        uint64_t input;
+        unsigned int rounding;
+        uint32_t expected;
+    } narrow[] = {
+        {UINT64_C(0x0010000000000000), 0, 0},
+        {UINT64_C(0x0010000000000000), 2, 1},
+        {UINT64_C(0x8010000000000000), 0, UINT32_C(0x80000000)},
+        {UINT64_C(0x8010000000000000), 3, UINT32_C(0x80000001)},
+    };
     unsigned int checks = 0;
+    for (unsigned int i = 0; i < sizeof(narrow) / sizeof(*narrow); ++i) {
+        uint64_t result;
+        unsigned int flags = fpu_native_eval(17, 32, narrow[i].input, 0, narrow[i].rounding, &result);
+        if (flags != 3 || result != narrow[i].expected) {
+            fprintf(stderr, "CVT.S.D tiny input %u produced %016llx/%02x\n",
+                i, (unsigned long long)result, flags);
+            return 1;
+        }
+        ++checks;
+    }
     for (unsigned int fmt = 16; fmt <= 17; ++fmt) {
         for (unsigned int i = 0; i < 1024; ++i) {
             uint64_t a = random_bits(), b = random_bits();

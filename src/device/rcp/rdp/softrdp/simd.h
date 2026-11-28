@@ -182,7 +182,12 @@ static inline void sr_noise_block(uint32_t begin, uint32_t end, uint32_t frame_s
         n = _mm_srli_epi32(sr_mul32(_mm_xor_si128(a, n), p), 16);
         n = _mm_sub_epi32(n, _mm_set1_epi32(32768));
         n = _mm_add_epi16(_mm_packs_epi32(n,n), _mm_set1_epi16((short)0x8000));
+#ifdef SR_NEON
+        /* The first sample can start at any 16-bit position. */
+        vst1_u8((uint8_t *)(out + x), vget_low_u8(vreinterpretq_u8_s64(n)));
+#else
         _mm_storel_epi64((__m128i *)(out + x), n);
+#endif
     }
 #endif
     for (; x < end; ++x) {

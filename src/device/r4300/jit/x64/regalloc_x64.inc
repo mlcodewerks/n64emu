@@ -201,7 +201,7 @@ static void regcache_begin(const uint32_t* ops, unsigned start, unsigned end)
     for (unsigned i = 0; i < CACHE_REGS; ++i) regcache.map[i] = -1;
     regcache.known = regcache.signed_words = 1;
     regcache.serial = GUEST_REGS;
-    analysis.expression_count = 0;
+    analysis.expression_slots = 0;
     unsigned reads_a[MAX_INSTRUCTIONS],reads_b[MAX_INSTRUCTIONS],writes[MAX_INSTRUCTIONS];
     for(unsigned i=start;i<end;++i)guest_operands(ops[i],reads_a+i,reads_b+i,writes+i);
     for(unsigned g=0;g<GUEST_REGS;++g) {
@@ -223,10 +223,19 @@ static void regcache_flush(void)
 {
     for (unsigned h = 0; h < CACHE_REGS; ++h)
         if (regcache.dirty & (1u << h)) { cache_materialize(h); emit_state_store_raw(guest_offset(regcache.map[h]), cache_host[h]); }
+    bool initialized = false;
+    uint64_t last = 0;
     for (unsigned g = 1; g < GUEST_REGS; ++g) {
         if (regcache.constant_dirty & (UINT64_C(1) << g)) {
-            emit_movimm64(regcache.constants[g], RAX);
+            const uint64_t value = regcache.constants[g];
+            if (value == uint64_t(int64_t(int32_t(value)))) {
+                JIT(mov(host_mem(64,R12,-1,0,guest_offset(g)), value));
+                continue;
+            }
+            if (!initialized || value != last) emit_movimm64(value, RAX);
             emit_state_store_raw(guest_offset(g), RAX);
+            initialized = true;
+            last = value;
         }
     }
     regcache.active = 0;

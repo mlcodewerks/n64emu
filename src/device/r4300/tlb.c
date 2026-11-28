@@ -70,6 +70,7 @@ int r4300_translate_address64(struct r4300_core* r, uint64_t address, int w,
         *cached = (odd ? e->c_odd : e->c_even) != 2;
         return 1;
     }
+    if (IgnoreTLBExceptions == TLB_EXCEPTIONS_IGNORE_ALL) return 0;
     int nested = (r->cp0.regs[CP0_STATUS_REG] & CP0_STATUS_EXL) != 0;
     r->cp0.regs[CP0_CAUSE_REG] = (r->cp0.regs[CP0_CAUSE_REG] & ~UINT32_C(0x3000007c)) |
         (modified ? CP0_CAUSE_EXCCODE_MOD : w == 1 ? CP0_CAUSE_EXCCODE_TLBS : CP0_CAUSE_EXCCODE_TLBL);
@@ -216,19 +217,10 @@ uint32_t virtual_to_physical_address(struct r4300_core* r4300, uint32_t address,
         } else {
             TLB_refill_exception(r4300, address, w);
         }
-    } else if(IgnoreTLBExceptions == 2)
-    {
-        /* AlwaysIgnoreTLB */
-        /* Use-case GdbStub... */
     }
 #else
-    if(IgnoreTLBExceptions == 2)
-    {
-        /* AlwaysIgnoreTLB */
-        /* Use-case for Interpreter-only GdbStub... */
-    } else {
+    if (IgnoreTLBExceptions != TLB_EXCEPTIONS_IGNORE_ALL)
         TLB_refill_exception(r4300, address, w);
-    }
 #endif // JIT
 
     //return 0x80000000;

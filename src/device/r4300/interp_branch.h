@@ -80,7 +80,7 @@ static osal_force_inline void interp_idle_advance(struct r4300_core* r)
 {
     cp0_update_count(r);
     if (r->cp0.cycle_count < 0) {
-        uint64_t clocks=(uint64_t)(-r->cp0.cycle_count)*2-r->cp0.count_phase;
+        uint64_t clocks = ((uint64_t)(-r->cp0.cycle_count) << cp0_cpu_clock_shift(&r->cp0)) - r->cp0.count_phase;
         r->retired_ops+=clocks/(1+r4300_cached_issue_reservation(r->compat_issue_clock, r->cache_timing));
         r->cp0.regs[CP0_COUNT_REG] += (uint32_t)(-r->cp0.cycle_count);
         r->cp0.count_clock += -r->cp0.cycle_count;

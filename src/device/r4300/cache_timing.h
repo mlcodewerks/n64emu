@@ -8,13 +8,20 @@
 #include <string.h>
 
 #include "device/rcp/rdp/rdp_core.h"
+/* External service is specified in stock CPU clocks. A faster CPU waits
+ * more of its own cycles for the same memory or RCP transaction. */
+static osal_force_inline unsigned r4300_bus_cycles(const struct r4300_core* r, unsigned clocks)
+{
+    return clocks << (cp0_cpu_clock_shift(&r->cp0) - 1);
+}
+
 /* Use the scheduler clock consistently in C and native paths. The RDP
  * deadline is a coarse busy estimate and can include queued work. */
 static osal_force_inline unsigned r4300_icache_fill_cycles(const struct r4300_core *r)
 {
     const struct rdp_core *dp = r->vi ? r->vi->dp : NULL;
-    return dp && dp->timing.deadline > r->cp0.count_clock
-        ? R4300_ICACHE_FILL_BUSY_CYCLES : R4300_ICACHE_FILL_IDLE_CYCLES;
+    return r4300_bus_cycles(r, dp && dp->timing.deadline > r->cp0.count_clock
+        ? R4300_ICACHE_FILL_BUSY_CYCLES : R4300_ICACHE_FILL_IDLE_CYCLES);
 }
 /* A resident D-cache access shares the instruction's issue clock. */
 enum { R4300_DCACHE_HIT_CYCLES = 0 };
@@ -125,7 +132,7 @@ static osal_force_inline unsigned int r4300_itlb_access_cycles(struct r4300_core
 
 static inline uint64_t r4300_cpu_clock(const struct r4300_core* r)
 {
-    return (uint64_t)r->cp0.count_clock*2+r->cp0.count_phase;
+    return ((uint64_t)r->cp0.count_clock << cp0_cpu_clock_shift(&r->cp0)) + r->cp0.count_phase;
 }
 /* Coarse scanout arbitration. Cache-line transfers share the RDRAM bus;
  * uncached reads also pay the row turnaround when VI uses the same bank.
@@ -185,7 +192,7 @@ static inline void r4300_dcache_writeback(struct r4300_core* r, uint32_t va)
     r4300_write_buffer_drain(r);
     unsigned index = (va >> 4) & 511;
     uint32_t pa = (r->dcache_tags[index] & 0x1ffff000) | (va & 0xff0);
-    cp0_step_cycles(&r->cp0, R4300_DCACHE_WRITEBACK_CYCLES);
+    cp0_step_cycles(&r->cp0, r4300_bus_cycles(r, R4300_DCACHE_WRITEBACK_CYCLES));
     if (r->jit) invalidate_r4300_cached_code(r, pa, 16);
     const struct mem_handler* handler = mem_get_handler(r->mem, pa);
     struct rdram* ram = (struct rdram*)handler->opaque;
@@ -204,7 +211,9 @@ static R4300_CACHE_NOINLINE void r4300_dcache_refill(struct r4300_core* r,
     if ((r->dcache_tags[index] & 3) == 3) r4300_dcache_writeback(r, va);
     r4300_icache_fill_wait(r);
     r4300_write_buffer_drain(r);
-    cp0_step_cycles(&r->cp0,r->compat_issue_clock?R4300_COMPAT_DCACHE_FILL_CYCLES:R4300_DCACHE_FILL_CYCLES+r4300_vi_bus_latency(r,pa,1));
+    unsigned cycles = r->compat_issue_clock ? R4300_COMPAT_DCACHE_FILL_CYCLES :
+        R4300_DCACHE_FILL_CYCLES + r4300_vi_bus_latency(r, pa, 1);
+    cp0_step_cycles(&r->cp0, r4300_bus_cycles(r, cycles));
     uint32_t line = pa & 0x1ffffff0;
     const struct mem_handler* handler = mem_get_handler(r->mem, line);
     const struct rdram* ram = (const struct rdram*)handler->opaque;
@@ -228,9 +237,10 @@ static osal_force_inline int r4300_data_access_cycles_explicit(struct r4300_core
 #ifndef N64EMU_USF
         uint32_t physical = pa & UINT32_C(0x1fffffff);
         if (!cached && physical >= UINT32_C(0x04000000) && physical < UINT32_C(0x05000000))
-            cp0_step_cycles(&r->cp0, write ? R4300_RCP_WRITE_CYCLES : R4300_RCP_READ_CYCLES);
+            cp0_step_cycles(&r->cp0, r4300_bus_cycles(r,
+                write ? R4300_RCP_WRITE_CYCLES : R4300_RCP_READ_CYCLES));
         else if (physical < UINT32_C(0x00800000))
-            cp0_step_cycles(&r->cp0, r4300_off_ram_cycles(r->fast_memory_timing));
+            cp0_step_cycles(&r->cp0, r4300_bus_cycles(r, r4300_off_ram_cycles(r->fast_memory_timing)));
 #endif
         return 0;
     }
@@ -241,6 +251,7 @@ static osal_force_inline int r4300_data_access_cycles_explicit(struct r4300_core
         if (physical >= 0x04000000 && physical < 0x05000000)
             cycles = write ? R4300_RCP_WRITE_CYCLES : R4300_RCP_READ_CYCLES;
         else if (!write && physical < 0x00800000) cycles = R4300_UNCACHED_READ_CYCLES+r4300_vi_bus_latency(r,physical,0);
+        cycles = r4300_bus_cycles(r, cycles);
         if(!r->compat_issue_clock&&write&&physical<0x00800000) {
             /* The pipeline stalls on capacity, not on each posted store.
              * Memory visibility retains the existing in-order write path;
@@ -304,7 +315,7 @@ static osal_force_inline unsigned int r4300_fetch_cycles_internal(struct r4300_c
     if (!(r->pc_extension ? cached : r4300_access_cached(r, va))) {
         r4300_icache_fill_wait(r);
         r4300_write_buffer_drain(r);
-        return cycles + R4300_UNCACHED_FETCH_CYCLES;
+        return cycles + r4300_bus_cycles(r, R4300_UNCACHED_FETCH_CYCLES);
     }
     tag = &r->icache_tags[(va >> 5) & 511];
     key = (pa & 0x1ffff000) | 1;
@@ -314,6 +325,11 @@ static osal_force_inline unsigned int r4300_fetch_cycles_internal(struct r4300_c
         if(!future||r->compat_issue_clock)r4300_write_buffer_drain(r);
         r4300_icache_discard_shadow(r,(va>>5)&511);
         *tag = key;
+#ifndef HAVE_N64EMUJIT
+        /* The interpreter has no decoded-page invalidation hook to capture
+         * the cached words before a later write to backing memory. */
+        r4300_icache_materialize(r, (va >> 5) & 511);
+#endif
         if(future&&!r->compat_issue_clock){
             uint64_t start=r4300_cpu_clock(r);
             if(r->write_buffer_count&&start<r->write_buffer_end[r->write_buffer_count-1])start=r->write_buffer_end[r->write_buffer_count-1];

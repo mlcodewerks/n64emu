@@ -12,6 +12,29 @@ void sr_vi_threads_run(void (*fn)(void *, uint32_t, uint32_t), void *ctx)
     for (uint32_t band = 0; band < 3; band++) fn(ctx, band, 3);
 }
 
+static void check_noise_alignment(void)
+{
+    _Alignas(8) uint16_t samples[16];
+    const uint32_t frame = 0x32102u, row = 0x76543u, field = 0xd210fu;
+    const uint32_t prime = 1103515245u;
+
+    for (unsigned start = 0; start < 4; ++start) {
+        const unsigned end = start + 9;
+        memset(samples, 0xa5, sizeof(samples));
+        sr_noise_block(start, end, frame, row, field, samples);
+        for (unsigned x = 0; x < sizeof(samples) / sizeof(*samples); ++x) {
+            if (x >= start && x < end) {
+                uint32_t hash = (frame ^ x) * prime;
+                hash = (row ^ hash) * prime;
+                hash = (field ^ hash) * prime;
+                assert(samples[x] == hash >> 16);
+            } else {
+                assert(samples[x] == 0xa5a5u);
+            }
+        }
+    }
+}
+
 static uint32_t check_filtered_scanout(void)
 {
     enum { RAM_BYTES = 8192, WIDTH = 57 * SOFTRDP_SCALE, HEIGHT = 13 * SOFTRDP_SCALE };
@@ -97,6 +120,7 @@ static void check_sample_import(void)
 
 int main(void)
 {
+    check_noise_alignment();
     static uint8_t ram[8 * 1024 * 1024];
     sr_memory memory = {0};
     memory.rdram = ram; memory.rdram_size = sizeof(ram);

@@ -76,10 +76,11 @@ static int interp_thread_poll_advance(struct r4300_core* r, uint32_t pc)
 {
     /* Both MTC0 STATUS writes cost two base clocks rather than one. */
     const unsigned cycles = 36 * (1 + r4300_cached_issue_reservation(r->compat_issue_clock, r->cache_timing)) +
-        2 * (r4300_base_cycles(UINT32_C(0x40896000), 0) - 1) + 9 * r4300_off_ram_cycles(r->fast_memory_timing);
+        2 * (r4300_base_cycles(UINT32_C(0x40896000), 0) - 1) +
+        r4300_bus_cycles(r, 9 * r4300_off_ram_cycles(r->fast_memory_timing));
     uint32_t status = r->cp0.regs[CP0_STATUS_REG];
     if (r->cache_timing || r->delay_slot || r->skip_jump || breakloop ||
-        r->cp0.cycle_count >= -(int)(cycles / 2) || r->cp0.last_addr != pc ||
+        r->cp0.cycle_count >= -(int)(cycles >> cp0_cpu_clock_shift(&r->cp0)) || r->cp0.last_addr != pc ||
         r->regs[1] != -2 || r->regs[31] != (int64_t)(int32_t)(pc + 8) ||
         ((status & CP0_STATUS_MODE_MASK) && !(status & (CP0_STATUS_EXL | CP0_STATUS_ERL))) ||
         r->pipeline_load_mask || r->pipeline_fpu_result_mask || r->pipeline_fpu_cc || r->pipeline_cached_store)
@@ -116,9 +117,9 @@ static int interp_thread_poll_advance(struct r4300_core* r, uint32_t pc)
     /* All registers, stack words, STATUS/latch and IRQ state are already the
      * exact steady-state result. No instruction reads COUNT or a device.
      * Retain odd RAM-service clocks across iterations and stop before events. */
-    uint64_t budget = (uint64_t)(-(r->cp0.cycle_count + 1)) * 2 + (1 - r->cp0.count_phase);
+    uint64_t budget = cp0_cycles_before_event(&r->cp0);
     uint64_t iterations = budget / cycles;
-    if (iterations > UINT32_MAX / cycles) iterations = UINT32_MAX / cycles;
+    if (iterations > (UINT32_MAX - 7) / cycles) iterations = (UINT32_MAX - 7) / cycles;
     if (!iterations) return 0;
     cp0_step_cycles(&r->cp0, (unsigned)iterations * cycles);
     r->retired_ops+=iterations*36;

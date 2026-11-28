@@ -54,6 +54,9 @@ static void set_input_descriptors(void)
       { PAD, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT,  RETRO_DEVICE_ID_ANALOG_Y, "Control Stick Y" },\
 
       static struct retro_input_descriptor desc[] = {
+#ifndef N64EMU_USF
+         { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L3, "GameShark button" },
+#endif
          independent_cbuttons_map(0)
          independent_cbuttons_map(1)
          independent_cbuttons_map(2)

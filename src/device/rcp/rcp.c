@@ -31,6 +31,20 @@
 
 #define AI_STATUS_BUSY UINT32_C(0x40000000)
 #define AI_STATUS_FULL UINT32_C(0x80000000)
+#define AI_CONTROL_ENABLE UINT32_C(1)
+#define AI_LENGTH_MASK UINT32_C(0x0003fff8)
+#define AI_DACRATE_MASK UINT32_C(0x00003fff)
+
+static bool ai_dma_enabled(const struct ai_controller* ai)
+{
+#ifdef N64EMU_USF
+    /* Some rips initialize only the FIFO registers. */
+    (void)ai;
+    return true;
+#else
+    return (ai->regs[AI_CONTROL_REG] & AI_CONTROL_ENABLE) != 0;
+#endif
+}
 
 static void ai_set_format(struct ai_controller* ai)
 {
@@ -91,6 +105,7 @@ static uint32_t get_remaining_dma_length(struct ai_controller* ai)
 {
     if (!(ai->regs[AI_STATUS_REG] & AI_STATUS_BUSY) || !ai->fifo[0].duration)
         return 0;
+    if (!ai_dma_enabled(ai)) return ai->last_read;
     cp0_update_count(ai->mi->r4300);
     int64_t elapsed = ai_clock(ai) - ai->dma_start_clock;
     if (elapsed <= 0) return ai->fifo[0].length;
@@ -99,26 +114,38 @@ static uint32_t get_remaining_dma_length(struct ai_controller* ai)
     return ai->fifo[0].length - (uint32_t)consumed * 4;
 }
 
-static unsigned int get_dma_duration(struct ai_controller* ai)
+static unsigned int get_dma_duration(const struct ai_controller* ai, unsigned int length)
 {
     unsigned int bytes_per_sample = 4; /* 16-bit stereo */
     unsigned int divider = 1 + ai->regs[AI_DACRATE_REG];
 
     if (!ai->regs[AI_DACRATE_REG])
-        return (unsigned int)((uint64_t)(ai->regs[AI_LEN_REG] / bytes_per_sample)
+        return (unsigned int)((uint64_t)(length / bytes_per_sample)
                               * ai->vi->clock / 44100);
 
     if (divider == 0)
         return 0;
-    return (unsigned int)(((uint64_t)ai->regs[AI_LEN_REG] * divider)
+    return (unsigned int)(((uint64_t)length * divider)
                           / bytes_per_sample);
 }
 
+static void ai_schedule_dma_end(struct ai_controller* ai)
+{
+    if (!ai_dma_enabled(ai)) return;
+    struct cp0* cp0 = &ai->mi->r4300->cp0;
+    int64_t end = ai->dma_start_clock + ai->fifo[0].duration;
+    add_interrupt_event_count(cp0, AI_INT, cp0->regs[CP0_COUNT_REG] +
+        (uint32_t)(ai_count_deadline(ai, end) - cp0->count_clock));
+}
 
 static void do_dma(struct ai_controller* ai, struct ai_dma* dma, int64_t start)
 {
     ai_set_format(ai);
     ai->dma_start_clock = start;
+#ifndef N64EMU_USF
+    /* Queued buffers use the divider in force when their first sample plays. */
+    dma->duration = get_dma_duration(ai, dma->length);
+#endif
 
     ai->last_read = dma->length;
 
@@ -143,8 +170,8 @@ static void do_dma(struct ai_controller* ai, struct ai_dma* dma, int64_t start)
 
     /* schedule end of dma event */
     cp0_update_count(ai->mi->r4300);
-    struct cp0* cp0 = &ai->mi->r4300->cp0;
 #ifdef N64EMU_USF
+    struct cp0* cp0 = &ai->mi->r4300->cp0;
     /* Older rips omit the idle-thread context and expect an immediate AI
      * completion. _enablefifofull opts into the timed, two-entry FIFO. */
     if (!n64emu_usf_fifo_enabled()) {
@@ -158,8 +185,7 @@ static void do_dma(struct ai_controller* ai, struct ai_dma* dma, int64_t start)
      * by an entire buffer. USF retains the ripper's completion convention. */
     signal_rcp_interrupt(ai->mi, MI_INTR_AI);
 #endif
-    add_interrupt_event_count(cp0, AI_INT, cp0->regs[CP0_COUNT_REG] +
-        (uint32_t)(ai_count_deadline(ai, start + dma->duration) - cp0->count_clock));
+    ai_schedule_dma_end(ai);
 #ifdef AI_TIMING_OBSERVE
     AI_TIMING_OBSERVE(ai, "dma", dma->length / 4);
 #endif
@@ -167,7 +193,7 @@ static void do_dma(struct ai_controller* ai, struct ai_dma* dma, int64_t start)
 
 static void fifo_push(struct ai_controller* ai)
 {
-    unsigned int duration = get_dma_duration(ai);
+    unsigned int duration = get_dma_duration(ai, ai->regs[AI_LEN_REG]);
 
     if (ai->regs[AI_STATUS_REG] & AI_STATUS_BUSY)
     {
@@ -191,7 +217,7 @@ static void fifo_push(struct ai_controller* ai)
 
         do_dma(ai, &ai->fifo[0], ai_clock(ai) -
             (ai->regs[AI_DACRATE_REG] ? ai->idle_phase : ai->idle_phase / 44100));
-        ai->idle_phase = 0;
+        if (ai_dma_enabled(ai)) ai->idle_phase = 0;
     }
 }
 
@@ -278,7 +304,7 @@ static unsigned int ai_hand_over_played(struct ai_controller* ai, uint32_t remai
 void ai_flush_samples(struct ai_controller* ai)
 {
     cp0_update_count(ai->mi->r4300);
-    if (ai->regs[AI_STATUS_REG] & AI_STATUS_BUSY)
+    if ((ai->regs[AI_STATUS_REG] & AI_STATUS_BUSY) && ai_dma_enabled(ai))
         ai_hand_over_played(ai, get_remaining_dma_length(ai));
     else
         ai_emit_idle(ai, ai_clock(ai));
@@ -291,7 +317,16 @@ void ai_rebase_timing(struct ai_controller* ai)
     ai->idle_clock = ai_clock(ai);
     ai->idle_phase = 0;
     ai->dma_start_clock = ai->idle_clock - ai->fifo[0].duration;
+#ifndef N64EMU_USF
+    ai->regs[AI_CONTROL_REG] &= AI_CONTROL_ENABLE;
+#endif
     if (event) {
+#ifndef N64EMU_USF
+        /* Older states could queue completion with DMA disabled because
+         * the control bit did not gate the FIFO. A paused new state has no
+         * completion event. Preserve the in-flight transfer in old states. */
+        ai->regs[AI_CONTROL_REG] |= AI_CONTROL_ENABLE;
+#endif
         int64_t end = cp0->count_clock + (int32_t)(*event - cp0->regs[CP0_COUNT_REG]);
         ai->dma_start_clock = end / 46875000 * ai->vi->clock +
             end % 46875000 * ai->vi->clock / 46875000 - ai->fifo[0].duration;
@@ -299,19 +334,49 @@ void ai_rebase_timing(struct ai_controller* ai)
     ai->samples_format_changed = 1;
 }
 
+#ifndef N64EMU_USF
+static void ai_write_control(struct ai_controller* ai, uint32_t value)
+{
+    if (value == ai->regs[AI_CONTROL_REG]) return;
+    ai_flush_samples(ai);
+    ai->regs[AI_CONTROL_REG] = value;
+    if (!(ai->regs[AI_STATUS_REG] & AI_STATUS_BUSY)) return;
+
+    struct ai_dma* dma = &ai->fifo[0];
+    uint32_t played = dma->length - ai->last_read;
+    int64_t now = ai_clock(ai);
+    if (!value) {
+        /* The DAC still advances through idle samples while the source FIFO
+         * is paused. Keep its partial sample period when changing sources. */
+        int64_t partial = now - ai->dma_start_clock - get_dma_duration(ai, played);
+        ai->idle_clock = now;
+        ai->idle_phase = partial > 0 && ai->regs[AI_DACRATE_REG] ?
+            (uint64_t)partial % (ai->regs[AI_DACRATE_REG] + 1u) : 0;
+        remove_event(&ai->mi->r4300->cp0.q, AI_INT);
+    } else {
+        uint32_t partial = ai->regs[AI_DACRATE_REG] ? ai->idle_phase : ai->idle_phase / 44100;
+        ai->dma_start_clock = now - get_dma_duration(ai, played) - partial;
+        ai->idle_phase = 0;
+        dma->duration = get_dma_duration(ai, dma->length);
+        ai_schedule_dma_end(ai);
+    }
+}
+#endif
+
 void read_ai_regs(void* opaque, uint32_t address, uint32_t* value)
 {
     struct ai_controller* ai = (struct ai_controller*)opaque;
     uint32_t reg = ai_reg(address);
 
-    if (reg == AI_LEN_REG)
+    if (reg == AI_STATUS_REG)
     {
-        *value = get_remaining_dma_length(ai);
-        ai_hand_over_played(ai, *value);
+        *value = ai->regs[reg] | (ai->regs[reg] >> 31);
     }
     else
     {
-        *value = ai->regs[reg];
+        /* The write-only slots mirror the active descriptor's length. */
+        *value = get_remaining_dma_length(ai);
+        ai_hand_over_played(ai, *value);
     }
 }
 
@@ -324,7 +389,7 @@ void write_ai_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
     {
     case AI_LEN_REG:
         if (ai->regs[AI_STATUS_REG] & AI_STATUS_FULL) return;
-        masked_write(&ai->regs[AI_LEN_REG], value, mask);
+        masked_write(&ai->regs[AI_LEN_REG], value, mask & AI_LENGTH_MASK);
         if (ai->regs[AI_LEN_REG] != 0) {
             fifo_push(ai);
         }
@@ -333,22 +398,42 @@ void write_ai_regs(void* opaque, uint32_t address, uint32_t value, uint32_t mask
         }
         return;
 
+#ifndef N64EMU_USF
+    case AI_CONTROL_REG:
+        if (mask & AI_CONTROL_ENABLE) ai_write_control(ai, value & AI_CONTROL_ENABLE);
+        return;
+#endif
+
     case AI_STATUS_REG:
         clear_rcp_interrupt(ai->mi, MI_INTR_AI);
         return;
 
-    case AI_DACRATE_REG:
+    case AI_DACRATE_REG: {
+        const uint32_t old_rate = ai->regs[reg];
         ai_flush_samples(ai);
-        if ((ai->regs[reg] & mask) != (value & mask)) {
+        masked_write(&ai->regs[reg], value, mask & AI_DACRATE_MASK);
+        if (ai->regs[reg] != old_rate) {
             ai->samples_format_changed = 1;
-            ai->idle_phase = 0; 
+            ai->idle_phase = 0;
+#ifndef N64EMU_USF
+            if ((ai->regs[AI_STATUS_REG] & AI_STATUS_BUSY) && ai_dma_enabled(ai) && ai->last_read) {
+                /* Preserve the samples already played at the old divider.
+                 * Time the rest of the buffer from the rate write. */
+                struct ai_dma *dma = &ai->fifo[0];
+                uint32_t played = dma->length - ai->last_read;
+                ai->dma_start_clock = ai_clock(ai) - get_dma_duration(ai, played);
+                dma->duration = get_dma_duration(ai, dma->length);
+                remove_event(&ai->mi->r4300->cp0.q, AI_INT);
+                ai_schedule_dma_end(ai);
+                ai_set_format(ai);
+            }
+#endif
         }
-
-        masked_write(&ai->regs[reg], value, mask);
         return;
     }
+    }
 
-    masked_write(&ai->regs[reg], value, mask);
+    if (reg < AI_REGS_COUNT) masked_write(&ai->regs[reg], value, mask);
 }
 
 void ai_end_of_dma_event(void* opaque)

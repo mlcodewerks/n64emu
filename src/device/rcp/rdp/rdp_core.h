@@ -81,6 +81,7 @@ struct rdp_core
     uint32_t clock_offset;
     /* -1: open pipe; positive: FullSync completion in COUNT ticks. */
     int64_t pipe_sync_deadline;
+    uint32_t pipe_sync_overhang;
 
     struct fb fb;
 

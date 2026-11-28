@@ -22,7 +22,7 @@
 #include "core/log.h"
 #include "rsp_ucode_capture.h"
 
-static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma, int64_t start)
+static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma, int64_t start, unsigned overhang)
 {
     unsigned int l = dma->length;
 
@@ -78,7 +78,9 @@ static void do_sp_dma(struct rsp_core* sp, const struct sp_dma* dma, int64_t sta
     /* schedule end of dma event */
     cp0_update_count(sp->mi->r4300);
     struct cp0* cp0 = &sp->mi->r4300->cp0;
-    sp->dma_end_clock = start + rsp_count_ticks(rsp_dma_transfer_cycles(length, count), 0);
+    const uint32_t cycles = rsp_dma_transfer_cycles(length, count);
+    sp->dma_end_clock = start + rsp_count_ticks(cycles, overhang);
+    sp->dma_end_overhang = rsp_count_overhang(cycles, overhang);
     add_interrupt_event_count(cp0, RSP_DMA_EVT, cp0->regs[CP0_COUNT_REG] +
         (uint32_t)(sp->dma_end_clock - cp0->count_clock));
 }
@@ -110,7 +112,7 @@ static void fifo_push(struct rsp_core* sp, uint32_t dir)
         sp->regs[SP_STATUS_REG] |= SP_STATUS_DMA_BUSY;
 
         cp0_update_count(sp->mi->r4300);
-        do_sp_dma(sp, &sp->fifo[0], sp->mi->r4300->cp0.count_clock);
+        do_sp_dma(sp, &sp->fifo[0], sp->mi->r4300->cp0.count_clock, 0);
     }
 }
 
@@ -125,12 +127,14 @@ static void fifo_pop(struct rsp_core* sp)
         sp->regs[SP_DMA_FULL_REG] = 0;
         sp->regs[SP_STATUS_REG] &= ~SP_STATUS_DMA_FULL;
 
-        do_sp_dma(sp, &sp->fifo[0], sp->dma_end_clock);
+        /* A queued transfer starts on the preceding DMA's RSP clock edge. */
+        do_sp_dma(sp, &sp->fifo[0], sp->dma_end_clock, sp->dma_end_overhang);
     }
     else
     {
         sp->regs[SP_DMA_BUSY_REG] = 0;
         sp->regs[SP_STATUS_REG] &= ~SP_STATUS_DMA_BUSY;
+        sp->dma_end_overhang = 0;
     }
 }
 
@@ -220,6 +224,7 @@ void poweron_rsp(struct rsp_core* sp)
 
     sp->rsp_task_locked = 0;
     sp->dma_end_clock = 0;
+    sp->dma_end_overhang = 0;
     sp->slice_start_clock = sp->slice_end_clock = 0;
     sp->slice_overhang = sp->clock_overhang = 0;
     sp->rsp_completion_status = 0;
@@ -486,6 +491,7 @@ void rsp_rebase_dma(struct rsp_core* sp)
 {
     struct cp0* cp0 = &sp->mi->r4300->cp0;
     sp->dma_end_clock = cp0->count_clock;
+    sp->dma_end_overhang = 0;
     sp->slice_start_clock = sp->slice_end_clock = cp0->count_clock;
     sp->slice_overhang = 0;
     for (struct node* e = cp0->q.first; e; e = e->next) {

@@ -201,7 +201,8 @@ unsigned int fpu_native_eval(unsigned int fmt, unsigned int fn,
 #ifdef FPU_NATIVE_NEON
     return fpu_neon_eval(fmt, fn, abits, bbits, rm, bits);
 #elif defined(FPU_NATIVE_VFP)
-    if (fn <= 4) return fpu_vfp_arithmetic(fmt, fn, abits, bbits, rm, bits);
+    if (fn <= 4 || (fmt == 17 && fn == 32) || (fmt == 16 && fn == 33))
+        return fpu_vfp_arithmetic(fmt, fn, abits, bbits, rm, bits);
 #endif
 #ifdef FPU_NATIVE_SSE2
     if (fn <= 4

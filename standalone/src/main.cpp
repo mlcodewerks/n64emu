@@ -17,19 +17,38 @@
 #include "ui_fonts.h"
 #include "imgui_theme.h"
 #include "ui_window_layout.h"
+#include <cfloat>
 #include <cmath>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <memory>
+#include <type_traits>
+#include <utility>
 #include <shellapi.h>
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 namespace {
 Input *input = nullptr;
 bool rescan_input = false;
-std::vector<fs::path> dropped;
+using DropHandle = std::unique_ptr<std::remove_pointer_t<HDROP>, decltype(&DragFinish)>;
+DropHandle dropped(nullptr, DragFinish);
 constexpr int ui_scale_percentages[] = {0, 50, 75, 100, 125, 150, 175, 200};
 constexpr const char *ui_scale_labels[] = {"Auto (fit window)", "50%", "75%", "100%", "125%", "150%", "175%", "200%"};
+
+fs::path read_dropped_file(DropHandle drop) {
+    const UINT length = DragQueryFileW(drop.get(), 0, nullptr, 0);
+    if (!length)
+        return {};
+    std::wstring name(length + 1, L'\0');
+    if (DragQueryFileW(drop.get(), 0, name.data(), length + 1) != length)
+        throw std::runtime_error("Cannot read the dropped file name");
+    name.resize(length);
+    fs::path path(std::move(name));
+    if (!fs::is_regular_file(path))
+        throw std::runtime_error("Drop a Nintendo 64 ROM file. Cannot open " + path.u8string());
+    return path;
+}
 
 void fit_window_to_monitor(HWND window, const RECT &bounds) {
     MONITORINFO monitor{};
@@ -45,6 +64,13 @@ void fit_window_to_monitor(HWND window, const RECT &bounds) {
 }
 
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_DROPFILES) {
+        // Keep the shell handle alive until the main loop can resolve the path.
+        DropHandle drop(reinterpret_cast<HDROP>(wparam), DragFinish);
+        if (!dropped)
+            dropped = std::move(drop);
+        return 0;
+    }
     if (ImGui::GetCurrentContext())
         ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam);
     switch (message) {
@@ -72,19 +98,6 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
     case WM_DEVICECHANGE:
         rescan_input = true;
         break;
-    case WM_DROPFILES: {
-        auto drop = reinterpret_cast<HDROP>(wparam);
-        unsigned count = DragQueryFileW(drop, 0xffffffff, nullptr, 0);
-        for (unsigned i = 0; i < count; ++i) {
-            UINT chars = DragQueryFileW(drop, i, nullptr, 0);
-            std::wstring path(chars + 1, 0);
-            DragQueryFileW(drop, i, path.data(), chars + 1);
-            path.resize(chars);
-            dropped.emplace_back(path);
-        }
-        DragFinish(drop);
-        return 0;
-    }
     case WM_SYSCOMMAND:
         if ((wparam & 0xfff0) == SC_KEYMENU)
             return 0;
@@ -258,6 +271,9 @@ int main() {
             FilePicker picker;
             dsp_chain_window dsp_window;
             bool running = true, settings = false, logs = false, fast_forward = false;
+            bool cheats_open = false;
+            char cheat_label[128] = {}, cheat_code[16384] = {};
+            std::string cheat_error;
             unsigned slot = 0;
             int ui_scale_choice = 0;
             float applied_ui_scale = 0;
@@ -298,6 +314,8 @@ int main() {
             std::function<void()> pending;
             auto select_content = [&](const fs::path &path) {
                 content = path;
+                cheat_label[0] = cheat_code[0] = '\0';
+                cheat_error.clear();
                 pending = [&, path] { core.load(path); };
             };
             auto browse_content = [&] {
@@ -322,23 +340,26 @@ int main() {
                     controls.rescan();
                     rescan_input = false;
                 }
-                if (!dropped.empty()) {
-                    auto path = dropped.front();
-                    dropped.clear();
-                    select_content(path);
-                }
-                if (pending) {
-                    auto action = std::move(pending);
-                    pending = {};
+                if (dropped || pending) {
+                    bool from_drop = bool(dropped);
                     try {
-                        action();
-                        failure.clear();
-                        pacing.reset(native_nanoseconds());
+                        if (from_drop) {
+                            auto path = read_dropped_file(std::move(dropped));
+                            from_drop = !path.empty();
+                            if (from_drop)
+                                select_content(path);
+                        }
+                        if (auto action = std::exchange(pending, {})) {
+                            action();
+                            failure.clear();
+                            pacing.reset(native_nanoseconds());
+                        }
                     } catch (const std::exception &e) {
                         failure = e.what();
-                        if (hidden)
+                        if (hidden && !from_drop)
                             throw;
-                        core.log(failure + "\n");
+                        logs = logs || from_drop;
+                        core.log(failure + "\n", LogSource::Frontend, from_drop ? RETRO_LOG_ERROR : RETRO_LOG_INFO);
                     }
                 }
                 int width, height;
@@ -393,6 +414,7 @@ int main() {
                         }
                         if (ImGui::MenuItem("Reset"))
                             pending = [&] { core.reset(); };
+                        ImGui::MenuItem("Cheats...", nullptr, &cheats_open);
                         if (ImGui::BeginMenu("State slot")) {
                             for (unsigned i = 0; i < 10; ++i)
                                 if (ImGui::MenuItem(std::to_string(i).c_str(), nullptr, i == slot))
@@ -451,6 +473,55 @@ int main() {
                         throw;
                 }
                 bool video_tab = false, audio_tab = false, input_tab = false;
+                if (cheats_open && core.loaded()) {
+                    ui_prepare_window("Cheats", ImVec2(0.55f, 0.65f));
+                    if (ImGui::Begin("Cheats", &cheats_open)) {
+                        if (ImGui::Button("Load RetroArch cheats..."))
+                            picker.open("Load RetroArch cheats", ".cht", content.empty() ? directory :
+                                        fs::absolute(content).parent_path(), false, [&](const fs::path &path) {
+                                            pending = [&, path] { core.load_cheats(path); cheat_error.clear(); };
+                                        });
+                        if (ImGui::Button("GameShark button")) n64emu_cheat_press_button();
+                        ImGui::BeginDisabled(core.cheats().empty());
+                        if (ImGui::Button("Clear cheats")) core.clear_cheats();
+                        ImGui::EndDisabled();
+
+                        ImGui::InputTextWithHint("##cheat-label", "Name (optional)", cheat_label, sizeof(cheat_label));
+                        ImGui::InputTextMultiline("##cheat-code", cheat_code, sizeof(cheat_code),
+                                                  ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 3));
+                        ImGui::BeginDisabled(!cheat_code[0]);
+                        if (ImGui::Button("Add GameShark code")) {
+                            if (core.add_cheat(cheat_label, cheat_code)) {
+                                cheat_label[0] = cheat_code[0] = '\0';
+                                cheat_error.clear();
+                            } else cheat_error = "Invalid or unsupported GameShark code";
+                        }
+                        ImGui::EndDisabled();
+                        if (!cheat_error.empty()) ImGui::TextWrapped("%s", cheat_error.c_str());
+                        ImGui::Separator();
+                        if (ImGui::BeginChild("Cheat list")) {
+                            const auto &entries = core.cheats();
+                            for (unsigned i = 0; i < entries.size(); ++i) {
+                                const auto &entry = entries[i];
+                                bool enabled = entry.enabled;
+                                ImGui::PushID(int(i));
+                                ImGui::BeginDisabled(!entry.supported);
+                                if (ImGui::Checkbox("##enabled", &enabled) && !core.set_cheat_enabled(i, enabled))
+                                    cheat_error = "Could not change cheat state";
+                                ImGui::SameLine();
+                                ImGui::TextUnformatted(entry.label.c_str());
+                                ImGui::EndDisabled();
+                                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                                    if (!entry.supported) ImGui::SetTooltip("Unsupported or incomplete GameShark code");
+                                    else ImGui::SetTooltip("%s", entry.code.c_str());
+                                }
+                                ImGui::PopID();
+                            }
+                        }
+                        ImGui::EndChild();
+                    }
+                    ImGui::End();
+                }
                 if (settings) {
                     ui_prepare_window("Settings", ImVec2(0.8f, 0.85f));
                     if (ImGui::Begin("Settings", &settings) && ImGui::BeginTabBar("settings")) {

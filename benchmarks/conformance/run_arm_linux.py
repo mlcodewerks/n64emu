@@ -43,6 +43,7 @@ def run(binary, arguments, cwd, instruction_limit, seconds):
     invalidations = []
     trace = deque(maxlen=128)
     trace_page = int(os.environ.get('N64EMU_ARM_TRACE_PAGE', '0'), 0)
+    flush_translations = os.environ.get('N64EMU_ARM_FLUSH_TRANSLATIONS') == '1'
     if wide and trace_page:
         def instruction_trace(uc, address, size, _):
             trace.append((hex(address), bytes(uc.mem_read(address, size)).hex(),
@@ -301,6 +302,15 @@ def run(binary, arguments, cwd, instruction_limit, seconds):
             elif name == 'getaffinity':
                 vm.mem_write(a[2], b'\1' + bytes(a[1] - 1))
                 answer = min(a[1], 8)
+            elif wide and number == 293:  # rseq, optional glibc registration
+                answer = -errno.ENOSYS
+            elif wide and number == 78:  # readlinkat
+                if cstring(a[1]) == '/proc/self/exe':
+                    target = (b'/' + binary.name.encode())[:a[3]]
+                    vm.mem_write(a[2], target)
+                    answer = len(target)
+                else:
+                    answer = -errno.ENOENT
             elif not wide and number == 0xf0005:
                 vm.reg_write(a32.UC_ARM_REG_C13_C0_3, a[0])
             elif not wide and number == 0xf0002:
@@ -361,8 +371,11 @@ def run(binary, arguments, cwd, instruction_limit, seconds):
                 pending_memory_syscall = False
                 syscall(vm, 2, True)
             # Finish invalidation outside the active translation as well.
-            for start, end in invalidations:
-                vm.ctl_remove_cache(start, end)
+            if invalidations and flush_translations:
+                vm.ctl_flush_tb()
+            else:
+                for start, end in invalidations:
+                    vm.ctl_remove_cache(start, end)
             invalidations.clear()
             resume = vm.reg_read(a64.UC_ARM64_REG_PC if wide else a32.UC_ARM_REG_PC)
         if result is None:
